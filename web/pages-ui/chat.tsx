@@ -202,7 +202,10 @@ export function ChatPage() {
               <Button disabled={create.isPending} onClick={() => create.mutate()}>새 대화 시작</Button>
             </div>
           ) : detail.isPending ? <Loading label="대화를 불러오는 중…" /> : !detail.data ? (
-            <ErrorNotice error={detail.error} />
+            <div className="space-y-2">
+              <ErrorNotice error={detail.error} />
+              <Button variant="outline" size="sm" onClick={() => { void detail.refetch(); }}>대화 다시 불러오기</Button>
+            </div>
           ) : (
             <>
               <h2 className="text-lg font-semibold">{detail.data.conversation.title || '새 대화'}</h2>
