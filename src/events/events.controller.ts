@@ -29,7 +29,7 @@ export class EventsController implements OnModuleDestroy {
     this.connections.add(response);
     const unsubscribe = this.events.subscribe((event, audience) => {
       const currentUser = this.users.getById(user.id);
-      if (!currentUser || currentUser.email !== user.email) { response.end(); return; }
+      if (!currentUser || currentUser.email !== user.email || currentUser.createdAt !== user.createdAt) { response.end(); return; }
       if (audience !== 'all' && !audience.userIds.includes(currentUser.id) && !(audience.admins && currentUser.role === 'admin')) return;
       let projected = event;
       if (event.type === 'main.updated') {

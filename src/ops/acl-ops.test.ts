@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { strFromU8, unzipSync } from 'fflate';
 import pino from 'pino';
 import request from 'supertest';
+import type { Response } from 'supertest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AclService } from '../acl/acl.service.js';
 import { AuditService } from '../audit/audit.service.js';
@@ -117,9 +118,11 @@ describe('public operations, live events and archives obey folder ACL', () => {
     }
     const jobs = new WriteJobsRepository(db);
     jobs.enqueue('hidden-job', viewer.id, secret, stamp, 'web');
+    jobs.addEvent('hidden-job', 'queued', { sourceProvenanceComplete: true });
     jobs.markMerging('hidden-job', secret, [hiddenSha]);
     jobs.recordConflicts('hidden-job', [hidden]);
     jobs.enqueue('mixed-job', viewer.id, secret, stamp, 'web');
+    jobs.addEvent('mixed-job', 'queued', { sourceProvenanceComplete: true });
     jobs.markMerging('mixed-job', secret, [mixedSha]);
     jobs.recordConflicts('mixed-job', [hidden, publicPath]);
     events = new EventsService();
@@ -174,7 +177,7 @@ describe('public operations, live events and archives obey folder ACL', () => {
     const ids: string[] = [];
     let before: string | null = null;
     do {
-      const page = await get(`/api/activity?limit=1${before ? `&before=${before}` : ''}`).expect(200);
+      const page: Response = await get(`/api/activity?limit=1${before ? `&before=${before}` : ''}`).expect(200);
       ids.push(...page.body.items.map((item: ActivityItem) => `${item.type}:${item.id}`));
       before = page.body.nextCursor;
     } while (before);
@@ -261,7 +264,8 @@ describe('public operations, live events and archives obey folder ACL', () => {
   });
 
   it('closes an existing SSE subscription when a deleted numeric user ID is reused by an administrator', async () => {
-    const original = users.create({ email: 'temporary-reader@example.test', role: 'viewer' });
+    const originalId = new UsersRepository(db).create('temporary-reader@example.test', null, 'viewer', stamp);
+    const original = users.getById(originalId)!;
     const auth = app.get(ApiTokensService);
     const token = auth.create(original, { name: 'temporary', scopes: ['read'] }).token;
     const connection = new AbortController();
@@ -274,8 +278,9 @@ describe('public operations, live events and archives obey folder ACL', () => {
     const initial = await stream.read();
     expect(new TextDecoder().decode(initial.value)).toContain(': connected');
     users.delete(original.id);
-    const replacement = users.create({ email: 'replacement-admin@example.test', role: 'admin' });
-    expect(replacement.id).toBe(original.id);
+    // Explicit legacy/external ID reuse bypasses the repository's monotonic allocation.
+    db.prepare('INSERT INTO users(id,email,role,created_at) VALUES(?,?,?,?)')
+      .run(original.id, original.email, 'admin', '2026-02-03T00:00:00.000Z');
     events.publish({ type: 'main.updated', sha: 'replacement-only', paths: [hidden] }, 'all');
     const afterReplacement = await stream.read();
     expect(afterReplacement.done).toBe(true);
@@ -363,5 +368,47 @@ describe('public operations, live events and archives obey folder ACL', () => {
     expect(result.status).toBe(403);
     expect(result.headers['x-export-head']).toBeUndefined();
     expect(result.body.error.code).toBe('forbidden');
+  });
+
+  it('redacts owner activity from revoked recorded sources and legacy unknown provenance despite public-only changes', async () => {
+    const grant = acl.create({ prefix: hidden, subjectType: 'user', subject: String(viewer.id), access: 'read' }, admin);
+    const repo = app.get(KnowledgeRepo);
+    const publicCommit = (await repo.log({ limit: null })).find((commit) => commit.subject === 'Public notes')!;
+    const jobs = new WriteJobsRepository(db);
+    for (const [id, detail] of [
+      ['source-single', { sourcePath: hidden }],
+      ['source-array', { sourcePaths: [hidden] }],
+    ] as const) {
+      jobs.enqueue(id, viewer.id, secret, stamp, 'web');
+      jobs.addEvent(id, 'queued', { sourceProvenanceComplete: true });
+      jobs.addEvent(id, 'editing', detail);
+      jobs.markMerging(id, secret, [publicCommit.sha]);
+      jobs.recordConflicts(id, [publicPath]);
+      jobs.markFailed(id, `Error includes ${secret}`, stamp);
+    }
+    jobs.enqueue('legacy-source', viewer.id, secret, stamp, 'web');
+    jobs.markMerging('legacy-source', secret, [publicCommit.sha]);
+    jobs.enqueue('verified-public-source', viewer.id, 'Known public request', stamp, 'web');
+    jobs.addEvent('verified-public-source', 'queued', { sourceProvenanceComplete: true });
+    jobs.markMerging('verified-public-source', 'Public summary', [publicCommit.sha]);
+    const beforeRevocation = await get('/api/activity?type=job&limit=100').expect(200);
+    expect(beforeRevocation.body.items.find((item: ActivityItem) => item.id === 'source-single').job.input).toBe(secret);
+    acl.delete(grant.id, admin);
+    const response = await get('/api/activity?type=job&limit=100').expect(200);
+    for (const id of ['source-single', 'source-array', 'legacy-source']) {
+      const item = response.body.items.find((item: ActivityItem) => item.id === id);
+      expect(item).toMatchObject({ summary: null, job: { summary: null, commits: [], conflicts: [], mergeSha: null } });
+      expect(item.paths).toContain(publicPath);
+      expect(item.job).not.toHaveProperty('input');
+      expect(item.job).not.toHaveProperty('error');
+      expect(JSON.stringify(item)).not.toContain(secret);
+      expect(JSON.stringify(item)).not.toContain(hidden);
+    }
+    expect(response.body.items.find((item: ActivityItem) => item.id === 'verified-public-source'))
+      .toMatchObject({ summary: 'Public summary', job: { input: 'Known public request', summary: 'Public summary' } });
+    for (const reader of [collaborator, admin]) {
+      const allowed = await get('/api/activity?type=job&limit=100', reader).expect(200);
+      expect(allowed.body.items.find((item: ActivityItem) => item.id === 'source-single').summary).toBe(secret);
+    }
   });
 });

@@ -200,6 +200,8 @@ export class ActivityService {
         CASE WHEN user_id = ? OR ? = 1 THEN error ELSE NULL END AS error
         FROM write_jobs ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
         ORDER BY created_at DESC, id DESC`).all(...values) as JobRow[];
+      const readEvents = this.db.prepare('SELECT phase, detail FROM write_job_events WHERE job_id = ? ORDER BY seq');
+      const hasRules = this.acl.list().length > 0;
       for (const row of rows) {
         const privileged = row.user_id === user.id || user.role === 'admin';
         const commitIds = JSON.parse(row.commits) as string[];
@@ -208,12 +210,26 @@ export class ActivityService {
           ...[...commitIds, ...(row.merge_sha ? [row.merge_sha] : [])].flatMap((sha) => commitPaths.get(sha) ?? []), ...conflicts])];
         const readable = this.acl.filterPaths(user, paths);
         if (paths.length && !readable.length) continue;
-        const redacted = readable.length !== paths.length ||
-          (!paths.length && user.role !== 'admin' && this.acl.list().length > 0);
+        const events = readEvents.all(row.id) as Array<{ phase: string; detail: string | null }>;
+        const sourcePaths = new Set<string>();
+        let sourceProvenanceComplete = false;
+        for (const event of events) {
+          const detail = event.detail ? JSON.parse(event.detail) as Record<string, unknown> | null : null;
+          if (event.phase === 'queued' && detail?.sourceProvenanceComplete === true) sourceProvenanceComplete = true;
+          if (typeof detail?.sourcePath === 'string') sourcePaths.add(detail.sourcePath);
+          if (Array.isArray(detail?.sourcePaths)) {
+            for (const path of detail.sourcePaths) if (typeof path === 'string') sourcePaths.add(path);
+          }
+        }
+        const sourceRedacted = user.role !== 'admin' &&
+          ((row.kind === 'luna' && hasRules && !sourceProvenanceComplete) ||
+            [...sourcePaths].some((path) => !this.acl.canRead(user, path)));
+        const redacted = sourceRedacted || readable.length !== paths.length ||
+          (!paths.length && user.role !== 'admin' && hasRules);
         const job: ActivityItem['job'] = { id: row.id, userId: row.user_id, kind: row.kind, source: row.source,
           client: row.client, status: row.status, summary: redacted ? null : row.summary,
-          commits: commitIds.filter((sha) => (commitPaths.get(sha) ?? []).every((path) => this.acl.canRead(user, path))),
-          conflicts: this.acl.filterPaths(user, conflicts), mergeSha: redacted ? null : row.merge_sha, createdAt: row.created_at,
+          commits: sourceRedacted ? [] : commitIds.filter((sha) => (commitPaths.get(sha) ?? []).every((path) => this.acl.canRead(user, path))),
+          conflicts: sourceRedacted ? [] : this.acl.filterPaths(user, conflicts), mergeSha: redacted ? null : row.merge_sha, createdAt: row.created_at,
           startedAt: row.started_at, finishedAt: row.finished_at,
           ...(privileged && !redacted ? { input: row.input!, error: row.error } : {}) };
         accept({ id: row.id, type: 'job', at: row.created_at, source: row.source,

@@ -17,7 +17,7 @@ function connection(controller: EventsController, viewer: User) {
   const frames: string[] = [];
   Object.assign(response, { setHeader: vi.fn(), flushHeaders: vi.fn(), write: (frame: string) => { frames.push(frame); return true; },
     end: () => response.emit('close') });
-  controller.stream(viewer, response as Response);
+  controller.stream(users.getById(viewer.id)!, response as Response);
   return { response, frames };
 }
 
