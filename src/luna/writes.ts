@@ -1,7 +1,8 @@
 import { z } from 'zod';
-import type { WriteJob } from '../jobs/service.js';
+import type { WriteJob } from '../jobs/write-job.types.js';
 import type { KnowledgeRepo, Worktree } from '../knowledge/repo.js';
-import type { AgentTool, Luna } from './index.js';
+import type { LunaService } from './luna.service.js';
+import type { AgentTool } from './luna.types.js';
 
 const writeInstructions = `
 지식 쓰기 작업을 작업 워크트리에서 완수한다. 기본 작성 규칙과 다음 절차를 모두 따른다.
@@ -19,7 +20,7 @@ const writeInstructions = `
 `;
 
 export async function runWrite(
-  luna: Luna,
+  luna: LunaService,
   job: WriteJob,
   wt: Worktree,
   author: { name: string; email: string },
@@ -43,7 +44,7 @@ const conflictInstructions = `
 // Git emits seven or more marker characters (including diff3 base markers) at line start.
 const conflictMarker = /^(?:<{7,}|={7,}|>{7,}|\|{7,})/m;
 
-function conflictTools(luna: Luna, wt: Worktree, files: string[]): AgentTool[] {
+function conflictTools(luna: LunaService, wt: Worktree, files: string[]): AgentTool[] {
   const allowed = new Set(files);
   const path = z.string().min(1).refine((value) => allowed.has(value), { message: 'Only the listed conflict files may be accessed' });
   const readArgs = z.object({ path }).strict();
@@ -70,7 +71,7 @@ function conflictTools(luna: Luna, wt: Worktree, files: string[]): AgentTool[] {
 }
 
 export async function resolveConflicts(
-  luna: Luna,
+  luna: LunaService,
   repo: KnowledgeRepo,
   wt: Worktree,
   files: string[],

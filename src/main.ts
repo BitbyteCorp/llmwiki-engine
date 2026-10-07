@@ -1,48 +1,59 @@
-import type { Server } from 'node:http';
-import { loadConfig } from './config.js';
-import { createContext } from './context.js';
-import { createApp } from './http/app.js';
-import { Dreaming } from './dreaming/index.js';
-import { logger } from './log.js';
+import 'reflect-metadata';
+import { NestFactory } from '@nestjs/core';
+import { ExpressAdapter } from '@nestjs/platform-express';
+import cookieParser from 'cookie-parser';
+import type * as NextExports from 'next/dist/server/next.js';
+import { createRequire } from 'node:module';
+import type { Request, Response, NextFunction } from 'express';
+import { resolve } from 'node:path';
+import { AppModule } from './app.module.js';
+import type { Config } from './config.js';
+import { CONFIG, LOGGER } from './common/tokens.js';
+import { HttpExceptionFilter } from './common/filters/http-exception.filter.js';
+import { configureApp } from './common/http/configure-app.js';
+import { IndexerService } from './rag/indexer.service.js';
+import { WriteJobsService } from './jobs/write-jobs.service.js';
+import { DreamingService } from './dreaming/dreaming.service.js';
+import { logger, type Logger } from './log.js';
+
+// Next's CommonJS entry exposes a callable export, unlike its NodeNext declaration.
+const next = createRequire(import.meta.url)('next') as typeof NextExports.default.default;
 
 async function main(): Promise<void> {
-  const ctx = await createContext(loadConfig());
-  let dreaming: Dreaming;
-  try { dreaming = new Dreaming(ctx); } catch (error) { ctx.db.close(); throw error; }
-  const initialIndex = ctx.indexer.syncToHead().catch((error: unknown) => {
-    ctx.log.error({ err: error }, 'Initial knowledge indexing failed');
-  });
-  let server: Server | undefined;
-  let stopping: Promise<void> | undefined;
-  const shutdown = (): Promise<void> => stopping ??= (async () => {
-    const stoppedDreaming = Promise.resolve().then(() => dreaming.stop());
-    const stoppedJobs = Promise.resolve().then(() => ctx.jobs.stop());
-    const closed = new Promise<void>((resolve, reject) => {
-      if (!server?.listening) { resolve(); return; }
-      server.close((error) => error ? reject(error) : resolve());
-      server.closeIdleConnections();
-    });
-    const results = await Promise.allSettled([closed, stoppedDreaming, stoppedJobs, initialIndex]);
-    ctx.db.close();
-    const failures = results.filter((result) => result.status === 'rejected').map((result) => result.reason as unknown);
-    if (failures.length) throw new AggregateError(failures, 'Shutdown failed');
-  })();
+  const app = await NestFactory.create(AppModule, new ExpressAdapter(), { bodyParser: true });
+  const config = app.get<Config>(CONFIG);
+  const log = app.get<Logger>(LOGGER);
+  const web = next({ dev: config.nodeEnv !== 'production', dir: resolve('web') });
+  const lifecycle = app.get(AppModule);
+  lifecycle.closeNext = () => web.close();
   try {
-    ctx.jobs.start();
-    dreaming.start();
-    server = createApp(ctx).listen(ctx.config.port);
-    server.once('error', (error) => {
-      logger.error({ err: error }, 'HTTP server failed');
-      process.exitCode = 1;
-      void shutdown().catch((shutdownError: unknown) => logger.error({ err: shutdownError }, 'Shutdown failed'));
+    await web.prepare();
+    const handleNext = web.getRequestHandler();
+    const express = app.getHttpAdapter().getInstance();
+    express.disable('x-powered-by');
+    app.use(cookieParser(config.sessionSecret));
+    configureApp(app);
+    app.use((req: Request, res: Response, nextRoute: NextFunction) => {
+      if (/^\/(api|auth|oauth|mcp|\.well-known|healthz)(\/|$)/.test(req.path)) {
+        nextRoute();
+        return;
+      }
+      void handleNext(req, res).catch(nextRoute);
     });
-    server.once('listening', () => { ctx.log.info({ port: ctx.config.port }, 'llmwiki-engine listening'); });
+    app.useGlobalFilters(new HttpExceptionFilter(log));
+    app.enableShutdownHooks();
+    await app.init();
+    lifecycle.initialIndex = app.get(IndexerService).syncToHead().catch((error: unknown) => {
+      log.error({ err: error }, 'Initial knowledge indexing failed');
+    });
+    app.get(WriteJobsService).start();
+    app.get(DreamingService).start();
+    await app.listen(config.port);
+    log.info({ port: config.port }, 'llmwiki-engine listening');
   } catch (error) {
-    await shutdown();
+    await app.close();
     throw error;
   }
-  process.once('SIGTERM', () => { void shutdown().catch((error: unknown) => { logger.error({ err: error }, 'Shutdown failed'); process.exitCode = 1; }); });
-  process.once('SIGINT', () => { void shutdown().catch((error: unknown) => { logger.error({ err: error }, 'Shutdown failed'); process.exitCode = 1; }); });
 }
 
 void main().catch((error: unknown) => {

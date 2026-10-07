@@ -5,6 +5,11 @@ Luna는 엔진에서 지식 쓰기, 충돌 해결, dreaming, 웹 질의응답을
 엔진은 사용자가 보낸 지식을 문서에 반영하고, 기존 지식과의 관계를 정리하며, 지식을 근거로 질문에 답해야 한다. 이 작업을 맡는 LLM을 Luna라고 부른다. Luna가 파일을 편집하는 경계는 엔진이 통제해야 하며, 검색에 필요한 임베딩은 Luna의 지원 API와 구분해야 한다.
 
 ## 내용
+### Nest 모듈과 의존성
+`LunaModule`은 `KnowledgeModule`과 `RagModule`을 가져오고, `luna.service.ts`의 `LunaService`를 제공하며 다른 모듈에 내보낸다. 서비스는 설정·로그를 공용 `CONFIG`, `LOGGER` 토큰으로 주입받고, `KnowledgeRepo`와 `SearchService`를 클래스 타입으로 주입받는다.
+
+에이전트 도구와 실행 옵션의 형식은 `luna.types.ts`에 두며, 작업 워크트리 도구는 `worktree.ts`, 쓰기와 충돌 해결의 절차는 `writes.ts`에 둔다. 서비스는 에이전트 실행·문맥 로딩·쓰기·충돌 해결·읽기 전용 답변의 인터페이스를 유지한다.
+
 ### 모델과 호출 방식
 Luna의 모델 ID는 `gpt-6-luna`다. 엔진은 OpenAI Responses API의 함수 호출(function calling)을 사용해 Luna를 호출한다.
 

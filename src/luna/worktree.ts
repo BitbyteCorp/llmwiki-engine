@@ -1,7 +1,7 @@
 import { z } from 'zod';
-import type { AppContext } from '../context.js';
 import type { Worktree } from '../knowledge/repo.js';
-import type { AgentTool } from './index.js';
+import type { SearchService } from '../rag/search.service.js';
+import type { AgentTool } from './luna.types.js';
 
 const pathArgs = z.object({ path: z.string().min(1) }).strict();
 const searchArgs = z.object({ query: z.string().trim().min(1), limit: z.number().int().min(1).max(100).optional() }).strict();
@@ -11,7 +11,7 @@ const moveArgs = z.object({ from: z.string().min(1), to: z.string().min(1) }).st
 const commitArgs = z.object({ message: z.string().trim().min(1) }).strict();
 
 export function makeWorktreeTools(
-  ctx: Pick<AppContext, 'config' | 'log' | 'repo' | 'search'>,
+  search: SearchService,
   wt: Worktree,
   author: { name: string; email: string },
 ): AgentTool[] {
@@ -25,7 +25,7 @@ export function makeWorktreeTools(
       },
       async run(args: unknown) {
         const { query, limit } = searchArgs.parse(args);
-        return JSON.stringify(await ctx.search.search(query, limit === undefined ? undefined : { limit }));
+        return JSON.stringify(await search.search(query, limit === undefined ? undefined : { limit }));
       },
     },
     {

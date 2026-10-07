@@ -10,6 +10,12 @@
 
 ## 내용
 
+### Nest 모듈과 의존성
+
+`RagModule`은 `KnowledgeModule`을 가져오고 `IndexerService`와 `SearchService`를 제공하며 두 서비스를 다른 모듈에 내보낸다. 두 서비스는 설정·SQLite 연결·로그를 공용 `CONFIG`, `DB`, `LOGGER` 토큰으로 주입받으며, 인덱서는 `KnowledgeRepo`를 클래스 타입으로 주입받는다.
+
+`IndexerService.onModuleInit()`은 벡터 테이블과 임베딩 설정을 확인하는 `init()`을 호출한다. main의 변경 반영은 별도의 `syncToHead()`로 수행하므로 서버 진입점은 초기 동기화를 시작하고, CLI는 워커나 스케줄러를 시작하지 않은 Nest 애플리케이션 컨텍스트에서 필요한 서비스를 조회한다. `rag.commands.ts`의 `registerRagCommands()`가 `reindex` 명령을 등록한다.
+
 ### 저장 구조와 한국어 검색
 
 검색 데이터는 SQLite 하나에 저장하며, FTS5는 키워드 검색을, sqlite-vec은 벡터 검색을, 링크 테이블은 노트 사이의 위키링크 관계를 담당한다.

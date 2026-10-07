@@ -2,13 +2,18 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import Database from 'better-sqlite3';
-import express, { type ErrorRequestHandler } from 'express';
+import { Catch, Controller, Get, Post, Req, Res, type ArgumentsHost, type ExceptionFilter } from '@nestjs/common';
+import { Test } from '@nestjs/testing';
+import express, { type Request, type Response } from 'express';
 import { exportJWK, generateKeyPair, SignJWT, type JWTPayload } from 'jose';
 import { afterEach, describe, expect, it } from 'vitest';
 import { loadConfig } from '../config.js';
-import type { AppContext } from '../context.js';
-import { UserService } from './users.js';
-import { clearSession, createGoogle, createSession, sessionUser, type AuthFlow, type GoogleIssuer } from './google.js';
+import { CONFIG, DB } from '../common/tokens.js';
+import { UsersRepository } from './users.repository.js';
+import { UsersService } from './users.service.js';
+import { GoogleOidcService, GOOGLE_ISSUER } from './google-oidc.service.js';
+import type { AuthFlow, GoogleIssuer } from './google-oidc.types.js';
+import { SessionsService } from './sessions.service.js';
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -30,7 +35,7 @@ async function setup() {
   for (const migration of ['001_core.sql', '002_auth.sql']) {
     db.exec(readFileSync(new URL(`../db/migrations/${migration}`, import.meta.url), 'utf8'));
   }
-  const users = new UserService(db);
+  const users = new UsersService(new UsersRepository(db));
   const user = users.create({ email: 'admin@example.com', role: 'admin', name: 'Admin' });
   users.setSettings({ allowlistEnabled: true, allowedDomains: ['example.com'] });
   const codes = new Map<string, { nonce: string; challenge: string }>();
@@ -79,31 +84,75 @@ async function setup() {
   });
 
   const config = loadConfig({ NODE_ENV: 'test', GOOGLE_CLIENT_ID: 'test-client', GOOGLE_CLIENT_SECRET: 'test-secret', SESSION_SECRET: 'test-session-secret' });
-  const ctx = { db, config, users } as AppContext;
-  const google = createGoogle(ctx, issuer);
-  const app = express();
   let flow: AuthFlow = { kind: 'web', next: '/wiki' };
-  app.get('/auth/google/login', (req, res) => google.begin(req, res, flow));
-  app.get('/auth/google/callback', async (req, res) => res.json(await google.callback(req, res)));
-  app.post('/session', (_req, res) => { createSession(ctx, res, user); res.sendStatus(204); });
-  app.get('/me', (req, res) => {
-    const current = sessionUser(ctx, req);
-    if (!current) { res.sendStatus(401); return; }
-    res.json(current);
-  });
-  app.post('/logout', (req, res) => { clearSession(ctx, req, res); res.sendStatus(204); });
-  const errors: ErrorRequestHandler = (error: Error & { status?: number; code?: string; flow?: AuthFlow }, _req, res, _next) => {
-    res.status(error.status ?? 500).json({ error: { code: error.code, message: error.message }, flow: error.flow });
-  };
-  app.use(errors);
-  const appServer = createServer(app);
-  const url = await listen(appServer);
+  @Controller()
+  class GoogleTestController {
+    constructor(private readonly google: GoogleOidcService, private readonly sessions: SessionsService) {}
+
+    @Get('auth/google/login')
+    login(@Req() req: Request, @Res() res: Response) {
+      return this.google.begin(req, res, flow);
+    }
+
+    @Get('auth/google/callback')
+    async callback(@Req() req: Request, @Res() res: Response) {
+      res.json(await this.google.callback(req, res));
+    }
+
+    @Post('session')
+    createSession(@Res() res: Response) {
+      this.sessions.create(res, user);
+      res.sendStatus(204);
+    }
+
+    @Get('me')
+    me(@Req() req: Request, @Res() res: Response) {
+      const current = this.sessions.sessionUser(req);
+      if (!current) { res.sendStatus(401); return; }
+      res.json(current);
+    }
+
+    @Post('logout')
+    logout(@Req() req: Request, @Res() res: Response) {
+      this.sessions.destroy(req, res);
+      res.sendStatus(204);
+    }
+  }
+
+  // Preserve the trusted flow in this service fixture; the production controller
+  // translates MCP failures into redirects and is exercised by the OAuth suite.
+  @Catch()
+  class GoogleTestFilter implements ExceptionFilter {
+    catch(error: Error & { status?: number; code?: string; flow?: AuthFlow }, host: ArgumentsHost) {
+      host.switchToHttp().getResponse<Response>()
+        .status(error.status ?? 500).json({ error: { code: error.code, message: error.message }, flow: error.flow });
+    }
+  }
+  const module = await Test.createTestingModule({
+    controllers: [GoogleTestController],
+    providers: [
+      GoogleOidcService, SessionsService,
+      { provide: CONFIG, useValue: config },
+      { provide: DB, useValue: db },
+      { provide: UsersService, useValue: users },
+      { provide: GOOGLE_ISSUER, useValue: issuer },
+    ],
+  }).compile();
+  const google = module.get(GoogleOidcService);
+  const app = module.createNestApplication({ logger: false });
+  app.useGlobalFilters(new GoogleTestFilter());
+  await app.listen(0, '127.0.0.1');
+  const appServer = app.getHttpServer() as Server;
+  const address = appServer.address();
+  if (!address || typeof address === 'string') throw new Error('Expected TCP listener');
+  const url = `http://127.0.0.1:${address.port}`;
   config.publicUrl = url;
   cleanups.push(async () => {
-    await Promise.all([appServer, issuerServer].map((server) => new Promise<void>((resolve, reject) => {
-      server.close((error) => error ? reject(error) : resolve());
-      server.closeAllConnections();
-    })));
+    appServer.closeAllConnections();
+    await Promise.all([app.close(), new Promise<void>((resolve, reject) => {
+      issuerServer.close((error) => error ? reject(error) : resolve());
+      issuerServer.closeAllConnections();
+    })]);
     db.close();
   });
 
@@ -120,7 +169,7 @@ async function setup() {
     return response.headers.get('location')!;
   }
   return {
-    ctx, url, user, issuer, google, tokenRequests, begin, authorize,
+    db, config, users, url, user, issuer, google, tokenRequests, begin, authorize,
     setClaims(value: JWTPayload, omit?: string) { claims = value; omittedClaim = omit; },
     setSigningKey(value: CryptoKey) { signingKey = value; },
     setFlow(value: AuthFlow) { flow = value; },
@@ -228,7 +277,7 @@ describe('Google code flow', () => {
     const fixture = await setup();
     const start = await fixture.begin();
     // Force the persisted deadline rather than advancing time for local HTTP servers.
-    fixture.ctx.db.prepare('UPDATE auth_pending SET expires_at = ?').run(new Date(Date.now() - 1).toISOString());
+    fixture.db.prepare('UPDATE auth_pending SET expires_at = ?').run(new Date(Date.now() - 1).toISOString());
     const callback = await fixture.authorize(start.authorization);
     const response = await fetch(callback, { headers: { cookie: start.browser } });
     expect(response.status).toBe(401);
@@ -263,7 +312,7 @@ describe('Google code flow', () => {
     const replay = await fetch(callback, { headers: { cookie: start.browser } });
     expect((await replay.json()).flow).toBeUndefined();
     const expired = await fixture.begin(start.browser);
-    fixture.ctx.db.prepare('UPDATE auth_pending SET expires_at = ?').run(new Date(Date.now() - 1).toISOString());
+    fixture.db.prepare('UPDATE auth_pending SET expires_at = ?').run(new Date(Date.now() - 1).toISOString());
     callback.searchParams.set('state', expired.authorization.searchParams.get('state')!);
     const expiration = await fetch(callback, { headers: { cookie: start.browser } });
     expect(expiration.status).toBe(401);
@@ -273,12 +322,12 @@ describe('Google code flow', () => {
 
   it('fails clearly without Google credentials and disallows HTTP issuer endpoints outside tests', async () => {
     const fixture = await setup();
-    fixture.ctx.config.googleClientSecret = undefined;
+    fixture.config.googleClientSecret = undefined;
     const missing = await fetch(`${fixture.url}/auth/google/login`, { redirect: 'manual' });
     expect(missing.status).toBe(503);
     expect((await missing.json()).error.code).toBe('google_not_configured');
-    fixture.ctx.config.googleClientSecret = 'test-secret';
-    fixture.ctx.config.nodeEnv = 'production';
+    fixture.config.googleClientSecret = 'test-secret';
+    fixture.config.nodeEnv = 'production';
     const unsafe = await fetch(`${fixture.url}/auth/google/login`, { redirect: 'manual' });
     expect(unsafe.status).toBe(503);
     expect((await unsafe.json()).error.code).toBe('invalid_google_config');
@@ -288,7 +337,7 @@ describe('Google code flow', () => {
 describe('signed web sessions', () => {
   it('uses hashed opaque IDs and signed cookies, survives valid access, and revokes on logout', async () => {
     const fixture = await setup();
-    fixture.ctx.config.publicUrl = 'https://wiki.example.com';
+    fixture.config.publicUrl = 'https://wiki.example.com';
     const created = await fetch(`${fixture.url}/session`, { method: 'POST' });
     const setCookie = created.headers.get('set-cookie')!;
     expect(setCookie).toContain('HttpOnly');
@@ -297,7 +346,7 @@ describe('signed web sessions', () => {
     expect(setCookie).toContain('Max-Age=2592000');
     const cookie = setCookie.split(';')[0]!;
     const rawId = cookie.slice('llmwiki_session='.length).split('.')[0]!;
-    const stored = fixture.ctx.db.prepare('SELECT id_hash FROM web_sessions').get() as { id_hash: string };
+    const stored = fixture.db.prepare('SELECT id_hash FROM web_sessions').get() as { id_hash: string };
     expect(stored.id_hash).not.toBe(rawId);
     expect(stored.id_hash).toMatch(/^[a-f0-9]{64}$/);
     const current = await fetch(`${fixture.url}/me`, { headers: { cookie } });
@@ -307,9 +356,9 @@ describe('signed web sessions', () => {
     expect((await fetch(`${fixture.url}/me`, { headers: { cookie: forged } })).status).toBe(401);
     const unsigned = `llmwiki_session=${rawId}`;
     expect((await fetch(`${fixture.url}/me`, { headers: { cookie: unsigned } })).status).toBe(401);
-    fixture.ctx.config.sessionSecret = 'different-secret';
+    fixture.config.sessionSecret = 'different-secret';
     expect((await fetch(`${fixture.url}/me`, { headers: { cookie } })).status).toBe(401);
-    fixture.ctx.config.sessionSecret = 'test-session-secret';
+    fixture.config.sessionSecret = 'test-session-secret';
     const logout = await fetch(`${fixture.url}/logout`, { method: 'POST', headers: { cookie } });
     expect(logout.status).toBe(204);
     expect(logout.headers.get('set-cookie')).toContain('Expires=Thu, 01 Jan 1970');
@@ -322,12 +371,12 @@ describe('signed web sessions', () => {
     const cookie = created.headers.get('set-cookie')!.split(';')[0]!;
     await fetch(`${fixture.url}/logout`, { method: 'POST', headers: { cookie: `${cookie}tampered` } });
     expect((await fetch(`${fixture.url}/me`, { headers: { cookie } })).status).toBe(200);
-    fixture.ctx.db.prepare('UPDATE web_sessions SET expires_at = ?').run(new Date(Date.now() - 1).toISOString());
+    fixture.db.prepare('UPDATE web_sessions SET expires_at = ?').run(new Date(Date.now() - 1).toISOString());
     expect((await fetch(`${fixture.url}/me`, { headers: { cookie } })).status).toBe(401);
     const another = await fetch(`${fixture.url}/session`, { method: 'POST' });
     const anotherCookie = another.headers.get('set-cookie')!.split(';')[0]!;
     // Delete directly because user management correctly protects the last administrator.
-    fixture.ctx.db.prepare('DELETE FROM users WHERE id = ?').run(fixture.user.id);
+    fixture.db.prepare('DELETE FROM users WHERE id = ?').run(fixture.user.id);
     expect((await fetch(`${fixture.url}/me`, { headers: { cookie: anotherCookie } })).status).toBe(401);
   });
 });

@@ -1,30 +1,37 @@
 #!/usr/bin/env node
+import 'reflect-metadata';
+import { NestFactory } from '@nestjs/core';
+import type { INestApplicationContext } from '@nestjs/common';
 import { Command } from 'commander';
-import { loadConfig } from './config.js';
-import { createContext, type AppContext } from './context.js';
-import { registerAuthCommands } from './auth/index.js';
-import { registerRagCommands } from './rag/index.js';
-import { registerDreamCommands } from './dreaming/index.js';
+import { AppModule } from './app.module.js';
+import { registerAuthCommands } from './auth/auth.commands.js';
+import { registerRagCommands } from './rag/rag.commands.js';
+import { registerDreamCommands } from './dreaming/dreaming.commands.js';
 import { logger } from './log.js';
 
 const program = new Command();
 program.name('llmwiki').description('Manage the LLM Wiki engine').version('0.1.0');
-let pendingContext: Promise<AppContext> | undefined;
-const getCtx = (): Promise<AppContext> => pendingContext ??= createContext(loadConfig());
+let pendingApp: Promise<INestApplicationContext> | undefined;
+const getApp = (): Promise<INestApplicationContext> => pendingApp ??= NestFactory.createApplicationContext(AppModule, { logger: false });
 
 try {
-  registerAuthCommands(program, getCtx);
-  registerRagCommands(program, getCtx);
-  registerDreamCommands(program, getCtx);
+  registerAuthCommands(program, getApp);
+  registerRagCommands(program, getApp);
+  registerDreamCommands(program, getApp);
   await program.parseAsync(process.argv);
 } catch (error) {
   logger.error({ err: error }, 'llmwiki command failed');
   process.exitCode = 1;
 } finally {
-  if (pendingContext) {
-    const ctx = await pendingContext.catch(() => undefined);
-    if (ctx) {
-      try { await ctx.jobs.stop(); } finally { ctx.db.close(); }
+  if (pendingApp) {
+    const app = await pendingApp.catch(() => undefined);
+    if (app) {
+      try {
+        await app.close();
+      } catch (error) {
+        logger.error({ err: error }, 'llmwiki command cleanup failed');
+        process.exitCode = 1;
+      }
     }
   }
 }

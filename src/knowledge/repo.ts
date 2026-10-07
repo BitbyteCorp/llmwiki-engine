@@ -57,10 +57,10 @@ class Git {
       this.env.GIT_SSH_COMMAND = `ssh -i '${key}' -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new`;
     }
   }
-  identity(author: Author = { name: this.cfg.gitBotName, email: this.cfg.gitBotEmail }): NodeJS.ProcessEnv {
+  identity(author: Author = { name: this.cfg.gitBotName, email: this.cfg.gitBotEmail }): Record<string, string> {
     return { GIT_AUTHOR_NAME: author.name, GIT_AUTHOR_EMAIL: author.email, GIT_COMMITTER_NAME: this.cfg.gitBotName, GIT_COMMITTER_EMAIL: this.cfg.gitBotEmail };
   }
-  async run(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): Promise<string> {
+  async run(cwd: string, args: string[], env: Record<string, string> = {}): Promise<string> {
     const result = await exec('git', args, { cwd, env: { ...this.env, ...env }, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
     return result.stdout;
   }

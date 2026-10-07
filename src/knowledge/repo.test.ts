@@ -1,3 +1,6 @@
+import 'reflect-metadata';
+import { Test } from '@nestjs/testing';
+import type { TestingModule } from '@nestjs/testing';
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -6,18 +9,31 @@ import { promisify } from 'node:util';
 import pino from 'pino';
 import { afterEach, expect, it } from 'vitest';
 import { loadConfig } from '../config.js';
+import { CommonModule } from '../common/common.module.js';
+import { CONFIG, LOGGER } from '../common/tokens.js';
+import { KnowledgeModule } from './knowledge.module.js';
 import { KnowledgeRepo } from './repo.js';
 
 const git = promisify(execFile);
 const dirs: string[] = [];
+const apps: TestingModule[] = [];
 const author = { name: 'Requesting User', email: 'request@example.test' };
 async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), 'knowledge-test-'));
   dirs.push(dir);
   const cfg = loadConfig({ NODE_ENV: 'test', DATA_DIR: dir });
-  return { dir, cfg, repo: await KnowledgeRepo.open(cfg, pino({ level: 'silent' })) };
+  const app = await Test.createTestingModule({ imports: [CommonModule, KnowledgeModule] })
+    .overrideProvider(CONFIG).useValue(cfg)
+    .overrideProvider(LOGGER).useValue(pino({ level: 'silent' }))
+    .compile();
+  await app.init();
+  apps.push(app);
+  return { dir, cfg, repo: app.get(KnowledgeRepo) };
 }
-afterEach(async () => { await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
+afterEach(async () => {
+  await Promise.all(apps.splice(0).map((app) => app.close()));
+  await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+});
 
 it('isolates worktree writes, commits as the requester, and fast-forwards main', async () => {
   const { dir, repo } = await fixture();

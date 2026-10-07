@@ -3,18 +3,26 @@ import { mkdtemp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
+import { Module, type INestApplicationContext } from '@nestjs/common';
+import { NestFactory } from '@nestjs/core';
+import { Command } from 'commander';
 import Database from 'better-sqlite3';
 import pino from 'pino';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig, type Config } from '../../src/config.js';
-import type { AppContext } from '../../src/context.js';
-import { Dreaming } from '../../src/dreaming/index.js';
-import type { CommitInfo, FileChange, Worktree } from '../../src/knowledge/repo.js';
-import type { AgentTool, RunAgentOptions } from '../../src/luna/index.js';
-import type { SearchHit } from '../../src/rag/index.js';
+import { CONFIG, DB, LOGGER } from '../../src/common/tokens.js';
+import { registerDreamCommands } from '../../src/dreaming/dreaming.commands.js';
+import { DreamRunsRepository } from '../../src/dreaming/dream-runs.repository.js';
+import { DreamingService } from '../../src/dreaming/dreaming.service.js';
+import { KnowledgeRepo, type CommitInfo, type FileChange, type Worktree } from '../../src/knowledge/repo.js';
+import { LunaService } from '../../src/luna/luna.service.js';
+import type { AgentTool, RunAgentOptions } from '../../src/luna/luna.types.js';
+import { IndexerService } from '../../src/rag/indexer.service.js';
+import { SearchService } from '../../src/rag/search.service.js';
+import type { SearchHit } from '../../src/rag/types.js';
 
 const execute = promisify(execFile);
-const resources: Array<{ root: string; db: Database.Database }> = [];
+const resources: Array<{ root: string; db: Database.Database; app?: INestApplicationContext }> = [];
 const journalContent = '# Daily journal\n\nKnowledge reviewed and learned.\n';
 const userContent = 'The deployment process requires a review before release.';
 const similarContent = '# Release process\n\nA reviewer approves each release.\n';
@@ -30,7 +38,10 @@ type DreamInput = {
   userMessages: MessageInput[];
 };
 
-// This fixture implements the git boundary directly: it never imports KnowledgeRepo.
+@Module({})
+class DreamingTestModule {}
+
+// This fixture implements the git seam directly without constructing KnowledgeRepo.
 class TempRepo {
   readonly path: string;
   readonly origin: string;
@@ -236,7 +247,24 @@ async function fixture() {
     ],
     resolveConflicts: vi.fn(async () => { throw new Error('Unexpected merge conflict'); }),
   };
-  const ctx = { config, db, log: pino({ level: 'silent' }), repo, luna, indexer, search } as unknown as AppContext;
+  const app = await NestFactory.createApplicationContext({
+    module: DreamingTestModule,
+    providers: [
+      { provide: CONFIG, useValue: config },
+      { provide: DB, useValue: db },
+      { provide: LOGGER, useValue: pino({ level: 'silent' }) },
+      { provide: KnowledgeRepo, useValue: repo },
+      { provide: LunaService, useValue: luna },
+      { provide: IndexerService, useValue: indexer },
+      { provide: SearchService, useValue: search },
+      DreamRunsRepository,
+      DreamingService,
+      { provide: 'otherDreaming', useClass: DreamingService },
+    ],
+  }, { logger: false });
+  resources[resources.length - 1].app = app;
+  const dreaming = app.get(DreamingService);
+  const otherDreaming = app.get<DreamingService>('otherDreaming');
   const addMessage = (id: string, role: 'user' | 'assistant' = 'user', createdAt = '2020-01-01T00:00:00.000Z', learnedAt: string | null = null) => {
     db.prepare('INSERT INTO messages (id, conversation_id, role, content, created_at, learned_at) VALUES (?, ?, ?, ?, ?, ?)')
       .run(id, 'conversation-1', role, role === 'user' ? userContent : 'Assistant-only unsupported claim.', createdAt, learnedAt);
@@ -253,21 +281,22 @@ async function fixture() {
     (id, started_at, finished_at, status, from_sha, to_sha, merge_sha, pushed)
     VALUES ('previous-success', '2020-01-01T00:00:00.000Z', '2020-01-01T00:01:00.000Z', 'succeeded', ?, ?, ?, 1)`)
     .run(baseSha, sha, sha);
-  return { ctx, db, repo, baseSha, runAgent, indexer, search, addMessage, learnedAt, checkpoint };
+  return { app, dreaming, otherDreaming, db, repo, baseSha, runAgent, indexer, search, addMessage, learnedAt, checkpoint };
 }
 
 afterEach(async () => {
-  await Promise.all(resources.splice(0).map(async ({ root, db }) => {
+  await Promise.all(resources.splice(0).map(async ({ root, db, app }) => {
+    await app?.close();
     if (db.open) db.close();
     await rm(root, { recursive: true, force: true });
   }));
 });
 
-describe('Dreaming.runOnce', () => {
+describe('DreamingService.runOnce', () => {
   it('reviews only post-baseline changes, merges a dated journal into main, and pushes the actual result', async () => {
     const f = await fixture();
     const toSha = await f.repo.change();
-    const run = await new Dreaming(f.ctx).runOnce();
+    const run = await f.dreaming.runOnce();
     const input = inputOf(f.runAgent.mock.calls[0][0]);
     const kstDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(run.startedAt));
     expect(run).toMatchObject({ status: 'succeeded', fromSha: f.baseSha, toSha, pushed: true, error: null });
@@ -297,7 +326,7 @@ describe('Dreaming.runOnce', () => {
       await writeJournal(options);
       throw new Error('Luna unavailable');
     });
-    const run = await new Dreaming(f.ctx).runOnce();
+    const run = await f.dreaming.runOnce();
     expect(run).toMatchObject({ status: 'failed', mergeSha: null, pushed: true });
     expect(run.error).toContain('Luna unavailable');
     expect(await f.repo.headSha()).toBe(head);
@@ -321,7 +350,7 @@ describe('Dreaming.runOnce', () => {
       await release.promise;
       return { indexedSha: await f.repo.headSha(), changedFiles: 1 };
     });
-    const pending = new Dreaming(f.ctx).runOnce();
+    const pending = f.dreaming.runOnce();
     await entered.promise;
     try {
       expect(await f.repo.listFiles('journal/')).toEqual([`journal/${inputOf(f.runAgent.mock.calls[0][0]).date}.md`]);
@@ -340,7 +369,7 @@ describe('Dreaming.runOnce', () => {
     expect(f.learnedAt('already-learned')).toBe('2020-01-02T00:00:00.000Z');
   });
 
-  it('joins concurrent callers across Dreaming instances sharing one repo', async () => {
+  it('joins concurrent callers across service instances sharing one repo', async () => {
     const f = await fixture();
     f.addMessage('pending');
     const entered = deferred();
@@ -351,9 +380,9 @@ describe('Dreaming.runOnce', () => {
       await writeJournal(options);
       return { text: 'Completed once.', toolCalls: 1 };
     });
-    const first = new Dreaming(f.ctx).runOnce();
+    const first = f.dreaming.runOnce();
     await entered.promise;
-    const second = new Dreaming(f.ctx).runOnce();
+    const second = f.otherDreaming.runOnce();
     release.resolve();
     const [a, b] = await Promise.all([first, second]);
     expect(a.id).toBe(b.id);
@@ -369,7 +398,7 @@ describe('Dreaming.runOnce', () => {
     const f = await fixture();
     const head = await f.repo.headSha();
     f.checkpoint(head);
-    const run = await new Dreaming(f.ctx).runOnce();
+    const run = await f.dreaming.runOnce();
     expect(run).toMatchObject({ status: 'succeeded', fromSha: head, toSha: head, mergeSha: null, pushed: true, error: null });
     expect(await f.repo.headSha()).toBe(head);
     expect(f.runAgent).not.toHaveBeenCalled();
@@ -384,7 +413,7 @@ describe('Dreaming.runOnce', () => {
     f.checkpoint(f.baseSha);
     f.addMessage('retry-me');
     f.runAgent.mockRejectedValueOnce(new Error('Temporary Luna failure'));
-    const dreaming = new Dreaming(f.ctx);
+    const dreaming = f.dreaming;
     const failed = await dreaming.runOnce();
     expect(failed.status).toBe('failed');
     expect(f.learnedAt('retry-me')).toBeNull();
@@ -401,7 +430,7 @@ describe('Dreaming.runOnce', () => {
     const f = await fixture();
     f.addMessage('pending-index');
     f.indexer.syncToHead.mockRejectedValueOnce(new Error('Index unavailable'));
-    const run = await new Dreaming(f.ctx).runOnce();
+    const run = await f.dreaming.runOnce();
     expect(run.status).toBe('failed');
     expect(run.error).toContain('Index unavailable');
     expect(await f.repo.readFile(`journal/${inputOf(f.runAgent.mock.calls[0][0]).date}.md`)).toBe(journalContent);
@@ -413,7 +442,7 @@ describe('Dreaming.runOnce', () => {
     const f = await fixture();
     f.addMessage('merged-before-push');
     f.repo.pushError = new Error('Backup unavailable');
-    const run = await new Dreaming(f.ctx).runOnce();
+    const run = await f.dreaming.runOnce();
     expect(run).toMatchObject({ status: 'failed', pushed: false });
     expect(run.error).toContain('Backup unavailable');
     expect(await f.repo.readFile(`journal/${inputOf(f.runAgent.mock.calls[0][0]).date}.md`)).toBe(journalContent);
@@ -431,7 +460,7 @@ describe('Dreaming.runOnce', () => {
       if (!concurrentSha) concurrentSha = await f.repo.change('wiki/later.md', concurrentContent);
       return originalLog(options);
     };
-    const dreaming = new Dreaming(f.ctx);
+    const dreaming = f.dreaming;
     const first = await dreaming.runOnce();
     expect(first).toMatchObject({ status: 'succeeded', toSha: sampledSha });
     const firstInput = inputOf(f.runAgent.mock.calls[0][0]);
@@ -459,12 +488,71 @@ describe('Dreaming.runOnce', () => {
       if (content !== null) await writeJournal(options, content);
       return { text: 'No valid journal.', toolCalls: 1 };
     });
-    const run = await new Dreaming(f.ctx).runOnce();
+    const run = await f.dreaming.runOnce();
     expect(run).toMatchObject({ status: 'failed', mergeSha: null, pushed: true });
     expect(await f.repo.headSha()).toBe(head);
     expect(await f.repo.readFile('wiki/partial.md')).toBeNull();
     expect(f.learnedAt('no-journal')).toBeNull();
     expect(f.indexer.syncToHead).not.toHaveBeenCalled();
     expect(f.repo.pushCount).toBe(1);
+  });
+});
+
+describe('DreamingService shutdown', () => {
+  it('waits for an in-flight run to finish indexing, learning, backup, and recording', async () => {
+    const f = await fixture();
+    f.addMessage('shutdown-pending');
+    const entered = deferred();
+    const release = deferred();
+    f.indexer.syncToHead.mockImplementationOnce(async () => {
+      entered.resolve();
+      await release.promise;
+      return { indexedSha: await f.repo.headSha(), changedFiles: 1 };
+    });
+    f.dreaming.start();
+    const pending = f.dreaming.runOnce();
+    await entered.promise;
+    let closed = false;
+    const closing = f.app.close().then(() => { closed = true; });
+    try {
+      await Promise.resolve();
+      expect(closed).toBe(false);
+      expect(f.learnedAt('shutdown-pending')).toBeNull();
+    } finally {
+      release.resolve();
+    }
+    await closing;
+    const run = await pending;
+    expect(run.status).toBe('succeeded');
+    expect(f.learnedAt('shutdown-pending')).toEqual(expect.any(String));
+    expect(await f.repo.git(['rev-parse', 'main'], f.repo.origin)).toBe(run.mergeSha);
+    expect(f.db.prepare('SELECT status, finished_at FROM dream_runs WHERE id = ?').get(run.id))
+      .toEqual({ status: 'succeeded', finished_at: run.finishedAt });
+  });
+});
+
+describe('registerDreamCommands', () => {
+  it.each(['succeeded', 'failed'] as const)('prints the %s run from a real Nest context and sets failure exit status', async (status) => {
+    const f = await fixture();
+    f.addMessage('cli-pending');
+    if (status === 'failed') f.runAgent.mockRejectedValueOnce(new Error('CLI Luna unavailable'));
+    const printed = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const previousExitCode = process.exitCode;
+    process.exitCode = undefined;
+    try {
+      const program = new Command();
+      registerDreamCommands(program, async () => f.app);
+      await program.parseAsync(['dream', 'run'], { from: 'user' });
+      const output = JSON.parse(printed.mock.calls[0][0] as string) as { id: string; status: string; pushed: boolean; error: string | null };
+      expect(output).toMatchObject({
+        status, pushed: true, error: status === 'failed' ? 'CLI Luna unavailable' : null,
+      });
+      expect(process.exitCode).toBe(status === 'failed' ? 1 : undefined);
+      expect(f.db.prepare('SELECT status FROM dream_runs WHERE id = ?').get(output.id)).toEqual({ status });
+      expect(f.learnedAt('cli-pending')).toEqual(status === 'failed' ? null : expect.any(String));
+    } finally {
+      process.exitCode = previousExitCode;
+      printed.mockRestore();
+    }
   });
 });

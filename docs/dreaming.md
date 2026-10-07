@@ -10,6 +10,15 @@ dreaming은 매일 변경된 지식을 검토·정리하고 일기를 남기는 
 
 ## 내용
 
+### Nest 모듈과 실행 수명
+
+`DreamingModule`은 `KnowledgeModule`, `LunaModule`, `RagModule`을 가져오고 `DreamRunsRepository`와 `DreamingService`를 제공한다. 외부 모듈에는 `DreamingService`를 내보낸다. 서비스는 지식 저장소, Luna, 인덱서, 검색 서비스와 `CONFIG`, `LOGGER` 토큰, 실행 기록 저장소를 생성자 DI로 받는다.
+
+`DreamRunsRepository`는 실행 기록 SQL, 성공 체크포인트 조회, 미학습 사용자 메시지 조회와 학습 완료 표시를 담당한다. `DreamRun`과 대화 입력 형식은 `dream-run.types.ts`에 두며, 서비스는 배치·머지·백업 흐름을 담당한다.
+
+HTTP 진입점인 `main.ts`만 스케줄러를 명시적으로 시작한다. `dreaming.commands.ts`의 `registerDreamCommands`는 Nest 애플리케이션 컨텍스트에서 서비스를 조회하므로 CLI는 스케줄러를 시작하지 않는다. 종료 훅은 스케줄러를 중단하고 진행 중인 배치가 끝날 때까지 기다린 뒤 반환하므로 DB 종료 전에 학습 완료 표시와 실행 기록 저장을 마친다.
+
+
 ### 실행 시각과 입력
 
 기본 실행 시각은 매일 03:00 `Asia/Seoul`이다. Croner가 `DREAM_CRON`과 `TZ_DREAM` 설정을 사용한다. `pnpm cli dream run` 또는 설치된 `llmwiki dream run`으로 즉시 실행할 수도 있다. 같은 프로세스에서 같은 지식 저장소를 대상으로 실행 중인 배치가 있으면 새 배치를 만들지 않고 기존 실행의 결과를 기다린다.

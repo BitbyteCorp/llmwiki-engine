@@ -13,9 +13,11 @@ MCP 엔드포인트는 `/mcp`이며, 전송 방식은 Streamable HTTP다. 클라
 
 서버는 **stateless** 방식을 사용한다. 인증을 통과한 POST마다 새 `McpServer`와 `StreamableHTTPServerTransport`를 만들고, `sessionIdGenerator: undefined`와 `enableJsonResponse: true`를 설정한다. 응답 연결이 닫히면 해당 서버와 전송을 정리한다. 응답에 `mcp-session-id`를 발급하지 않으며, 지속적인 MCP 세션이나 SSE 구독을 유지하지 않는다.
 
-각 요청은 `requireMcpAuth`로 다시 인증하고, 그 요청에서 확인한 사용자와 역할만 도구 핸들러에 연결한다. 따라서 이전 요청의 사용자 신원이나 권한을 재사용하지 않으며, 쓰기 작업의 소유자도 현재 요청의 사용자로 기록한다. SDK의 stateless 전송도 클라이언트 간 메시지 ID 충돌을 막기 위해 요청마다 새 전송을 요구한다. 비동기 쓰기 상태는 MCP 세션이 아니라 작업 큐에 보관하므로, 이후 별도 POST에서 `jobId`로 조회한다.
+각 요청은 `McpController`의 `McpAuthGuard`로 다시 인증하고, `@CurrentUser()`가 전달한 현재 사용자와 역할만 `McpService`의 도구 핸들러에 연결한다. 따라서 이전 요청의 사용자 신원이나 권한을 재사용하지 않으며, 쓰기 작업의 소유자도 현재 요청의 사용자로 기록한다. SDK의 stateless 전송도 클라이언트 간 메시지 ID 충돌을 막기 위해 요청마다 새 전송을 요구한다. 비동기 쓰기 상태는 MCP 세션이 아니라 작업 큐에 보관하므로, 이후 별도 POST에서 `jobId`로 조회한다.
 
 POST 요청은 `Content-Type: application/json`과 `Accept: application/json, text/event-stream`을 보낸다. JSON 응답을 선택한 서버라도 SDK가 두 미디어 타입을 모두 지원하는 `Accept` 헤더를 요구한다. 인증을 통과한 GET과 DELETE는 `Allow: POST` 헤더와 HTTP 405를 반환한다. GET으로 SSE를 구독하거나 DELETE로 세션을 종료하는 기능은 제공하지 않는다.
+
+`McpModule`은 인증·검색·지식 저장소·쓰기 작업 모듈을 명시적으로 가져온다. `McpService`는 `SearchService`, `KnowledgeRepo`, `WriteJobsService`를 DI로 받아 도구와 서버 지침을 구성하며, `McpController`는 전송의 연결·요청 처리·응답 종료 시 정리를 담당한다. Nest의 JSON 파서가 요청 본문을 먼저 읽으므로, 컨트롤러는 원래 Express 요청·응답과 이미 해석한 `req.body`를 함께 `transport.handleRequest`에 전달한다. SDK가 소비된 요청 스트림을 다시 읽게 하지 않는다.
 
 전송의 근거는 [공식 SDK의 stateless 예제](https://github.com/modelcontextprotocol/typescript-sdk/blob/v1.x/src/examples/server/simpleStatelessStreamableHttp.ts)와 [Streamable HTTP 명세](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#streamable-http)에 기록되어 있다.
 

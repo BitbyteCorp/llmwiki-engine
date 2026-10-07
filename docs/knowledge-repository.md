@@ -14,6 +14,8 @@
 예를 들어 당일의 변경이 main에 들어갔더라도 다음 백업 push 전에는 GitHub에 없을 수 있다. GitHub의 상태가 곧 최신 지식이라고 가정하지 않는다. 변경이 main에 반영되는 절차는 [쓰기 흐름](write-flow.md)에, 백업 실행 절차는 [dreaming](dreaming.md)에 기록한다.
 
 ### 엔진의 로컬 저장소 초기화
+`KnowledgeModule`은 설정과 로그를 주입받는 비동기 제공자로 `KnowledgeRepo.open`을 한 번 호출하고 저장소 객체를 다른 Nest 모듈에 내보낸다. git 데이터 접근은 `src/knowledge/repo.ts`의 `KnowledgeRepo`가 담당하며, 격리 편집을 위한 `Worktree`는 Nest 제공자가 아닌 일반 객체로 유지한다.
+
 주 클론은 `DATA_DIR/knowledge`에 두고, 작업 워크트리는 `DATA_DIR/worktrees/<작업 이름>`에 둔다. 작업 이름은 영문자·숫자로 시작하고 영문자·숫자·밑줄·하이픈만 포함하며, 브랜치는 `work/<작업 이름>`으로 만든다.
 
 `KNOWLEDGE_REPO_URL`이 있으면 처음 실행할 때 해당 저장소를 클론하고, 없으면 `git init -b main`으로 로컬 전용 저장소를 만든다. 기존 저장소에 main이 있으면 그 브랜치를 사용하고, origin/main만 있으면 로컬 main을 만들며, 다른 브랜치에만 커밋이 있으면 그 HEAD에서 main을 만든다. 빈 저장소는 초기 커밋을 만들어 main이 항상 실제 커밋을 가리키게 한다.

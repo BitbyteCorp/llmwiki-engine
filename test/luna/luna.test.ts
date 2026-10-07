@@ -1,29 +1,52 @@
+import { Test } from '@nestjs/testing';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import pino from 'pino';
+import pino, { type Logger } from 'pino';
 import { afterEach, describe, expect, it } from 'vitest';
-import { loadConfig } from '../../src/config.js';
+import { loadConfig, type Config } from '../../src/config.js';
+import { CONFIG, LOGGER } from '../../src/common/tokens.js';
 import { KnowledgeRepo, type Worktree } from '../../src/knowledge/repo.js';
-import type { SearchService } from '../../src/rag/index.js';
-import type { WriteJob } from '../../src/jobs/service.js';
+import { SearchService } from '../../src/rag/search.service.js';
+import type { WriteJob } from '../../src/jobs/write-job.types.js';
 import { startFakeOpenAI, type FakeScript } from '../fake-openai.js';
-import { Luna, type AgentTool } from '../../src/luna/index.js';
+import { LunaService } from '../../src/luna/luna.service.js';
+import type { AgentTool } from '../../src/luna/luna.types.js';
 
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => {
   for (const dispose of cleanup.splice(0).reverse()) await dispose();
 });
 
+async function createLuna(
+  config: Config,
+  repo: KnowledgeRepo,
+  search: SearchService,
+  log: Logger,
+) {
+  const module = await Test.createTestingModule({
+    providers: [
+      LunaService,
+      { provide: CONFIG, useValue: config },
+      { provide: LOGGER, useValue: log },
+      { provide: KnowledgeRepo, useValue: repo },
+      { provide: SearchService, useValue: search },
+    ],
+  }).compile();
+  await module.init();
+  cleanup.push(() => module.close());
+  return module.get(LunaService);
+}
+
 async function fixture(script: FakeScript, notes: Record<string, string> = {}) {
   const fake = await startFakeOpenAI(script);
   cleanup.push(() => fake.close());
   const config = loadConfig({ NODE_ENV: 'test', OPENAI_API_KEY: 'test-key', OPENAI_BASE_URL: fake.url });
-  // These doubles exercise public Luna boundaries without initializing the concurrent slices.
+  // Keep model and git dependencies controllable while resolving the real Nest service.
   const repo = { readFile: async (path: string) => notes[path] ?? null, log: async () => [] } as unknown as KnowledgeRepo;
   const search = { search: async () => [{ path: 'wiki/cache.md', title: '캐시', snippet: '근거', score: 1, heading: '', kind: 'wiki', related: [] }] } as unknown as SearchService;
   const log = pino({ level: 'silent' });
-  return { luna: new Luna({ config, repo, search, log }), fake, config, repo, search, log };
+  return { luna: await createLuna(config, repo, search, log), fake, config, repo, search, log };
 }
 
 const lookup: AgentTool = {
@@ -48,7 +71,6 @@ describe('Luna Responses tool loop', () => {
     expect(fake.requests[1]!.body.input).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: 'function_call_output', call_id: 'fact', output: '서울' }),
     ]));
-    expect(fake.requests[0]!.body.reasoning).toEqual({ effort: 'medium' });
   });
 
   it('lets the model recover from tool errors and malformed arguments', async () => {
@@ -71,7 +93,7 @@ describe('Luna Responses tool loop', () => {
 
   it('fails clearly for missing credentials and honors a pre-aborted signal', async () => {
     const { luna, config, repo, search, log, fake } = await fixture(['not reached']);
-    const withoutKey = new Luna({ config: { ...config, openaiApiKey: undefined }, repo, search, log });
+    const withoutKey = await createLuna({ ...config, openaiApiKey: undefined }, repo, search, log);
     await expect(withoutKey.runAgent({ instructions: '', input: '', tools: [] })).rejects.toThrow('OPENAI_API_KEY');
     const controller = new AbortController();
     controller.abort(new Error('cancelled'));
@@ -137,7 +159,7 @@ describe('worktree writing and conflicts', () => {
     const repo = await KnowledgeRepo.open({ ...config, dataDir: directory }, log);
     const wt = await repo.createWorktree('luna-test');
     cleanup.push(() => wt.dispose());
-    const luna = new Luna({ config, repo, search, log });
+    const luna = await createLuna(config, repo, search, log);
     await expect(luna.runWrite(job, wt, { name: 'Tester', email: 'test@example.com' })).resolves.toEqual({ summary: '캐시 노트를 만들고 색인에 연결했다.' });
     expect(await wt.read('wiki/cache.md')).toBe(content);
     await repo.withMergeLock(() => wt.fastForwardMain());

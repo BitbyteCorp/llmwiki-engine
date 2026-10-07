@@ -1,0 +1,129 @@
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { openDb, type Db } from '../db/index.js';
+import { ConversationsRepository } from './conversations.repository.js';
+
+const schemas = ['001_core.sql', '004_chat.sql'].map((name) =>
+  readFileSync(new URL(`../db/migrations/${name}`, import.meta.url), 'utf8'),
+);
+let dir: string;
+let db: Db;
+let store: ConversationsRepository;
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime('2026-10-07T01:00:00.000Z');
+  dir = mkdtempSync(join(tmpdir(), 'chat-storage-'));
+  db = openDb(join(dir, 'chat.sqlite'));
+  for (const schema of schemas) db.exec(schema);
+  db.prepare('INSERT INTO users (id, email, role, created_at) VALUES (?, ?, ?, ?)')
+    .run(1, 'one@example.test', 'viewer', '2026-10-07T00:00:00.000Z');
+  db.prepare('INSERT INTO users (id, email, role, created_at) VALUES (?, ?, ?, ?)')
+    .run(2, 'two@example.test', 'admin', '2026-10-07T00:00:00.000Z');
+  store = new ConversationsRepository(db);
+});
+
+afterEach(() => {
+  db?.close();
+  if (dir) rmSync(dir, { recursive: true, force: true });
+  vi.useRealTimers();
+});
+
+describe('ConversationsRepository', () => {
+  it('persists content and citation paths across reopening, preserving insertion order for equal timestamps', () => {
+    const conversation = store.create(1);
+    const first = store.addMessage(conversation.id, 1, 'user', 'Question\nwith Unicode 🐈');
+    const second = store.addMessage(conversation.id, 1, 'assistant', 'First answer', ['wiki/한글.md', 'wiki/"quoted".md']);
+    const third = store.addMessage(conversation.id, 1, 'user', 'Follow-up');
+    vi.setSystemTime('2026-10-07T01:00:01.000Z');
+    const fourth = store.addMessage(conversation.id, 1, 'assistant', 'Final answer', ['wiki/final.md']);
+    db.close();
+    db = openDb(join(dir, 'chat.sqlite'));
+    store = new ConversationsRepository(db);
+
+    expect(store.messages(conversation.id, 1)).toEqual([first, second, third, fourth]);
+    expect(store.messages(conversation.id, 1).map(({ content, citations }) => ({ content, citations }))).toEqual([
+      { content: 'Question\nwith Unicode 🐈', citations: [] },
+      { content: 'First answer', citations: ['wiki/한글.md', 'wiki/"quoted".md'] },
+      { content: 'Follow-up', citations: [] },
+      { content: 'Final answer', citations: ['wiki/final.md'] },
+    ]);
+    expect(store.get(conversation.id, 1)).toMatchObject({
+      title: 'Question with Unicode 🐈',
+      createdAt: '2026-10-07T01:00:00.000Z',
+      updatedAt: '2026-10-07T01:00:01.000Z',
+    });
+  });
+
+  it('isolates every read and mutation by owner, including an administrator', () => {
+    const own = store.create(1, 'Private conversation');
+    const other = store.create(2, 'Another conversation');
+    const message = store.addMessage(own.id, 1, 'user', 'Private facts');
+    vi.setSystemTime('2026-10-07T02:00:00.000Z');
+
+    expect(store.list(2)).toEqual([other]);
+    expect(store.get(own.id, 2)).toBeNull();
+    expect(store.messages(own.id, 2)).toEqual([]);
+    expect(store.addMessage(own.id, 2, 'user', 'Intrusion')).toBeNull();
+    expect(store.addMessage(own.id, 2, 'assistant', 'Intrusion')).toBeNull();
+    expect(store.delete(own.id, 2)).toBe(false);
+    expect(store.get(own.id, 1)).toEqual(own);
+    expect(store.messages(own.id, 1)).toEqual([message]);
+    expect(store.get('missing', 1)).toBeNull();
+    expect(store.messages('missing', 1)).toEqual([]);
+    expect(store.addMessage('missing', 1, 'user', 'No conversation')).toBeNull();
+    expect(store.delete('missing', 1)).toBe(false);
+  });
+
+  it('normalizes and truncates the first user title by Unicode codepoints without retitling', () => {
+    const conversation = store.create(1);
+    store.addMessage(conversation.id, 1, 'assistant', 'An assistant cannot name the conversation');
+    store.addMessage(conversation.id, 1, 'user', ` \tHello\n\r world   ${'🐈'.repeat(75)} ending`);
+    expect(store.get(conversation.id, 1)?.title).toBe(`Hello world ${'🐈'.repeat(68)}`);
+    store.addMessage(conversation.id, 1, 'user', 'A new topic');
+    expect(store.get(conversation.id, 1)?.title).toBe(`Hello world ${'🐈'.repeat(68)}`);
+
+    const named = store.create(1, 'Chosen title');
+    store.addMessage(named.id, 1, 'user', 'Do not replace my title');
+    expect(store.get(named.id, 1)?.title).toBe('Chosen title');
+  });
+
+  it('does not use a later user message to title a conversation whose first user message is whitespace', () => {
+    const conversation = store.create(1);
+    store.addMessage(conversation.id, 1, 'user', '\n \t');
+    store.addMessage(conversation.id, 1, 'user', 'Later meaningful text');
+    expect(store.get(conversation.id, 1)?.title).toBe('');
+  });
+
+  it('lists recently active conversations first without changing their creation times', () => {
+    const first = store.create(1, 'First');
+    vi.setSystemTime('2026-10-07T01:00:01.000Z');
+    const second = store.create(1, 'Second');
+    expect(store.list(1).map(({ id }) => id)).toEqual([second.id, first.id]);
+    vi.setSystemTime('2026-10-07T01:00:02.000Z');
+    store.addMessage(first.id, 1, 'assistant', 'Activity');
+    expect(store.list(1)).toEqual([
+      { ...first, updatedAt: '2026-10-07T01:00:02.000Z' },
+      second,
+    ]);
+  });
+
+  it('cascades conversation deletion to persisted messages and leaves other records intact', () => {
+    const removed = store.create(1, 'Delete this');
+    const kept = store.create(1, 'Keep this');
+    store.addMessage(removed.id, 1, 'user', 'Delete this message');
+    store.addMessage(removed.id, 1, 'assistant', 'Delete these citations', ['wiki/remove.md']);
+    const keptMessage = store.addMessage(kept.id, 1, 'user', 'Keep this message');
+
+    expect(store.delete(removed.id, 1)).toBe(true);
+    expect(store.get(removed.id, 1)).toBeNull();
+    expect(store.messages(removed.id, 1)).toEqual([]);
+    // Query the migration boundary too: ownership filtering alone would hide orphan rows.
+    expect(db.prepare('SELECT id FROM messages WHERE conversation_id = ?').all(removed.id)).toEqual([]);
+    expect(store.messages(kept.id, 1)).toEqual([keptMessage]);
+    expect(store.list(1)).toEqual([kept]);
+    expect(store.delete(removed.id, 1)).toBe(false);
+  });
+});

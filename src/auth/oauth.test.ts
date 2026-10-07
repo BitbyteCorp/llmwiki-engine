@@ -1,15 +1,32 @@
 import { createHash } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
+import { Controller, Get, Global, Module, Req, Res, UseGuards } from '@nestjs/common';
+import { ExpressAdapter } from '@nestjs/platform-express';
+import { Test } from '@nestjs/testing';
 import cookieParser from 'cookie-parser';
-import express, { type ErrorRequestHandler } from 'express';
+import express, { type Request, type Response } from 'express';
 import { exportJWK, generateKeyPair, SignJWT } from 'jose';
 import { afterEach, describe, expect, it } from 'vitest';
+import pino from 'pino';
 import { loadConfig } from '../config.js';
-import type { AppContext } from '../context.js';
 import { openDb, runMigrations } from '../db/index.js';
-import { requireMcpAuth, UserService } from './index.js';
-import type { GoogleIssuer } from './google.js';
-import { createAuthRouter } from './oauth.js';
+import { CONFIG, DB, LOGGER } from '../common/tokens.js';
+import { configureApp } from '../common/http/configure-app.js';
+import { HttpExceptionFilter } from '../common/filters/http-exception.filter.js';
+import { AuthModule } from './auth.module.js';
+import { UsersService } from './users.service.js';
+import { GOOGLE_ISSUER } from './google-oidc.service.js';
+import type { GoogleIssuer } from './google-oidc.types.js';
+import { McpAuthGuard } from './guards/mcp-auth.guard.js';
+
+@Controller('mcp')
+@UseGuards(McpAuthGuard)
+class ProtectedController {
+  @Get()
+  get(@Req() req: Request, @Res() res: Response): void {
+    res.json({ user: req.user });
+  }
+}
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -53,9 +70,6 @@ async function setup(options: { denyGoogle?: boolean; allowedDomains?: string[] 
   const db = openDb(':memory:');
   cleanups.push(() => { db.close(); });
   runMigrations(db);
-  const users = new UserService(db);
-  const user = users.create({ email: 'admin@example.com', name: 'Admin', role: 'admin' });
-  if (options.allowedDomains) users.setSettings({ allowedDomains: options.allowedDomains });
   const keys = await generateKeyPair('RS256');
   const jwk = { ...await exportJWK(keys.publicKey), kid: 'oauth-test', alg: 'RS256', use: 'sig' };
   const pending = new Map<string, { nonce: string; challenge: string; redirectUri: string }>();
@@ -104,14 +118,31 @@ async function setup(options: { denyGoogle?: boolean; allowedDomains?: string[] 
   const app = express();
   const url = await listen(createServer(app));
   const config = loadConfig({ NODE_ENV: 'test', PUBLIC_URL: url, GOOGLE_CLIENT_ID: 'test', GOOGLE_CLIENT_SECRET: 'test', SESSION_SECRET: 'oauth-test-secret' });
-  const ctx = { db, config, users, log: { error() {}, warn() {}, info() {} } } as unknown as AppContext;
-  app.use(cookieParser(config.sessionSecret), express.json());
-  app.use(createAuthRouter(ctx, issuer));
-  app.get('/mcp', requireMcpAuth(ctx), (req, res) => res.json({ user: req.user }));
-  const errors: ErrorRequestHandler = (error: Error & { status?: number; code?: string }, _req, res, _next) => {
-    res.status(error.status ?? 500).json({ error: { code: error.code, message: error.message } });
-  };
-  app.use(errors);
+  const logger = pino({ enabled: false });
+  @Global()
+  @Module({
+    providers: [
+      { provide: CONFIG, useValue: config },
+      { provide: DB, useValue: db },
+      { provide: LOGGER, useValue: logger },
+    ],
+    exports: [CONFIG, DB, LOGGER],
+  })
+  class TestDependenciesModule {}
+  const module = await Test.createTestingModule({
+    imports: [TestDependenciesModule, AuthModule],
+    controllers: [ProtectedController],
+    providers: [HttpExceptionFilter],
+  }).overrideProvider(GOOGLE_ISSUER).useValue(issuer).compile();
+  const users = module.get(UsersService);
+  const user = users.create({ email: 'admin@example.com', name: 'Admin', role: 'admin' });
+  if (options.allowedDomains) users.setSettings({ allowedDomains: options.allowedDomains });
+  const nest = module.createNestApplication(new ExpressAdapter(app), { logger: false });
+  cleanups.push(async () => { await nest.close(); });
+  configureApp(nest);
+  nest.use(cookieParser(config.sessionSecret));
+  nest.useGlobalFilters(module.get(HttpExceptionFilter));
+  await nest.init();
 
   async function form(path: string, values: Record<string, string>) {
     return fetch(`${url}${path}`, { method: 'POST', body: new URLSearchParams(values), redirect: 'manual' });

@@ -11,9 +11,7 @@ COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
 COPY . .
-RUN mkdir -p web/dist \
-    && if [ -f web/package.json ]; then pnpm --dir web install --frozen-lockfile; fi \
-    && pnpm build \
+RUN pnpm build \
     && pnpm prune --prod
 
 FROM node:24-bookworm-slim AS runtime
@@ -30,7 +28,9 @@ WORKDIR /app
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
-COPY --from=build /app/web/dist ./web/dist
+COPY --chown=node:node --from=build /app/web/.next ./web/.next
+COPY --from=build /app/web/public ./web/public
+COPY --from=build /app/web/next.config.ts ./web/next.config.ts
 
 RUN chmod +x /app/dist/cli.js \
     && ln -s /app/dist/cli.js /usr/local/bin/llmwiki \

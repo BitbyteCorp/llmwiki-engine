@@ -7,6 +7,16 @@
 
 ## 내용
 
+### Nest 모듈 구성
+
+`AuthModule`은 사용자·세션·Google OIDC·OAuth 제공자와 인증 컨트롤러를 등록한다. `UsersRepository`와 `OAuthRepository`는 SQL 데이터 접근을 담당하며, `UsersService`는 사용자 검증·로그인 정책·마지막 관리자 보호를 담당한다. `SessionsService`는 서명된 쿠키와 DB 세션을 관리하고, `GoogleOidcService`는 브라우저에 결합된 OIDC 요청과 Google 신원 검증을 담당한다. Google issuer는 `GOOGLE_ISSUER` 제공자 토큰으로 주입하므로 테스트에서는 로컬 issuer로 교체한다.
+
+인증 모듈은 웹과 MCP 모듈에 사용자·세션 서비스와 가드를 내보낸다. Nest는 컨트롤러에 지정한 가드를 해당 컨트롤러 모듈의 DI 범위에서도 생성하므로, `McpAuthGuard`가 의존하는 `OAuthService`도 내보내 MCP 모듈에서 주입을 해결한다. 모듈 간 순환 의존은 두지 않는다.
+
+`AuthController`는 `/auth/*`, `OAuthController`는 `/oauth/*`와 `/.well-known/*`를 제공한다. OAuth 서비스는 클라이언트 검증과 코드·토큰 수명 주기를 담당한다. 리디렉션과 OAuth 오류 응답은 Express 응답 객체를 통해 기존 상태·헤더·본문을 유지하며, 토큰과 폐기 요청은 URL-encoded 폼을 받는다. 웹 API는 `SessionGuard`로 현재 사용자를 확인하고 `RolesGuard`와 `@Roles()`로 최소 역할을 검사한다. 역할 메타데이터가 없으면 `viewer`가 최소 역할이다. `@CurrentUser()`는 가드가 설정한 요청 사용자를 컨트롤러에 전달한다.
+
+CLI의 `user add|role|list`는 `auth.commands.ts`에 정의하며, 지연 생성한 Nest 애플리케이션 컨텍스트에서 `UsersService`를 조회한다. 인증 모듈은 HTTP 실행과 CLI 실행 모두에서 같은 제공자를 사용하며, 별도 Express 라우터나 서비스들을 묶어 전달하는 기존 `AppContext` 객체를 두지 않는다.
+
 ### 웹 로그인과 접근 제어
 
 웹은 Google OAuth의 OpenID Connect 로그인을 사용한다. 허용 도메인은 ID 토큰의 `hd` 클레임과 이메일 도메인을 함께 검사한다. 로그인 성공만으로 접근을 허용하지 않고, Workspace 도메인과 이메일 도메인이 허용 설정에 맞는지도 확인한다.
@@ -51,7 +61,7 @@ llmwiki user list
 - `/oauth/token`은 PKCE를 검증해 1시간 액세스 토큰과 30일 리프레시 토큰을 발급한다. 리프레시 때 새 토큰을 발급하고 이전 리프레시 토큰을 폐기한다. `/oauth/revoke`로 액세스 토큰을 폐기할 수 있으며, 리프레시 토큰을 폐기하면 같은 발급 계열의 액세스·리프레시 토큰도 폐기한다. DB에는 코드·토큰의 SHA-256 해시만 저장한다.
 - MCP 미인증 요청은 401과 `WWW-Authenticate: Bearer …, resource_metadata="…/.well-known/oauth-protected-resource/mcp"`를 반환한다. 토큰 검증 후 현재 사용자 역할을 다시 조회하므로 역할 변경은 다음 요청부터 적용된다.
 
-MCP SDK의 `requireBearerAuth`를 사용해 Bearer 파싱, 만료·리소스 검사, 표준 오류 헤더를 재사용한다. `mcpAuthRouter`와 `OAuthServerProvider`는 사용하지 않는다. 브라우저에 결합된 Google 로그인 요청과 공용 콜백, DB 트랜잭션 기반 코드·토큰 수명 주기를 같은 모듈에서 처리하는 쪽이 어댑터 중복을 줄이기 때문이다.
+`McpAuthGuard` 안에서 MCP SDK의 `requireBearerAuth`를 사용해 Bearer 파싱, 만료·리소스 검사와 표준 오류 헤더를 재사용한다. Nest가 Express 어댑터를 사용하므로 요청·응답 객체를 그대로 전달할 수 있으며, SDK가 이미 오류 응답을 보낸 경우 가드는 컨트롤러 실행을 막고 전역 오류 필터는 전송된 응답을 덮어쓰지 않는다. 따라서 인증 파싱을 다시 구현하지 않고 기존 OAuth 오류 형식과 `WWW-Authenticate`를 유지한다. `mcpAuthRouter`와 `OAuthServerProvider`는 사용하지 않는다. 브라우저에 결합된 Google 로그인 요청과 공용 콜백, DB 트랜잭션 기반 코드·토큰 수명 주기를 같은 모듈에서 처리하는 쪽이 어댑터 중복을 줄이기 때문이다.
 
 ### MCP 로그인 흐름
 

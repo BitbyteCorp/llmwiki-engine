@@ -1,10 +1,12 @@
 import Database from 'better-sqlite3';
 import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { UserService, type Role, type Settings } from './users.js';
+import { UsersRepository } from './users.repository.js';
+import { UsersService } from './users.service.js';
+import type { Role, Settings } from './users.types.js';
 
 let db: Database.Database;
-let users: UserService;
+let users: UsersService;
 const loginTime = '2026-10-07T12:00:00.000Z';
 
 beforeEach(() => {
@@ -13,7 +15,7 @@ beforeEach(() => {
   db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   db.exec(readFileSync(new URL('../db/migrations/001_core.sql', import.meta.url), 'utf8'));
-  users = new UserService(db);
+  users = new UsersService(new UsersRepository(db));
 });
 
 afterEach(() => {
@@ -124,7 +126,7 @@ describe('user and settings validation', () => {
     { email: 'valid@example.com', role: 'owner' },
     { email: 'valid@example.com', role: 'viewer', name: 42 },
   ])('rejects invalid registration %#', (input) => {
-    expect(() => users.create(input as Parameters<UserService['create']>[0])).toThrow(expect.objectContaining({ status: 400, code: 'invalid_request' }));
+    expect(() => users.create(input as Parameters<UsersService['create']>[0])).toThrow(expect.objectContaining({ status: 400, code: 'invalid_request' }));
     expect(users.list()).toEqual([]);
   });
 
@@ -144,7 +146,7 @@ describe('user and settings validation', () => {
 
   it('persists partial settings without replacing unrelated settings', () => {
     users.setSettings({ allowedDomains: ['EXAMPLE.COM'] });
-    const reopenedService = new UserService(db);
+    const reopenedService = new UsersService(new UsersRepository(db));
     expect(reopenedService.setSettings({ allowlistEnabled: false })).toEqual({ allowlistEnabled: false, allowedDomains: ['example.com'] });
     expect(users.getSettings()).toEqual({ allowlistEnabled: false, allowedDomains: ['example.com'] });
     expect(users.setSettings({ allowedDomains: [] })).toEqual({ allowlistEnabled: false, allowedDomains: [] });

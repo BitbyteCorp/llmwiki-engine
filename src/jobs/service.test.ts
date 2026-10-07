@@ -5,15 +5,20 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import pino from 'pino';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { UsersRepository } from '../auth/users.repository.js';
+import { UsersService } from '../auth/users.service.js';
 import { loadConfig } from '../config.js';
-import type { AppContext } from '../context.js';
-import { openDb } from '../db/index.js';
+import { openDb, type Db } from '../db/index.js';
 import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
-import { WriteJobService, type WriteJob } from './service.js';
+import type { LunaService } from '../luna/luna.service.js';
+import type { IndexerService } from '../rag/indexer.service.js';
+import type { WriteJob } from './write-job.types.js';
+import { WriteJobsRepository } from './write-jobs.repository.js';
+import { WriteJobsService } from './write-jobs.service.js';
 
 const git = promisify(execFile);
 const author = { name: 'Requesting User', email: 'user@example.com' };
-const fixtures: Array<{ dir: string; ctx: AppContext }> = [];
+const fixtures: Array<{ dir: string; db: Db; jobs: WriteJobsService }> = [];
 
 async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), 'llmwiki-jobs-'));
@@ -25,23 +30,24 @@ async function fixture() {
   db.prepare('INSERT INTO users(id,email,name,role,created_at) VALUES (1,?,?,?,?)')
     .run(author.email, author.name, 'editor', new Date().toISOString());
   const repo = await KnowledgeRepo.open(config, log);
-  const ctx = {
-    config, db, log, repo,
-    luna: {
-      runWrite: vi.fn(async (_job: WriteJob, wt: Worktree) => {
-        await wt.write('wiki/result.md', 'saved knowledge\n');
-        return { summary: 'Save useful knowledge\nDetails of the update.' };
-      }),
-      resolveConflicts: vi.fn(async () => {}),
-    },
-    indexer: { syncToHead: vi.fn(async () => ({ indexedSha: await repo.headSha(), changedFiles: 1 })) },
-  } as unknown as AppContext;
-  ctx.jobs = new WriteJobService(ctx);
-  fixtures.push({ dir, ctx });
-  return { dir, ctx, jobs: ctx.jobs };
+  const luna = {
+    runWrite: vi.fn(async (_job: WriteJob, wt: Worktree) => {
+      await wt.write('wiki/result.md', 'saved knowledge\n');
+      return { summary: 'Save useful knowledge\nDetails of the update.' };
+    }),
+    resolveConflicts: vi.fn(async () => {}),
+  } as unknown as LunaService;
+  const indexer = {
+    syncToHead: vi.fn(async () => ({ indexedSha: await repo.headSha(), changedFiles: 1 })),
+  } as unknown as IndexerService;
+  const users = new UsersService(new UsersRepository(db));
+  const jobs = new WriteJobsService(new WriteJobsRepository(db), luna, indexer, repo, users, log);
+  const ctx = { config, db, log, repo, luna, indexer, users, jobs };
+  fixtures.push({ dir, db, jobs });
+  return { dir, ctx, jobs };
 }
 
-async function completed(jobs: WriteJobService, id: string): Promise<WriteJob> {
+async function completed(jobs: WriteJobsService, id: string): Promise<WriteJob> {
   await vi.waitFor(() => {
     expect(['succeeded', 'failed']).toContain(jobs.get(id)?.status);
   }, { timeout: 10000, interval: 10 });
@@ -61,14 +67,14 @@ async function advance(repo: KnowledgeRepo, name: string, content: string) {
 }
 
 afterEach(async () => {
-  for (const { dir, ctx } of fixtures.splice(0)) {
-    await ctx.jobs.stop();
-    ctx.db.close();
+  for (const { dir, db, jobs } of fixtures.splice(0)) {
+    await jobs.stop();
+    db.close();
     await rm(dir, { recursive: true, force: true });
   }
 });
 
-describe('WriteJobService with real git and a Luna double', () => {
+describe('WriteJobsService with real git and a Luna double', () => {
   it('persists lifecycle, commits leftovers as requester, merges and indexes main', async () => {
     const { dir, ctx, jobs } = await fixture();
     const observed: string[] = [];

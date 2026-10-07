@@ -3,12 +3,15 @@ import { mkdtemp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { Test } from '@nestjs/testing';
 import pino from 'pino';
 import { afterEach, describe, expect, it } from 'vitest';
 import { loadConfig } from '../../src/config.js';
 import { openDb } from '../../src/db/index.js';
-import type { KnowledgeRepo, FileChange } from '../../src/knowledge/repo.js';
-import { Indexer, SearchService } from '../../src/rag/index.js';
+import { CONFIG, DB, LOGGER } from '../../src/common/tokens.js';
+import { KnowledgeRepo, type FileChange } from '../../src/knowledge/repo.js';
+import { IndexerService } from '../../src/rag/indexer.service.js';
+import { SearchService } from '../../src/rag/search.service.js';
 import { startFakeOpenAI } from '../fake-openai.js';
 
 const exec = promisify(execFile);
@@ -63,10 +66,20 @@ async function fixture(key = false) {
   const config = loadConfig({ NODE_ENV: 'test', EMBEDDING_DIMENSIONS: '8',
     ...(fake ? { OPENAI_API_KEY: 'fake', OPENAI_BASE_URL: fake.url } : {}) });
   const log = pino({ level: 'silent' });
-  const ctx = { config, db, repo: repo as unknown as KnowledgeRepo, log };
-  const indexer = new Indexer(ctx);
-  const search = new SearchService(ctx);
-  return { ...ctx, repo, fake, indexer, search };
+  const app = await Test.createTestingModule({
+    providers: [
+      IndexerService, SearchService,
+      { provide: CONFIG, useValue: config },
+      { provide: DB, useValue: db },
+      { provide: LOGGER, useValue: log },
+      { provide: KnowledgeRepo, useValue: repo },
+    ],
+  }).compile();
+  cleanup.push(() => app.close());
+  await app.init();
+  const indexer = app.get(IndexerService);
+  const search = app.get(SearchService);
+  return { config, db, log, repo, fake, indexer, search };
 }
 
 describe('main-derived index', () => {

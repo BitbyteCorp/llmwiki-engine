@@ -3,7 +3,9 @@
 **/dist
 **/coverage
 .pnpm-store
-.vite
+**/.next
+**/*.tsbuildinfo
+**/.swc
 .env
 .env.*
 !.env.example

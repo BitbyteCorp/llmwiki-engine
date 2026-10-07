@@ -16,9 +16,13 @@ MCP `write`는 비동기로 처리하며, 호출 즉시 작업 ID를 반환한�
 
 `write_jobs`에는 `queued → running → merging → succeeded` 전이를 저장한다. 실패 시에는 `failed`로 끝나며 오류 메시지를 남긴다. 생성·시작·종료 시각은 UTC ISO-8601 문자열이다. 작업의 요약, 작업 브랜치에서 만든 커밋 SHA 배열, 최종 main SHA도 기록한다. main에서 이미 존재하던 다른 작업의 커밋은 이 배열에 넣지 않으며, 이번 작업의 머지 커밋은 포함한다.
 
+`JobsModule`은 `WriteJobsRepository`와 `WriteJobsService`를 제공자로 등록하고 서비스를 다른 모듈에 내보낸다. `write-job.types.ts`의 `WriteJob`이 작업 데이터 형식을 정의하며, `write-jobs.repository.ts`가 SQLite 작업 조회와 상태 갱신 SQL을 맡는다. `write-jobs.service.ts`의 서비스는 저장소, `LunaService`, `IndexerService`, `KnowledgeRepo`, `UsersService`와 로그를 생성자 DI로 받아 워커와 머지 흐름을 수행한다. 요청자 조회는 `UsersService`를 통해 사용자 모듈의 저장소에 위임한다.
+
 현재 쓰기 큐는 Luna 실행 하나만 사용하는 단일 워커다. 대기 작업은 생성 시각 순으로 처리하고 같은 시각이면 삽입 순서를 따른다. dreaming처럼 큐 밖에서 실행하는 작업과의 main 경합도 저장소의 프로세스 내 머지 락으로 직렬화한다. 이 구성은 하나의 엔진 프로세스를 전제로 하며 여러 엔진을 같은 데이터 디렉터리에 실행하지 않는다.
 
 엔진을 시작할 때 이전 실행의 `running`·`merging` 작업은 중단 사유와 종료 시각을 기록해 `failed`로 바꾼다. `queued` 작업만 다시 처리한다. 종료 요청은 현재 실행 중인 작업을 끝까지 기다리고 다음 대기 작업을 시작하지 않는다.
+
+워커 시작은 HTTP 진입점 `main.ts`에서 `WriteJobsService.start()`를 명시적으로 호출한다. 모듈 초기화나 CLI 애플리케이션 컨텍스트 생성만으로는 큐를 소비하지 않는다. 애플리케이션 종료 훅은 `stop()`을 기다려 실행 중인 작업과 워크트리 정리가 끝난 뒤 공용 DB 연결을 닫을 수 있게 한다.
 
 ### 일곱 단계
 
