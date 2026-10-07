@@ -9,6 +9,11 @@ import { KnowledgeRepo } from '../src/knowledge/repo.js';
 import { LunaService } from '../src/luna/luna.service.js';
 import { SearchService } from '../src/rag/search.service.js';
 import { startFakeOpenAI, type FakeScript } from './fake-openai.js';
+import { AclService } from '../src/acl/acl.service.js';
+import { AuditService } from '../src/audit/audit.service.js';
+import { UsersService } from '../src/auth/users.service.js';
+import { UsersRepository } from '../src/auth/users.repository.js';
+import { openDb, runMigrations } from '../src/db/index.js';
 
 const disposals: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const dispose of disposals.splice(0).reverse()) await dispose(); });
@@ -30,7 +35,11 @@ async function fixture(script: FakeScript, notes: Record<string, string> = {}) {
     } finally { await wt.dispose(); }
   }
   const search = { search: async () => [{ path: 'wiki/facts.md', title: 'Facts' }] } as unknown as SearchService;
-  return { luna: new LunaService(config, log, repo, search), fake, config, repo };
+  const db = openDb(':memory:');
+  runMigrations(db);
+  disposals.push(async () => db.close());
+  const acl = new AclService(db, new UsersService(new UsersRepository(db)), new AuditService(db));
+  return { luna: new LunaService(config, log, repo, search, acl), fake, config, repo };
 }
 
 describe('grounded chat citations', () => {

@@ -23,9 +23,11 @@ import { WriteJobsRepository } from '../src/jobs/write-jobs.repository.js';
 import { KnowledgeRepo } from '../src/knowledge/repo.js';
 import type { IndexerService } from '../src/rag/indexer.service.js';
 import { CHAT_UPLOAD_LIMIT, UploadsService, type Upload } from '../src/uploads/uploads.service.js';
+import { AclService } from '../src/acl/acl.service.js';
+import { AuditService } from '../src/audit/audit.service.js';
 
 const stamp = '2026-01-01T00:00:00.000Z';
-const schemas = ['001_core.sql', '003_jobs.sql', '004_chat.sql', '007_history.sql', '010_chat.sql'].map((name) =>
+const schemas = ['001_core.sql', '002_auth.sql', '003_jobs.sql', '004_chat.sql', '007_history.sql', '010_chat.sql', '011_platform.sql', '013_acl.sql'].map((name) =>
   readFileSync(new URL(`../src/db/migrations/${name}`, import.meta.url), 'utf8'));
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1H8AAAAASUVORK5CYII=', 'base64');
 let directory: string;
@@ -49,10 +51,12 @@ beforeEach(async () => {
   const events = new EventsService();
   const indexer = { syncToHead: async () => ({ indexedSha: await repo.headSha(), changedFiles: 1 }) } as IndexerService;
   const repository = new WriteJobsRepository(db);
-  const writer = new NoteWriterService(repository, repo, users, indexer, events, logger);
+  const acl = new AclService(db, users, new AuditService(db));
+  const writer = new NoteWriterService(repository, repo, users, indexer, events, logger, acl);
   const module = await Test.createTestingModule({
     controllers: [UploadsController],
     providers: [UploadsService, RolesGuard, { provide: CONFIG, useValue: config }, { provide: DB, useValue: db },
+      { provide: AclService, useValue: acl },
       { provide: LOGGER, useValue: logger }, { provide: NoteWriterService, useValue: writer }],
   }).overrideGuard(SessionGuard).useValue({
     canActivate(context: { switchToHttp(): { getRequest(): Request } }) {

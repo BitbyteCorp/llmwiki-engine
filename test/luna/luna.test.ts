@@ -12,6 +12,11 @@ import type { WriteJob } from '../../src/jobs/write-job.types.js';
 import { startFakeOpenAI, type FakeScript } from '../fake-openai.js';
 import { LunaService } from '../../src/luna/luna.service.js';
 import type { AgentTool } from '../../src/luna/luna.types.js';
+import { AclService } from '../../src/acl/acl.service.js';
+import { AuditService } from '../../src/audit/audit.service.js';
+import { UsersService } from '../../src/auth/users.service.js';
+import { UsersRepository } from '../../src/auth/users.repository.js';
+import { openDb, runMigrations } from '../../src/db/index.js';
 
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => {
@@ -24,6 +29,10 @@ async function createLuna(
   search: SearchService,
   log: Logger,
 ) {
+  const db = openDb(':memory:');
+  runMigrations(db);
+  cleanup.push(async () => db.close());
+  const acl = new AclService(db, new UsersService(new UsersRepository(db)), new AuditService(db));
   const module = await Test.createTestingModule({
     providers: [
       LunaService,
@@ -31,6 +40,7 @@ async function createLuna(
       { provide: LOGGER, useValue: log },
       { provide: KnowledgeRepo, useValue: repo },
       { provide: SearchService, useValue: search },
+      { provide: AclService, useValue: acl },
     ],
   }).compile();
   await module.init();

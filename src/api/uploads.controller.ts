@@ -11,6 +11,7 @@ import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe.js';
 import { IMPORT_UPLOAD_LIMIT, UploadsService } from '../uploads/uploads.service.js';
 import { ApiError } from './api-error.js';
 import { uploadPurposeSchema, uploadSaveSchema } from './api.dto.js';
+import { AclService } from '../acl/acl.service.js';
 
 interface MultipartFile { originalname: string; mimetype: string; buffer: Buffer }
 
@@ -23,7 +24,7 @@ function disposition(name: string): string {
 @Controller('api/uploads')
 @UseGuards(SessionGuard, RolesGuard)
 export class UploadsController {
-  constructor(private readonly uploads: UploadsService) {}
+  constructor(private readonly uploads: UploadsService, private readonly acl: AclService) {}
 
   @Post()
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: IMPORT_UPLOAD_LIMIT, files: 1, fields: 1, fieldSize: 32 } }))
@@ -51,6 +52,7 @@ export class UploadsController {
   @Post(':id/save')
   @Roles('editor')
   save(@CurrentUser() user: User, @Param('id') id: string, @Body(new ZodValidationPipe(uploadSaveSchema)) body: z.infer<typeof uploadSaveSchema>) {
+    this.acl.assertWrite(user, body.path);
     return this.uploads.saveAsset(user.id, id, body.path, body.baseSha);
   }
 }

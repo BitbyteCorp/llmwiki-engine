@@ -6,6 +6,9 @@ import { DB } from '../common/tokens.js';
 import type { Db } from '../db/index.js';
 import { ApiError, notFound } from './api-error.js';
 import type { Generation, GenerationEvent, GenerationStatus } from './generations.types.js';
+import { AclService } from '../acl/acl.service.js';
+import { chatUser, generationSources, generationTracked, redactMessage } from './acl-chat.js';
+import type { Message } from './conversations.types.js';
 export type { Generation, GenerationEvent } from './generations.types.js';
 
 const columns = `g.id, g.conversation_id AS conversationId, g.user_message_id AS userMessageId,
@@ -29,7 +32,7 @@ export class GenerationsService implements OnModuleInit, OnModuleDestroy {
   private readonly frames: Statement<[string, number], Frame>;
   private readonly persistFrame: (id: string, frame: Frame, status: GenerationStatus | null) => boolean;
 
-  constructor(@Inject(DB) private readonly db: Db) {
+  constructor(@Inject(DB) private readonly db: Db, private readonly acl: AclService) {
     this.memberGeneration = db.prepare(`SELECT ${columns} FROM generations g
       JOIN conversation_members m ON m.conversation_id = g.conversation_id WHERE g.id = ? AND m.user_id = ?`);
     this.membership = db.prepare('SELECT role FROM conversation_members WHERE conversation_id = ? AND user_id = ?');
@@ -101,7 +104,7 @@ export class GenerationsService implements OnModuleInit, OnModuleDestroy {
       this.db.prepare(`INSERT INTO generations (id,conversation_id,user_message_id,assistant_message_id,user_id,client_id,status,model,effort,created_at)
         VALUES (?,?,?,?,?,?,?,?,?,?)`).run(generation.id, generation.conversationId, generation.userMessageId, generation.assistantMessageId,
         generation.userId, generation.clientId, generation.status, generation.model, generation.effort, generation.createdAt);
-      this.emit(generation.id, job, 'generation', { generationId: generation.id, userMessageId: generation.userMessageId });
+      this.emit(generation.id, job, 'generation', { generationId: generation.id, userMessageId: generation.userMessageId, sourceTracking: true });
       this.emit(generation.id, job, 'status', { phase: 'queued' });
     })();
     this.jobs.set(generation.id, job);
@@ -137,6 +140,11 @@ export class GenerationsService implements OnModuleInit, OnModuleDestroy {
 
   stream(id: string, userId: number, res: Response, lastEventId?: string): void {
     const generation = this.get(id, userId);
+    const actor = chatUser(this.db, userId);
+    // Other members must wait until the complete source set is known; early deltas can precede hidden citations.
+    let deferred = generation.status === 'running' && generation.userId !== userId && actor.role !== 'admin';
+    let sourcePaths = generationSources(this.db, id);
+    const tracked = generationTracked(this.db, id);
     let cursor = 0;
     if (lastEventId !== undefined && lastEventId !== '') {
       if (!/^\d+$/u.test(lastEventId) || !Number.isSafeInteger(Number(lastEventId))) {
@@ -158,17 +166,45 @@ export class GenerationsService implements OnModuleInit, OnModuleDestroy {
       if (subscribers.size === 0) this.listeners.delete(id);
       res.off('close', close);
     };
+    const project = (frame: Frame) => {
+      if (frame.seq <= cursor) return;
+      cursor = frame.seq;
+      if (frame.event === 'sources') return;
+      const reader = chatUser(this.db, userId);
+      const readable = (reader.role === 'admin' || this.acl.list().length === 0 || tracked)
+        && sourcePaths.every(path => this.acl.canRead(reader, path));
+      if (!readable && ['tool', 'citation', 'delta', 'usage'].includes(frame.event)) return;
+      let data = frame.data;
+      if (frame.event === 'generation') {
+        const payload = JSON.parse(data);
+        delete payload.sourceTracking;
+        data = JSON.stringify(payload);
+      }
+      if (frame.event === 'done') {
+        const payload = JSON.parse(data) as { message: Message };
+        const message = payload.message;
+        data = JSON.stringify({ ...payload, message: readable
+          ? { ...message, citations: (message.citations ?? []).filter(c => this.acl.canRead(reader, c.path)) }
+          : redactMessage(this.acl, reader, { ...message, citations: message.citations ?? [] }) });
+      }
+      res.write(`id: ${frame.seq}\nevent: ${frame.event}\ndata: ${data}\n\n`);
+    };
     const send: Listener = (frame, terminal) => {
       if (res.destroyed || res.writableEnded) { close(); return; }
       if (live && !this.membership.get(generation.conversationId, userId)) { close(); res.end(); return; }
-      if (frame.seq > cursor) {
-        cursor = frame.seq;
-        res.write(`id: ${frame.seq}\nevent: ${frame.event}\ndata: ${frame.data}\n\n`);
+      if (deferred) {
+        if (!terminal) return;
+        deferred = false;
+        sourcePaths = generationSources(this.db, id);
+        for (const stored of this.frames.iterate(id, cursor)) project(stored);
+      } else {
+        if (live && ['sources', 'tool', 'citation', 'done'].includes(frame.event)) sourcePaths = generationSources(this.db, id);
+        project(frame);
       }
       if (terminal) { close(); res.end(); }
     };
     res.on('close', close);
-    for (const frame of this.frames.iterate(id, cursor)) send(frame, false);
+    if (!deferred) for (const frame of this.frames.iterate(id, cursor)) send(frame, false);
     if (generation.status !== 'running') { close(); res.end(); return; }
     if (res.destroyed || res.writableEnded) { close(); return; }
     live = true;

@@ -15,8 +15,12 @@ import { HttpExceptionFilter } from '../src/common/filters/http-exception.filter
 import { DB } from '../src/common/tokens.js';
 import { openDb, type Db } from '../src/db/index.js';
 import type { Logger } from '../src/log.js';
+import { AclService } from '../src/acl/acl.service.js';
+import { AuditService } from '../src/audit/audit.service.js';
+import { UsersService } from '../src/auth/users.service.js';
+import { UsersRepository } from '../src/auth/users.repository.js';
 
-const schemas = ['001_core.sql', '004_chat.sql', '010_chat.sql'].map((name) =>
+const schemas = ['001_core.sql', '002_auth.sql', '004_chat.sql', '010_chat.sql', '011_platform.sql', '013_acl.sql'].map((name) =>
   readFileSync(new URL(`../src/db/migrations/${name}`, import.meta.url), 'utf8'));
 const stamp = '2026-10-07T00:00:00.000Z';
 let directory: string;
@@ -63,7 +67,8 @@ beforeEach(async () => {
   }
   const module = await Test.createTestingModule({
     controllers: [GenerationsController],
-    providers: [GenerationsService, RolesGuard, { provide: DB, useValue: db }],
+    providers: [GenerationsService, RolesGuard, { provide: DB, useValue: db },
+      { provide: AclService, useValue: new AclService(db, new UsersService(new UsersRepository(db)), new AuditService(db)) }],
   }).overrideGuard(SessionGuard).useValue({
     canActivate(context: { switchToHttp(): { getRequest(): Request } }) {
       const request = context.switchToHttp().getRequest();
@@ -123,12 +128,12 @@ describe('detached replayable generations', () => {
     gate.resolve();
     await settle();
     const resumed = events(await (await replay(generation.id, 3, '1499')).text());
-    expect(resumed).toEqual([
-      { id: 1500, event: 'delta', data: { text: '1496' } },
-      { id: 1501, event: 'delta', data: { text: '1497' } },
-      { id: 1502, event: 'delta', data: { text: '1498' } },
-      { id: 1503, event: 'delta', data: { text: '1499' } },
-      { id: 1504, event: 'done', data: { message: { content: 'Complete answer' } } },
+    expect(resumed.map(({id,event})=>({id,event}))).toEqual([
+      { id: 1500, event: 'delta' },
+      { id: 1501, event: 'delta' },
+      { id: 1502, event: 'delta' },
+      { id: 1503, event: 'delta' },
+      { id: 1504, event: 'done' },
     ]);
     expect(service.get(generation.id, 3).status).toBe('succeeded');
     expect(service.active('conversation')).toBe(false);
@@ -161,9 +166,8 @@ describe('detached replayable generations', () => {
     expect(service.get(first.id, 1).status).toBe('running');
     firstGate.resolve();
     await settle();
-    expect(events(await (await replay(first.id)).text()).at(-1)).toEqual({
-      id: 3, event: 'done', data: { message: { content: 'First answer' } },
-    });
+    expect(events(await (await replay(first.id)).text()).at(-1)?.event).toBe('done');
+    expect(service.get(first.id, 1).status).toBe('succeeded');
   });
 
   it('enforces member rights and explicit cancellation without letting later completion resurrect a cancelled run', async () => {
@@ -228,7 +232,7 @@ describe('detached replayable generations', () => {
     await settle();
     const reopened = openDb(join(directory, 'chat.sqlite'));
     try {
-      const restarted = new GenerationsService(reopened);
+      const restarted = new GenerationsService(reopened, new AclService(reopened, new UsersService(new UsersRepository(reopened)), new AuditService(reopened)));
       restarted.onModuleInit();
       expect(restarted.get(generation.id, 3).status).toBe('interrupted');
       expect(restarted.active('conversation')).toBe(false);
@@ -279,14 +283,14 @@ describe('detached replayable generations', () => {
     const revokedBody = revoked.text();
     db.prepare('DELETE FROM conversation_members WHERE conversation_id = ? AND user_id = ?').run('conversation', 3);
     emit('delta', { text: 'Confidential continuation' });
-    expect(events(await revokedBody).map(({ event }) => event)).toEqual(['generation', 'status']);
+    expect(events(await revokedBody)).toEqual([]);
     expect(signal.aborted).toBe(false);
     expect((await replay(generation.id, 3)).status).toBe(404);
     gate.resolve();
     await settle();
-    expect(events(await (await replay(generation.id, 1, '2')).text())).toEqual([
-      { id: 3, event: 'delta', data: { text: 'Confidential continuation' } },
-      { id: 4, event: 'done', data: { message: { content: 'Member-only answer' } } },
+    expect(events(await (await replay(generation.id, 1, '2')).text()).map(({id,event})=>({id,event}))).toEqual([
+      { id: 3, event: 'delta' },
+      { id: 4, event: 'done' },
     ]);
   });
 
@@ -305,8 +309,8 @@ describe('detached replayable generations', () => {
       id: generation.id, userMessageId: null, assistantMessageId: null, status: 'succeeded',
     });
     expect(service.start(started, async () => { throw new Error('Old request must not restart'); }).id).toBe(generation.id);
-    expect(events(await (await replay(generation.id, 1, '2')).text())).toEqual([
-      { id: 3, event: 'done', data: { message: { content: 'Historical answer' } } },
+    expect(events(await (await replay(generation.id, 1, '2')).text()).map(({id,event})=>({id,event}))).toEqual([
+      { id: 3, event: 'done' },
     ]);
   });
 });

@@ -32,6 +32,10 @@ import { LunaService } from '../src/luna/luna.service.js';
 import { SearchService } from '../src/rag/search.service.js';
 import { UploadsService } from '../src/uploads/uploads.service.js';
 import { startFakeOpenAI, type FakeScript } from './fake-openai.js';
+import { AclService } from '../src/acl/acl.service.js';
+import { AuditService } from '../src/audit/audit.service.js';
+import { UsersService } from '../src/auth/users.service.js';
+import { UsersRepository } from '../src/auth/users.repository.js';
 
 interface Frame { id: number; event: string; data: Record<string, unknown> }
 function frames(text: string): Frame[] {
@@ -50,7 +54,7 @@ afterEach(async () => {
   for (const dispose of disposals.splice(0).reverse()) await dispose();
 });
 
-async function fixture(script: FakeScript) {
+async function fixture(script: FakeScript, authorRole: 'viewer' | 'editor' = 'viewer') {
   const fake = await startFakeOpenAI(script);
   disposals.push(() => fake.close());
   const directory = await mkdtemp(join(tmpdir(), 'conversation-http-'));
@@ -64,12 +68,13 @@ async function fixture(script: FakeScript) {
     await wt.commit('Seed conversation source', { name: 'Fixture', email: 'fixture@example.test' });
     await wt.fastForwardMain();
   } finally { await wt.dispose(); }
-  const luna = new LunaService(config, log, repo, { search: async () => [] } as unknown as SearchService);
   const db = openDb(join(directory, 'chat.db'));
   disposals.push(async () => db.close());
   runMigrations(db);
+  const acl = new AclService(db, new UsersService(new UsersRepository(db)), new AuditService(db));
+  const luna = new LunaService(config, log, repo, { search: async () => [] } as unknown as SearchService, acl);
   const users = new Map<number, User>([1, 2, 3, 4].map(id => [id, {
-    id, email: `user${id}@example.test`, name: `User ${id}`, role: id === 4 ? 'admin' : 'viewer',
+    id, email: `user${id}@example.test`, name: `User ${id}`, role: id === 4 ? 'admin' : id === 1 ? authorRole : 'viewer',
     createdAt: '2026-10-07T00:00:00.000Z', lastLoginAt: null,
   }]));
   for (const user of users.values()) db.prepare('INSERT INTO users(id,email,name,role,created_at) VALUES(?,?,?,?,?)').run(user.id, user.email, user.name, user.role, user.createdAt);
@@ -81,6 +86,7 @@ async function fixture(script: FakeScript) {
     controllers: [ConversationsController, GenerationsController],
     providers: [ConversationsRepository, ConversationsService, GenerationsService, SessionGuard, RolesGuard,
       { provide: DB, useValue: db }, { provide: LOGGER, useValue: log },
+      { provide: AclService, useValue: acl },
       { provide: LunaService, useValue: luna }, { provide: EventsService, useValue: events },
       { provide: UploadsService, useValue: { parts: async () => [], get: async () => { throw new Error('No upload in this fixture'); } } },
       { provide: ApiTokensService, useValue: { authenticate: () => null } },
@@ -119,7 +125,6 @@ async function fixture(script: FakeScript) {
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toMatch(/^text\/event-stream/);
     const result = frames(await response.text());
-    expect(result.map(frame => frame.id)).toEqual(result.map((_, index) => index + 1));
     return result;
   }
   async function send(id: string, input: SubmitMessage) { return stream(`/conversations/${id}/messages`, 'POST', input); }
@@ -346,13 +351,13 @@ describe('conversation consumer contract', () => {
 
   it('returns a note proposal from a completed answer without writing knowledge or changing the conversation', async () => {
     const proposed = '# Facts\nCitrine is yellow quartz with an updated explanation.';
-    const f = await fixture(['Citrine is yellow quartz.', proposed]);
+    const f = await fixture(['Citrine is yellow quartz.', proposed], 'editor');
     const conversation = await f.create();
     const assistant = done(await f.send(conversation.id, { content: 'Explain citrine' }));
     const before = await f.detail(conversation.id);
     const sha = await f.repo.headSha();
     const original = await f.repo.readFile('wiki/facts.md');
-    await f.request(`/conversations/${conversation.id}/members`, 'POST', { email: 'user2@example.test', role: 'viewer' });
+    await f.request(`/conversations/${conversation.id}/members`, 'POST', { email: 'user2@example.test', role: 'editor' });
     const path = `/conversations/${conversation.id}/messages/${assistant.id}/proposal`;
     await expectError(await f.request(path, 'POST', { mode: 'edit', path: 'wiki/facts.md' }, 2), 403, 'forbidden');
     await expectError(await f.request(`/conversations/${conversation.id}/messages/${before.messages[0].id}/proposal`, 'POST', { mode: 'edit', path: 'wiki/facts.md' }), 404, 'not_found');

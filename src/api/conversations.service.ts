@@ -1,7 +1,7 @@
 import { HttpException, Inject, Injectable, OnModuleDestroy, Optional } from '@nestjs/common';
 import type { ResponseInputContent } from 'openai/resources/responses/responses';
 import type { Logger } from 'pino';
-import { LOGGER } from '../common/tokens.js';
+import { DB, LOGGER } from '../common/tokens.js';
 import { EventsService } from '../events/events.service.js';
 import { LunaService } from '../luna/luna.service.js';
 import { UploadsService } from '../uploads/uploads.service.js';
@@ -10,6 +10,9 @@ import { ApiError, notFound } from './api-error.js';
 import { ConversationsRepository } from './conversations.repository.js';
 import type { Message, SubmitMessage } from './conversations.types.js';
 import { GenerationsService } from './generations.service.js';
+import { AclService } from '../acl/acl.service.js';
+import type { Db } from '../db/index.js';
+import { chatUser, messageSources, readableTurns, redactMessage } from './acl-chat.js';
 
 @Injectable()
 export class ConversationsService implements OnModuleDestroy {
@@ -22,6 +25,8 @@ export class ConversationsService implements OnModuleDestroy {
     private readonly generations: GenerationsService,
     private readonly uploads: UploadsService,
     private readonly events: EventsService,
+    private readonly acl: AclService,
+    @Inject(DB) private readonly db: Db,
     @Optional() private readonly audit?: AuditService,
   ) { this.presenceTimer.unref(); }
   onModuleDestroy(): void { clearInterval(this.presenceTimer); }
@@ -33,11 +38,28 @@ export class ConversationsService implements OnModuleDestroy {
   private changed(id:string,messageId?:string): void {
     this.events.publish({type:'conversation.updated',conversationId:id,...(messageId ? {messageId} : {})},{userIds:this.repository.members(id).map(m=>m.userId)});
   }
-  list(userId:number,q?:string) { return this.repository.list(userId,q); }
+  list(userId:number,q='') {
+    const actor=chatUser(this.db,userId);
+    const query=q.toLowerCase();
+    return this.repository.list(userId).flatMap(conversation=>{
+      const turns=readableTurns(this.db,this.acl,actor,this.repository.messages(conversation.id,userId));
+      const title=turns.some(turn=>!turn.readable) ? '' : conversation.title;
+      if(!q) return [{...conversation,title}];
+      const match=turns.findLast(turn=>turn.readable && turn.message.content.toLowerCase().includes(query));
+      if(!match && !title.toLowerCase().includes(query)) return [];
+      const source=match?.message.content ?? title;
+      const start=Math.max(0,source.toLowerCase().indexOf(query)-60);
+      return [{...conversation,title,snippet:source.slice(start,start+240)}];
+    });
+  }
   create(userId:number,title?:string) { return this.repository.create(userId,title); }
   get(id:string,userId:number) {
     this.access(id,userId);
-    return {conversation:this.repository.get(id,userId)!,messages:this.repository.messages(id,userId)};
+    const actor=chatUser(this.db,userId);
+    const turns=readableTurns(this.db,this.acl,actor,this.repository.messages(id,userId));
+    const conversation=this.repository.get(id,userId)!;
+    return {conversation:{...conversation,title:turns.some(turn=>!turn.readable) ? '' : conversation.title},
+      messages:turns.map(turn=>turn.readable ? {...turn.message,citations:turn.message.citations.filter(c=>this.acl.canRead(actor,c.path))} : redactMessage(this.acl,actor,turn.message))};
   }
   delete(id:string,userId:number):void {
     this.access(id,userId,false,true);
@@ -55,6 +77,7 @@ export class ConversationsService implements OnModuleDestroy {
   }
   async submit(id:string,userId:number,input:SubmitMessage) {
     this.access(id,userId,true);
+    if(input.context) this.acl.assertRead(chatUser(this.db,userId),input.context.notePath);
     if(input.clientId) {
       const prior=this.generations.findClient(id,input.clientId);
       if(prior) return prior;
@@ -70,15 +93,24 @@ export class ConversationsService implements OnModuleDestroy {
     return this.begin(id,userId,user,model,effort,input.clientId);
   }
   private begin(id:string,userId:number,user:Message,model?:string,effort?:string,clientId?:string) {
+    const actor=chatUser(this.db,userId);
+    for(const path of messageSources(this.db,user)) this.acl.assertRead(actor,path);
+    const policyKey=this.acl.policyKey(actor);
+    const assertAccess=()=>{
+      const current=chatUser(this.db,userId);
+      if(this.acl.policyKey(current)!==policyKey) notFound('Message not found');
+    };
     const assistant=this.repository.addMessage(id,userId,'assistant','',[],{status:'running',model,effort})!;
     return this.generations.start({conversationId:id,userMessageId:user.id,assistantMessageId:assistant.id,userId,clientId,model,effort},async(signal,emit)=>{
       let partial='';
       try {
-        let history=this.repository.messages(id,userId).filter(m=>m.id!==assistant.id && (m.role==='user'||m.status==='completed'));
-        const stored=this.repository.summary(id);
-        const throughIndex=stored.through ? history.findIndex(m=>m.id===stored.through) : -1;
-        if(throughIndex>=0) history=history.slice(throughIndex+1);
-        let summary=throughIndex>=0 ? stored.text : '';
+        const turns=readableTurns(this.db,this.acl,actor,this.repository.messages(id,userId));
+        const readable=turns.filter(turn=>turn.readable && turn.message.id!==assistant.id && (turn.message.role==='user'||turn.message.status==='completed'));
+        const sources=new Set(readable.flatMap(turn=>turn.sources));
+        if(sources.size) emit('sources',{paths:[...sources]});
+        let history=readable.map(turn=>turn.message);
+        // Stored summaries may contain another member's sources. Derive summaries only from this reader's visible turns.
+        let summary='';
         const total=history.reduce((n,m)=>n+m.content.length,0);
         if(history.length>16 || total>48000) {
           let keep=history.length-1,budget=history[keep]?.content.length ?? 0;
@@ -86,9 +118,8 @@ export class ConversationsService implements OnModuleDestroy {
           if(keep>0) {
             const old=history.slice(0,keep);
             emit('status',{phase:'summarizing'});
-            summary=await this.luna.summarize([...(summary ? [{role:'assistant' as const,content:summary}] : []),...old.map(m=>({role:m.role,content:m.content}))]);
+            summary=await this.luna.summarize(old.map(m=>({role:m.role,content:m.content})),assertAccess);
             if(signal.aborted) throw new Error('Cancelled');
-            this.repository.setSummary(id,summary,old[old.length-1].id);
             history=history.slice(keep);
           }
         }
@@ -115,11 +146,16 @@ export class ConversationsService implements OnModuleDestroy {
           inputs.push({role:m.role,content:parts.length ? [{type:'input_text',text:m.content},...parts] : m.content});
         }
         emit('status',{phase:'answering'});
+        assertAccess();
         const answer=await this.luna.answer(inputs,text=>{
           if(signal.aborted)return;
           partial+=text;this.repository.finish(assistant.id,partial,'running');emit('delta',{text});
-        },signal,{model,effort,context:user.context ?? undefined,summary,onEvent:(event,data)=>{if(!signal.aborted)emit(event,data);}});
+        },signal,{user:actor,model,effort,context:user.context ?? undefined,summary,assertAccess,
+          onSource:path=>{if(!signal.aborted)emit('sources',{paths:[path]});},
+          onEvent:(event,data)=>{if(!signal.aborted)emit(event,data);}});
         if(signal.aborted)throw new Error('Cancelled');
+        assertAccess();
+        for(const citation of answer.citations) this.acl.assertRead(actor,citation.path);
         this.repository.finish(assistant.id,answer.text,'completed',answer.citations,answer.usage);
         this.changed(id,assistant.id);
         emit('done',{message:{...assistant,content:answer.text,status:'completed',citations:answer.citations,usage:answer.usage ?? null}});
@@ -136,8 +172,11 @@ export class ConversationsService implements OnModuleDestroy {
     this.access(id,userId,true);this.idle(id);
     const message=this.repository.message(id,mid,userId);if(!message)notFound('Message not found');
     const messages=this.repository.messages(id,userId), index=messages.findIndex(m=>m.id===mid);
+    const turn=readableTurns(this.db,this.acl,chatUser(this.db,userId),messages).find(turn=>turn.message.id===mid);
+    if(!turn?.readable) notFound('Message not found');
     const user=message.role==='user' ? message : messages.slice(0,index).reverse().find(m=>m.role==='user');
     if(!user)notFound('User message not found');
+    for(const path of messageSources(this.db,user)) this.acl.assertRead(chatUser(this.db,userId),path);
     if(message.role==='assistant' && !['failed','cancelled','interrupted'].includes(message.status))throw new ApiError(409,'not_retryable','Only unsuccessful answers can be retried');
     const model=this.luna.validateModel(user.model ?? undefined);
     const effort=this.luna.validateEffort(user.effort ?? undefined);
@@ -149,6 +188,8 @@ export class ConversationsService implements OnModuleDestroy {
     const messages=this.repository.messages(id,userId),index=messages.findIndex(m=>m.id===mid);
     if(index<0||messages[index].role!=='assistant')notFound('Assistant message not found');
     const user=messages.slice(0,index).reverse().find(m=>m.role==='user');if(!user)notFound('User message not found');
+    const turn=readableTurns(this.db,this.acl,chatUser(this.db,userId),messages).find(turn=>turn.message.id===mid);
+    if(!turn?.readable) notFound('Assistant message not found');
     const model=this.luna.validateModel(user.model ?? undefined);
     const effort=this.luna.validateEffort(user.effort ?? undefined);
     this.repository.truncate(id,user.id);
@@ -157,6 +198,9 @@ export class ConversationsService implements OnModuleDestroy {
   edit(id:string,mid:string,userId:number,content:string) {
     this.access(id,userId,true);this.idle(id);
     const user=this.repository.message(id,mid,userId);if(!user||user.role!=='user')notFound('User message not found');
+    const turn=readableTurns(this.db,this.acl,chatUser(this.db,userId),this.repository.messages(id,userId)).find(turn=>turn.message.id===mid);
+    if(!turn?.readable) notFound('User message not found');
+    for(const path of messageSources(this.db,user)) this.acl.assertRead(chatUser(this.db,userId),path);
     const model=this.luna.validateModel(user.model ?? undefined);
     const effort=this.luna.validateEffort(user.effort ?? undefined);
     this.repository.truncate(id,mid);this.repository.edit(mid,content);this.changed(id,mid);
@@ -190,8 +234,21 @@ export class ConversationsService implements OnModuleDestroy {
     this.access(id,userId,true);
     const answer=this.repository.message(id,mid,userId);
     if(!answer||answer.role!=='assistant'||answer.status!=='completed')notFound('Completed answer not found');
+    const actor=chatUser(this.db,userId);
+    const turn=readableTurns(this.db,this.acl,actor,this.repository.messages(id,userId)).find(turn=>turn.message.id===mid);
+    if(!turn?.readable) notFound('Completed answer not found');
+    const policyKey=this.acl.policyKey(actor);
     try {
-      return await this.luna.proposal(answer.content,mode,path);
+      const proposal=await this.luna.proposal(answer.content,mode,path,actor,()=>{
+        if(this.acl.policyKey(chatUser(this.db,userId))!==policyKey) notFound('Completed answer not found');
+      });
+      this.access(id,userId,true);
+      const current=chatUser(this.db,userId);
+      const currentTurn=readableTurns(this.db,this.acl,current,this.repository.messages(id,userId)).find(turn=>turn.message.id===mid);
+      if(!currentTurn?.readable) notFound('Completed answer not found');
+      this.acl.assertWrite(current,proposal.path);
+      if(this.acl.policyKey(current)!==policyKey) notFound('Completed answer not found');
+      return proposal;
     } catch(error) {
       if(error instanceof ApiError || error instanceof HttpException) throw error;
       this.log.error({err:error},'Chat proposal failed');

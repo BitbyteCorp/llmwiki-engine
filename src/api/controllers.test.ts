@@ -38,6 +38,7 @@ import { AdminController } from './admin.controller.js';
 import { ConversationsRepository } from './conversations.repository.js';
 import { ConversationsService } from './conversations.service.js';
 import { GenerationsService } from './generations.service.js';
+import { GenerationsController } from './generations.controller.js';
 import type { Conversation, Message } from './conversations.types.js';
 import { NotesService } from './notes.service.js';
 import { HistoryService } from './history.service.js';
@@ -164,7 +165,7 @@ describe('web REST API', () => {
     const module = await Test.createTestingModule({
       controllers: [
         MeController, NotesController, HistoryController,
-        JobsController, ConversationsController, AdminController,
+        JobsController, ConversationsController, GenerationsController, AdminController,
       ],
       providers: [
         ConversationsRepository, ConversationsService, GenerationsService, NotesService, HistoryService,
@@ -349,9 +350,13 @@ describe('web REST API', () => {
     expect(done).toMatchObject({ role: 'assistant', content: 'Read Navigation.', status: 'completed', citations: [{ path: 'wiki/Navigation.md' }], usage: { inputTokens: 10, outputTokens: 4, reasoningTokens: 1 } });
     const detail = await (await request(`/conversations/${conversation.id}`)).json() as ConversationDetail;
     expect(detail.conversation.title).toBe('Where should I start?');
-    expect(detail.messages).toEqual([
-      expect.objectContaining({ id: expect.any(String), role: 'user', content: 'Where should I start?', citations: [], createdAt: expect.any(String) }), done,
-    ]);
+    expect(detail.messages[0]).toMatchObject({ role: 'user', content: 'Where should I start?', citations: [] });
+    expect(detail.messages[1]).toMatchObject({ id: done.id, role: 'assistant', content: 'Read Navigation.', citations: [{ path: 'wiki/Navigation.md' }], usage: { inputTokens: 10, outputTokens: 4, reasoningTokens: 1 } });
+    const generationId=events.find(({event})=>event==='generation')!.data.generationId;
+    expect(detail.messages[1]!.generationId).toBe(generationId);
+    const replay=await request(`/generations/${detail.messages[1]!.generationId}/events`);
+    const replayedMessage=parseEvents(await replay.text()).at(-1)!.data.message as Pick<Message,'id'>;
+    expect(replayedMessage.id).toBe(done.id);
     const followup = await request(`/conversations/${conversation.id}/messages`, { method: 'POST', body: '{"content":"What next?"}' });
     await followup.text();
     const after = await (await request(`/conversations/${conversation.id}`)).json() as ConversationDetail;
