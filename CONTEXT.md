@@ -42,4 +42,4 @@ Node.js 기반으로 LLM Wiki를 관리하는 도구다.
 - [인증](docs/auth.md) — Google Workspace 로그인과, 엔진이 인가 서버가 되는 MCP OAuth다.
 - [MCP](docs/mcp.md) — 지식 저장소의 모든 읽기·쓰기·검색을 제공하는 MCP 서버다.
 - [설치형 Skills](docs/skills.md) — Claude Code, Codex, Hermes에 MCP 연결과 사용 프롬프트를 설치한다.
-- [웹](docs/web.md) — 위키 탐색, Luna 질의응답, 관리 설정을 제공하며 shadcn/ui로 만든다.
+- [웹](docs/web.md) — 위키 탐색과 Luna 질의응답을 제공하며 shadcn/ui로 만든다.

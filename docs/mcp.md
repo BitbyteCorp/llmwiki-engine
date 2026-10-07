@@ -22,8 +22,7 @@ Claude Code, Codex, Hermes가 같은 지식 저장소를 활용하려면 각 클
 | `list_notes` / `index` 열람 | 노트 목록과 진입점 색인을 살펴본다. |
 | `write` | 자연어 지시나 원문을 지식 저장소에 반영하도록 제출한다. |
 | `get_memory` | 메모리 파일의 내용을 읽는다. |
-
-`get_write_status`는 비동기 쓰기를 선택하는 경우에만 추가하는 작업 상태 조회 도구 초안이다.
+| `get_write_status` | [쓰기 작업](write-flow.md#비동기-작업과-상태-조회)의 상태를 조회한다. |
 
 검색의 인덱스와 결과 구성은 [RAG](rag.md)에 기록한다.
 
@@ -34,10 +33,6 @@ Claude Code, Codex, Hermes가 같은 지식 저장소를 활용하려면 각 클
 ### 메모리 파일 리소스
 
 `MEMORY.md`는 `get_memory` 도구뿐 아니라 MCP 리소스로도 노출한다. 세션 시작 시 메모리 파일을 읽는 규칙과 파일의 역할·위치는 [지식 저장소](knowledge-repository.md)에 기록한다.
-
-## 열린 쟁점
-
-`write`의 동기·비동기 선택은 [쓰기 흐름](write-flow.md)의 열린 쟁점에 기록한다. 이 선택이 끝나기 전에는 도구의 응답 시점과 상태 조회 계약도 확정되지 않는다.
 
 ## 관련 문서
 
