@@ -9,9 +9,15 @@ import { confirmEditorLeave, getEditorStatus, useEditorStatus } from '@/componen
 
 export type WorkspaceTab = { path: string; pinned: boolean }
 type NoteInfo = { path: string; updatedSha: string; body: string }
-type StoredWorkspace = { tabs: WorkspaceTab[]; splitPath: string | null; favoritePaths: string[]; recentPaths: string[]; knownTitles: Record<string, string>; closed: WorkspaceTab[] }
-type Workspace = Omit<StoredWorkspace, 'closed'> & {
+type StoredWorkspace = { tabs: WorkspaceTab[]; splitPath: string | null; splitRatio: number; favoritePaths: string[]; recentPaths: string[]; knownTitles: Record<string, string>; closed: WorkspaceTab[] }
+export type Workspace = Omit<StoredWorkspace, 'closed'> & {
   activePath: string
+  activeGroup: 1 | 2
+  activeGroupPath: string
+  setActiveGroup(group: 1 | 2): void
+  focusGroup(group: 1 | 2): void
+  closeSplit(): void
+  setSplitRatio(ratio: number): void
   openNote(path: string, options?: { pin?: boolean; split?: boolean; fragment?: string }): void
   closeTab(path: string): void
   pinTab(path: string): void
@@ -26,9 +32,13 @@ type Workspace = Omit<StoredWorkspace, 'closed'> & {
   noteInfo: NoteInfo | null
   setNoteInfo(info: NoteInfo | null): void
 }
-const empty: StoredWorkspace = { tabs: [], splitPath: null, favoritePaths: [], recentPaths: [], knownTitles: {}, closed: [] }
+const empty: StoredWorkspace = { tabs: [], splitPath: null, splitRatio: 0.5, favoritePaths: [], recentPaths: [], knownTitles: {}, closed: [] }
 const Context = createContext<Workspace | null>(null)
 const key = 'llmwiki.workspace.v1'
+
+function clampSplitRatio(ratio: unknown): number {
+  return typeof ratio === 'number' && Number.isFinite(ratio) ? Math.min(0.8, Math.max(0.2, ratio)) : 0.5
+}
 
 function visit(state: StoredWorkspace, path: string, pin = false): StoredWorkspace {
   state = { ...state, tabs: state.tabs.map(tab => !tab.pinned && getEditorStatus(tab.path)?.dirty ? { ...tab, pinned: true } : tab) }
@@ -54,7 +64,30 @@ export function WorkspaceProvider({ children, userId }: { children: ReactNode; u
   const [state, setState] = useState<StoredWorkspace>(empty)
   const stateRef = useRef(state)
   stateRef.current = state
-  const [ready, setReady] = useState(false)
+  const [restoredKey, setRestoredKey] = useState<string | null>(null)
+  const ready = restoredKey === storageKey
+  const [activeGroup, setActiveGroup] = useState<1 | 2>(1)
+  const currentGroup = state.splitPath && activeGroup === 2 ? 2 : 1
+  const focusFrame = useRef<number | null>(null)
+  const focusGroup = useCallback((group: 1 | 2) => {
+    setActiveGroup(group)
+    if (focusFrame.current !== null) cancelAnimationFrame(focusFrame.current)
+    focusFrame.current = requestAnimationFrame(() => {
+      focusFrame.current = null
+      const selected = group === 2 && stateRef.current.splitPath ? 2 : 1
+      const region = document.querySelector<HTMLElement>(`[data-workspace-group="${selected}"]`)
+      const target = region?.querySelector<HTMLElement>('.cm-content[contenteditable="true"]')
+        ?? region?.querySelector<HTMLElement>('[data-workspace-reader] > section > [tabindex="0"]')
+        ?? region
+      target?.focus({ preventScroll: true })
+    })
+  }, [])
+  useEffect(() => () => { if (focusFrame.current !== null) cancelAnimationFrame(focusFrame.current) }, [])
+  useEffect(() => { if (!state.splitPath) setActiveGroup(1) }, [state.splitPath])
+  const setSplitRatio = useCallback((ratio: number) => {
+    const splitRatio = clampSplitRatio(ratio)
+    setState(previous => previous.splitRatio === splitRatio ? previous : { ...previous, splitRatio })
+  }, [])
   const searchParams = useSearchParams()
   const tree = useQuery({ queryKey: ['notes/tree'], queryFn: api.tree })
   const activeEditor = useEditorStatus(activePath)
@@ -163,10 +196,11 @@ export function WorkspaceProvider({ children, userId }: { children: ReactNode; u
     let restored = empty
     try {
       const saved = JSON.parse(localStorage.getItem(storageKey) || 'null') as StoredWorkspace | null
-      if (saved && Array.isArray(saved.tabs) && saved.tabs.every(tab => typeof tab.path === 'string' && typeof tab.pinned === 'boolean') && Array.isArray(saved.favoritePaths) && Array.isArray(saved.recentPaths) && Array.isArray(saved.closed) && saved.knownTitles && typeof saved.knownTitles === 'object' && (saved.splitPath === null || typeof saved.splitPath === 'string')) restored = saved
+      if (saved && Array.isArray(saved.tabs) && saved.tabs.every(tab => typeof tab.path === 'string' && typeof tab.pinned === 'boolean') && Array.isArray(saved.favoritePaths) && Array.isArray(saved.recentPaths) && Array.isArray(saved.closed) && saved.knownTitles && typeof saved.knownTitles === 'object' && (saved.splitPath === null || typeof saved.splitPath === 'string')) restored = { ...saved, splitRatio: clampSplitRatio(saved.splitRatio) }
     } catch { /* Private storage and stale sessions still allow an in-memory workspace. */ }
     setState(restored)
-    setReady(true)
+    setActiveGroup(1)
+    setRestoredKey(storageKey)
   }, [storageKey])
   useEffect(() => {
     if (!ready || !activePath) return
@@ -187,17 +221,19 @@ export function WorkspaceProvider({ children, userId }: { children: ReactNode; u
   const openNote = useCallback((path: string, options?: { pin?: boolean; split?: boolean; fragment?: string }) => {
     const current = stateRef.current
     if (options?.split) {
-      if (!confirmEditorLeave(current.splitPath && current.splitPath !== path ? [current.splitPath] : [])) return
+      if (!confirmEditorLeave(current.splitPath && current.splitPath !== path && current.splitPath !== activePathRef.current ? [current.splitPath] : [])) return
     } else if (!confirmPrimaryNavigation(path)) return
     if (options?.split) {
       setState(previous => ({ ...previous, splitPath: path }))
       setPendingSplitFragment(options.fragment ? { path, fragment: options.fragment } : null)
+      focusGroup(2)
       return
     }
     setState(previous => visit(previous, path, options?.pin))
+    setActiveGroup(1)
     window.dispatchEvent(new Event('workspace-navigation'))
     router.push(noteHref(path) + (options?.fragment ? `#${encodeURIComponent(options.fragment)}` : ''))
-  }, [router, confirmPrimaryNavigation])
+  }, [router, confirmPrimaryNavigation, focusGroup])
   const closeTab = useCallback((path: string) => {
     const current = stateRef.current
     const tab = current.tabs.find(item => item.path === path)
@@ -223,12 +259,20 @@ export function WorkspaceProvider({ children, userId }: { children: ReactNode; u
     setState(previous => ({ ...visit(previous, tab.path, tab.pinned), closed: previous.closed.slice(0, -1) }))
     router.push(noteHref(tab.path))
   }, [router, confirmPrimaryNavigation])
-  const toggleSplit = useCallback(() => {
+  const closeSplit = useCallback(() => {
     const splitPath = stateRef.current.splitPath
-    if (splitPath && !confirmEditorLeave([splitPath])) return
+    if (!splitPath || (splitPath !== activePathRef.current && !confirmEditorLeave([splitPath]))) return
     setPendingSplitFragment(null)
-    setState(previous => ({ ...previous, splitPath: previous.splitPath ? null : activePathRef.current || null }))
-  }, [])
+    setState(previous => ({ ...previous, splitPath: null }))
+    focusGroup(1)
+  }, [focusGroup])
+  const toggleSplit = useCallback(() => {
+    if (stateRef.current.splitPath) { closeSplit(); return }
+    if (!activePathRef.current) return
+    setPendingSplitFragment(null)
+    setState(previous => ({ ...previous, splitPath: activePathRef.current }))
+    focusGroup(2)
+  }, [closeSplit, focusGroup])
   const revealFolder = useCallback((path: string) => window.dispatchEvent(new CustomEvent('workspace-reveal', { detail: path })), [])
   const toggleFavorite = useCallback((path: string) => setState(previous => ({ ...previous, favoritePaths: previous.favoritePaths.includes(path) ? previous.favoritePaths.filter(item => item !== path) : [...previous.favoritePaths, path] })), [])
   const rememberTitle = useCallback((path: string, title: string) => setState(previous => previous.knownTitles[path] === title ? previous : { ...previous, knownTitles: { ...previous.knownTitles, [path]: title } }), [])
@@ -281,7 +325,7 @@ export function WorkspaceProvider({ children, userId }: { children: ReactNode; u
     setPendingSplitFragment(previous => previous?.path === path ? null : previous)
     if (activePathRef.current === path) router.replace(next ? noteHref(next.path) : '/wiki?empty=1')
   }, [router])
-  return <Context.Provider value={{ ...state, activePath, openNote, closeTab, pinTab, closeOthers, reopenClosed, toggleSplit, revealFolder, toggleFavorite, rememberTitle, renameNotePath, removeNotePath, noteInfo: noteInfo?.path === activePath ? noteInfo : null, setNoteInfo }}>{children}</Context.Provider>
+  return <Context.Provider value={{ ...state, activePath, activeGroup: currentGroup, activeGroupPath: currentGroup === 2 ? state.splitPath! : activePath, setActiveGroup, focusGroup, closeSplit, setSplitRatio, openNote, closeTab, pinTab, closeOthers, reopenClosed, toggleSplit, revealFolder, toggleFavorite, rememberTitle, renameNotePath, removeNotePath, noteInfo: noteInfo?.path === activePath ? noteInfo : null, setNoteInfo }}>{children}</Context.Provider>
 }
 
 export function useWorkspace() {

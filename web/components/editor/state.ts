@@ -60,7 +60,8 @@ export function confirmEditorLeave(paths?: string[]): boolean {
   return true
 }
 
-export type EditorCommand = 'new' | 'edit' | 'save' | 'rename' | 'delete' | 'blame' | 'ask'
+/** `view`/`edit`/`preview` switch reader modes (`preview` = source + live preview); `discard` asks before dropping the draft. */
+export type EditorCommand = 'new' | 'edit' | 'view' | 'preview' | 'save' | 'discard' | 'rename' | 'delete' | 'blame' | 'ask'
 
 export function dispatchEditorCommand(command: EditorCommand, path?: string, options?: { exactPath?: boolean }): void {
   window.dispatchEvent(new CustomEvent('workspace-editor-command', { detail: { command, path, ...options } }))
