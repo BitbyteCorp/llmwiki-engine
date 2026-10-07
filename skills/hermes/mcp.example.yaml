@@ -1,0 +1,6 @@
+# Merge into existing Hermes config; preserve other servers and replace the URL.
+# OAuth credentials are managed by `hermes mcp login llmwiki`, not this file.
+mcp_servers:
+  llmwiki:
+    url: https://wiki.example.com/mcp
+    auth: oauth
