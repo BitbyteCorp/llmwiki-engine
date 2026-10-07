@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { Inject, Injectable, type OnApplicationShutdown } from '@nestjs/common';
 import { Cron } from 'croner';
 import { ApiError } from '../api/api-error.js';
+import { AclService } from '../acl/acl.service.js';
+import { AuditService } from '../audit/audit.service.js';
 import { CONFIG, LOGGER } from '../common/tokens.js';
 import type { Config } from '../config.js';
 import { EventsService } from '../events/events.service.js';
@@ -54,6 +56,8 @@ export class DreamingService implements OnApplicationShutdown {
     @Inject(LOGGER) private readonly log: Logger,
     private readonly runs: DreamRunsRepository,
     private readonly events: EventsService,
+    private readonly acl: AclService,
+    private readonly audit: AuditService,
   ) {}
 
   start(): void {
@@ -101,6 +105,10 @@ export class DreamingService implements OnApplicationShutdown {
     };
     let worktree: Worktree | undefined;
     let recorded = false;
+    // Dreaming is explicitly an unrestricted internal system process.
+    const aclWarning = this.acl.list().length
+      ? 'ACL warning: dreaming has unrestricted system access. Semantic paraphrase or copying across ACL boundaries cannot be guaranteed detectable.'
+      : null;
     const fail = (error: unknown) => {
       run.status = 'failed';
       run.error = [run.error, errorText(error)].filter(Boolean).join('; ');
@@ -109,6 +117,10 @@ export class DreamingService implements OnApplicationShutdown {
     try {
       runs.create(run);
       recorded = true;
+      if (aclWarning) {
+        this.audit.record({ actorId: null, action: 'dreaming.acl_warning', target: run.id, outcome: 'warning', summary: aclWarning });
+        log.warn({ runId: run.id }, aclWarning);
+      }
       this.events.publish({ type: 'dream.updated', runId: run.id, status: run.status }, 'all');
       run.toSha = await repo.headSha();
       const checkpoint = runs.lastSuccessfulCheckpoint();
@@ -194,6 +206,7 @@ export class DreamingService implements OnApplicationShutdown {
         fail(error);
       }
       run.finishedAt = new Date().toISOString();
+      if (aclWarning) run.summary = [aclWarning, run.summary].filter(Boolean).join('\n\n');
       if (recorded) {
         runs.finish(run);
         this.events.publish({ type: 'dream.updated', runId: run.id, status: run.status }, 'all');
@@ -230,6 +243,7 @@ function dreamInstructions(date: string, journalPath: string): string {
 입력 JSON의 커밋과 changedNotes는 직전 성공한 실행 이후 main의 변경이며 similarNotes는 관련 기존 노트다.
 변경과 관련 노트를 읽고 근거에 따라 모순과 중복을 정리한다. 최신 근거가 불명확하면 열린 쟁점으로 남기고 지어내지 않는다.
 깨진 위키링크와 index.md를 고치고 MEMORY.md의 낡은 항목을 정리한다. raw/ 원문은 불변으로 보존한다.
+ACL 경계를 넘어 제한된 노트·사용자 자료의 내용이나 의미를 다른 권한 영역의 노트, 색인, 메모리, 일기에 복사·요약·의역하지 않는다. 이 시스템 작업은 전체 저장소를 읽을 수 있지만 공유 범위를 확대할 권한은 없다. 경계가 불명확하면 내용을 옮기지 않고 기존 영역에 보존한다.
 userMessages에는 아직 학습하지 않은 사용자 발언만 있다. 사용자가 직접 말한 사실과 정정만 추출한다.
 질문이나 요청을 사실로 바꾸지 않고 Luna/assistant 답변을 재학습하지 않으며 대화를 덤프하지 않는다.
 대화에서 추출하는 지식은 공용 위키에 공개된다는 점을 고려하고, 비밀값은 저장하지 않으며 개인정보는 마스킹한다.

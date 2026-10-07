@@ -3,6 +3,8 @@ import type { WriteJob } from '../jobs/write-job.types.js';
 import type { KnowledgeRepo, Worktree } from '../knowledge/repo.js';
 import type { LunaService } from './luna.service.js';
 import type { AgentTool } from './luna.types.js';
+import type { AclService, AclUser } from '../acl/acl.service.js';
+import { visibleLog } from '../api/acl-history.js';
 
 const writeInstructions = `
 지식 쓰기 작업을 작업 워크트리에서 완수한다. 기본 작성 규칙과 다음 절차를 모두 따른다.
@@ -24,11 +26,12 @@ export async function runWrite(
   job: WriteJob,
   wt: Worktree,
   author: { name: string; email: string },
+  user?: AclUser,
 ): Promise<{ summary: string }> {
   const result = await luna.runAgent({
-    instructions: `${await luna.baseInstructions()}\n\n${writeInstructions}`,
+    instructions: `${await luna.baseInstructions(user, user ? (path) => wt.onPhase?.('editing', { sourcePath: path }) : undefined)}\n\n${writeInstructions}`,
     input: JSON.stringify({ jobId: job.id, source: job.source, request: job.input }),
-    tools: luna.worktreeTools(wt, author),
+    tools: luna.worktreeTools(wt, author, user),
   });
   return { summary: result.text.trim() };
 }
@@ -44,13 +47,13 @@ const conflictInstructions = `
 // Git emits seven or more marker characters (including diff3 base markers) at line start.
 const conflictMarker = /^(?:<{7,}|={7,}|>{7,}|\|{7,})/m;
 
-function conflictTools(luna: LunaService, wt: Worktree, files: string[]): AgentTool[] {
+function conflictTools(luna: LunaService, wt: Worktree, files: string[], user?: AclUser): AgentTool[] {
   const allowed = new Set(files);
   const path = z.string().min(1).refine((value) => allowed.has(value), { message: 'Only the listed conflict files may be accessed' });
   const readArgs = z.object({ path }).strict();
   const writeArgs = z.object({ path, content: z.string() }).strict();
   // The author is unused: the commit tool is never exposed during conflict resolution.
-  return luna.worktreeTools(wt, { name: 'Luna', email: 'luna@llmwiki.local' })
+  return luna.worktreeTools(wt, { name: 'Luna', email: 'luna@llmwiki.local' }, user)
     .filter((tool) => tool.name === 'search' || tool.name === 'read_file' || tool.name === 'write_file')
     .map((tool): AgentTool => {
       if (tool.name === 'search') return tool;
@@ -73,22 +76,26 @@ function conflictTools(luna: LunaService, wt: Worktree, files: string[]): AgentT
 export async function resolveConflicts(
   luna: LunaService,
   repo: KnowledgeRepo,
+  acl: AclService,
   wt: Worktree,
   files: string[],
   onPhase: Worktree['onPhase'] = wt.onPhase,
+  user?: AclUser,
 ): Promise<void> {
   const paths = [...new Set(files)];
   if (paths.length === 0) return;
+  if (user) for (const path of paths) acl.assertWrite(user, path);
 
-  const instructions = `${await luna.baseInstructions()}\n\n${conflictInstructions}`;
+  const instructions = `${await luna.baseInstructions(user, user ? (path) => wt.onPhase?.('editing', { sourcePath: path }) : undefined)}\n\n${conflictInstructions}`;
   const snapshots = new Map(await Promise.all(paths.map(async (path) => {
     // Worktree.read validates confinement before the path is used to load revision context.
     const conflicted = await wt.read(path);
+    if (user) wt.onPhase?.('resolving_conflict', { sourcePath: path });
     const [base, workBranch, main, mainCommits] = await Promise.all([
       repo.readFile(path, wt.baseSha),
       repo.readFile(path, wt.branch),
       repo.readFile(path, 'main'),
-      repo.log({ path, sinceSha: wt.baseSha, limit: 10 }),
+      user ? visibleLog(repo, acl, user, { path, sinceSha: wt.baseSha, limit: 10 }) : repo.log({ path, sinceSha: wt.baseSha, limit: 10 }),
     ]);
     return [path, { path, base, workBranch, main, conflicted, mainCommits }] as const;
   })));
@@ -110,7 +117,7 @@ export async function resolveConflicts(
           task: attempt === 1 ? 'Resolve every listed file without losing either intent.' : 'The previous attempt left missing files or conflict marker lines. Repair every remaining invalid file.',
           files: current,
         }),
-        tools: conflictTools(luna, wt, remaining),
+        tools: conflictTools(luna, wt, remaining, user),
       });
     } catch (error) {
       onPhase?.('resolving_conflict', { attempt, result: 'error', error: error instanceof Error ? error.message : String(error) });

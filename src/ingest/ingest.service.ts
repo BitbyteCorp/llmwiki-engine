@@ -107,7 +107,7 @@ export class IngestService implements OnApplicationBootstrap, OnModuleDestroy {
         'Finish this source in one bounded integration job; do not enqueue further jobs.',
         ...(input.instructions ? [`Requester instructions:\n${input.instructions}`] : []),
       ].join('\n');
-      const job = this.jobs.submit({ userId, source: 'import', client: 'ingest', input: integrationInput });
+      const job = this.jobs.submit({ userId, source: 'import', client: 'ingest', input: integrationInput, sourcePaths: rawPaths });
       this.imports.queued(importId, job.id);
       this.reconcile(this.imports.get(importId)!);
       this.audit.record({ actorId: userId, action: 'import.create', target: importId, outcome: 'success', summary: `kind=${input.kind}` });

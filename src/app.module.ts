@@ -13,6 +13,7 @@ import { ApiModule } from './api/api.module.js';
 import { DreamingModule } from './dreaming/dreaming.module.js';
 import { EventsModule } from './events/events.module.js';
 import { AuditModule } from './audit/audit.module.js';
+import { AclModule } from './acl/acl.module.js';
 import { HttpRateLimitModule } from './common/http/rate-limit.module.js';
 import { IngestModule } from './ingest/ingest.module.js';
 import { ExportModule } from './export/export.module.js';
@@ -28,6 +29,7 @@ import { OpsModule } from './ops/ops.module.js';
     JobsModule,
     AuthModule,
     AuditModule,
+    AclModule,
     HttpRateLimitModule,
     McpModule,
     ApiModule,

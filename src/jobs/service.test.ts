@@ -1,14 +1,16 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import pino from 'pino';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { AclService } from '../acl/acl.service.js';
+import { AuditService } from '../audit/audit.service.js';
 import { UsersRepository } from '../auth/users.repository.js';
 import { UsersService } from '../auth/users.service.js';
 import { loadConfig } from '../config.js';
-import { openDb, type Db } from '../db/index.js';
+import { openDb, runMigrations, type Db } from '../db/index.js';
 import { EventsService } from '../events/events.service.js';
 import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
 import type { LunaService } from '../luna/luna.service.js';
@@ -26,9 +28,7 @@ async function fixture() {
   const config = loadConfig({ NODE_ENV: 'test', DATA_DIR: dir });
   const log = pino({ level: 'silent' });
   const db = openDb(':memory:');
-  db.exec(await readFile(new URL('../db/migrations/001_core.sql', import.meta.url), 'utf8'));
-  db.exec(await readFile(new URL('../db/migrations/003_jobs.sql', import.meta.url), 'utf8'));
-  db.exec(await readFile(new URL('../db/migrations/007_history.sql', import.meta.url), 'utf8'));
+  runMigrations(db);
   db.prepare('INSERT INTO users(id,email,name,role,created_at) VALUES (1,?,?,?,?)')
     .run(author.email, author.name, 'editor', new Date().toISOString());
   const repo = await KnowledgeRepo.open(config, log);
@@ -44,7 +44,8 @@ async function fixture() {
   } as unknown as IndexerService;
   const users = new UsersService(new UsersRepository(db));
   const events = new EventsService();
-  const jobs = new WriteJobsService(new WriteJobsRepository(db), luna, indexer, repo, users, log, events);
+  const acl = new AclService(db, users, new AuditService(db));
+  const jobs = new WriteJobsService(new WriteJobsRepository(db), luna, indexer, repo, users, log, events, acl);
   const ctx = { config, db, log, repo, luna, indexer, users, jobs, events };
   fixtures.push({ dir, db, jobs });
   return { dir, ctx, jobs };

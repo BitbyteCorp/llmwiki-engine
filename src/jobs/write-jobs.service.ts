@@ -5,6 +5,8 @@ import { Inject, Injectable, Optional, type OnApplicationShutdown } from '@nestj
 import type { Logger } from 'pino';
 import { ApiError } from '../api/api-error.js';
 import { UsersService } from '../auth/users.service.js';
+import { AclService } from '../acl/acl.service.js';
+import type { AclUser } from '../acl/acl.service.js';
 import { LOGGER } from '../common/tokens.js';
 import { EventsService } from '../events/events.service.js';
 import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
@@ -29,17 +31,18 @@ export class WriteJobsService implements OnApplicationShutdown {
     private readonly users: UsersService,
     @Inject(LOGGER) private readonly log: Logger,
     private readonly eventsService: EventsService,
+    private readonly acl: AclService,
     @Optional() private readonly writer?: NoteWriterService,
   ) {}
 
-  submit(input: { userId: number; input: string; source: JobSource; client?: string }): WriteJob {
+  submit(input: { userId: number; input: string; source: JobSource; client?: string; sourcePaths?: string[] }): WriteJob {
     return this.enqueue(input);
   }
 
-  private enqueue(input: { userId: number; input: string; source: JobSource; client?: string }, retryOf?: string): WriteJob {
+  private enqueue(input: { userId: number; input: string; source: JobSource; client?: string; sourcePaths?: string[] }, retryOf?: string): WriteJob {
     const id = randomUUID();
     this.repository.enqueue(id, input.userId, input.input, new Date().toISOString(), input.source, input.client);
-    this.phase(id, 'queued', retryOf ? { retryOf } : null);
+    this.phase(id, 'queued', { sourceProvenanceComplete: true, ...(input.sourcePaths?.length ? { sourcePaths: input.sourcePaths } : {}), ...(retryOf ? { retryOf } : {}) });
     const job = this.get(id)!;
     this.kick();
     return job;
@@ -53,7 +56,12 @@ export class WriteJobsService implements OnApplicationShutdown {
       if (!this.writer) throw new Error('Direct writer is not configured');
       return this.writer.retry(job);
     }
-    return this.enqueue({ userId: job.userId, input: job.input, source: job.source, ...(job.client === null ? {} : { client: job.client }) }, id);
+    const requester = this.users.getById(job.userId);
+    if (!requester) throw new ApiError(404, 'not_found', 'Requesting user no longer exists');
+    if (requester.role !== 'admin' && this.acl.list().length && !this.repository.events(job.id).some(event => event.phase === 'queued' && event.detail?.sourceProvenanceComplete === true)) {
+      throw new ApiError(404, 'not_found', 'Legacy job source permissions cannot be verified; submit a new request');
+    }
+    return this.enqueue({ userId: job.userId, input: job.input, source: job.source, sourcePaths: this.sourcePaths(job.id), ...(job.client === null ? {} : { client: job.client }) }, id);
   }
 
   cancel(id: string): WriteJob {
@@ -76,6 +84,55 @@ export class WriteJobsService implements OnApplicationShutdown {
   get(id: string): WriteJob | null {
     return this.repository.get(id);
   }
+  /** Public job projection: never return source text or metadata for hidden changes. */
+  async visible(user: AclUser, job: WriteJob): Promise<WriteJob> {
+    if (user.role === 'admin') return job;
+    const policy = this.acl.policyKey(user);
+    const paths = new Set(job.conflicts);
+    for (const path of this.sourcePaths(job.id)) paths.add(path);
+    let hidden = job.kind === 'luna' && this.acl.list().length > 0 && !this.repository.events(job.id).some(event => event.phase === 'queued' && event.detail?.sourceProvenanceComplete === true);
+    for (const sha of new Set([...job.commits, ...(job.mergeSha ? [job.mergeSha] : [])])) {
+      try {
+        await this.collectCommitPaths(sha, paths);
+      } catch { hidden = true; }
+    }
+    if (job.kind !== 'luna') {
+      try {
+        const input = JSON.parse(job.input) as { ops?: Array<{ path?: string; from?: string; to?: string }>; paths?: string[]; sha?: string };
+        for (const op of input.ops ?? []) for (const path of [op.path, op.from, op.to]) if (path) paths.add(path);
+        for (const path of input.paths ?? []) paths.add(path);
+        if (input.sha) await this.collectCommitPaths(input.sha, paths);
+      } catch { hidden = true; }
+    }
+    hidden ||= [...paths].some((path) => !this.acl.canRead(user, path));
+    const current = this.users.getById(user.id);
+    if (!current || this.acl.policyKey(current) !== policy) throw new ApiError(404, 'not_found', 'Job details changed; request them again');
+    if (!hidden) return job;
+    return { ...job, input: '', summary: null, error: job.status === 'failed' ? 'Job details are unavailable under current folder permissions.' : null, commits: [], conflicts: [], mergeSha: null };
+  }
+
+  private async collectCommitPaths(sha: string, paths: Set<string>): Promise<void> {
+    const detail = await this.repo.show(sha);
+    // A merge can look public against its first parent but reveal private
+    // changes or intent against another parent.
+    for (let parent = 0; parent < Math.max(1, detail.commit.parents.length); parent++) {
+      const files = parent === 0 ? detail.files : await this.repo.diffNames(detail.commit.parents[parent]!, detail.commit.sha);
+      for (const file of files) {
+        paths.add(file.path);
+        if (file.oldPath) paths.add(file.oldPath);
+      }
+    }
+  }
+
+  private sourcePaths(id: string): string[] {
+    const paths = new Set<string>();
+    for (const event of this.repository.events(id)) {
+      if (typeof event.detail?.sourcePath === 'string') paths.add(event.detail.sourcePath);
+      if (Array.isArray(event.detail?.sourcePaths)) for (const path of event.detail.sourcePaths) if (typeof path === 'string') paths.add(path);
+    }
+    return [...paths];
+  }
+
 
   list(opts: { userId?: number; limit?: number; before?: string } = {}): WriteJob[] {
     return this.repository.list(opts);
@@ -141,6 +198,18 @@ export class WriteJobsService implements OnApplicationShutdown {
     }
   }
 
+  private async assertWritable(wt: Worktree, userId: number, jobId: string, base = wt.baseSha): Promise<void> {
+    const user = this.users.getById(userId);
+    if (!user) throw new Error('Requesting user no longer exists');
+    for (const path of this.sourcePaths(jobId)) {
+      if (!this.acl.canRead(user, path)) throw new Error('Source access denied by current folder permissions; main was not changed');
+    }
+    const files = await this.repo.diffNames(base, wt.branch);
+    for (const path of new Set(files.flatMap((file) => file.oldPath ? [file.oldPath, file.path] : [file.path]))) {
+      if (!this.acl.canWrite(user, path)) throw new Error('Write denied by current folder permissions; main was not changed');
+    }
+  }
+
   private async run(job: WriteJob): Promise<void> {
     const { repository, repo, luna, indexer, log } = this;
     let wt: Worktree | undefined;
@@ -149,30 +218,40 @@ export class WriteJobsService implements OnApplicationShutdown {
     try {
       const user = this.users.getById(job.userId);
       if (!user) throw new Error(`Requesting user ${job.userId} no longer exists`);
+      if (user.role !== 'admin' && this.acl.list().length && !this.repository.events(job.id).some(event => event.phase === 'queued' && event.detail?.sourceProvenanceComplete === true)) {
+        throw new Error('Legacy job source permissions cannot be verified; submit a new request');
+      }
+      for (const path of this.sourcePaths(job.id)) this.acl.assertRead(user, path);
       const author = { name: user.name || user.email, email: user.email };
       wt = await repo.createWorktree(job.id);
       wt.setCommitMetadata({ jobId: job.id, source: job.source, requester: user.email, ...(job.client === null ? {} : { client: job.client }) });
       wt.onPhase = (phase, detail) => this.phase(job.id, phase, detail);
       this.phase(job.id, 'editing');
-      const { summary } = await luna.runWrite(this.get(job.id)!, wt, author);
+      const { summary } = await luna.runWrite(this.get(job.id)!, wt, author, user);
       const subject = summary.trim().split(/\r?\n/, 1)[0]?.slice(0, 200) || 'Update knowledge';
       this.phase(job.id, 'committing');
       await wt.commit(subject, author);
+      await this.assertWritable(wt, job.userId, job.id);
       const writtenCommits = await this.commits(wt);
       repository.markMerging(job.id, summary, writtenCommits);
       const activeWorktree = wt;
       await repo.withMergeLock(async () => {
         this.phase(job.id, 'merging');
         const previousMain = await repo.headSha();
+        await this.assertWritable(activeWorktree, job.userId, job.id);
         const merge = await activeWorktree.mergeMain();
         if (!merge.ok) {
+          const resolvingUser = this.users.getById(job.userId);
+          if (!resolvingUser) throw new Error('Requesting user no longer exists');
+          for (const path of merge.conflicts) this.acl.assertWrite(resolvingUser, path);
           repository.recordConflicts(job.id, merge.conflicts);
           this.phase(job.id, 'resolving_conflict', { files: merge.conflicts });
-          await luna.resolveConflicts(activeWorktree, merge.conflicts);
+          await luna.resolveConflicts(activeWorktree, merge.conflicts, resolvingUser);
           await this.verifyResolution(activeWorktree, merge.conflicts);
           await activeWorktree.finishMerge(author);
         }
         const commits = await this.commits(activeWorktree);
+        await this.assertWritable(activeWorktree, job.userId, job.id, previousMain);
         const mergeSha = await activeWorktree.fastForwardMain();
         repository.recordMerge(job.id, commits, mergeSha);
         try {

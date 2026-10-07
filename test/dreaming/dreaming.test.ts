@@ -22,6 +22,10 @@ import type { AgentTool, RunAgentOptions } from '../../src/luna/luna.types.js';
 import { IndexerService } from '../../src/rag/indexer.service.js';
 import { SearchService } from '../../src/rag/search.service.js';
 import type { SearchHit } from '../../src/rag/types.js';
+import { AclService } from '../../src/acl/acl.service.js';
+import { AuditService } from '../../src/audit/audit.service.js';
+import { UsersService } from '../../src/auth/users.service.js';
+import { UsersRepository } from '../../src/auth/users.repository.js';
 
 const execute = promisify(execFile);
 const resources: Array<{ root: string; db: Database.Database; app?: INestApplicationContext }> = [];
@@ -232,8 +236,7 @@ async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'llmwiki-dreaming-'));
   const db = new Database(':memory:');
   resources.push({ root, db });
-  db.exec(await readFile(new URL('../../src/db/migrations/005_dreaming.sql', import.meta.url), 'utf8'));
-  db.exec(await readFile(new URL('../../src/db/migrations/008_ops.sql', import.meta.url), 'utf8'));
+  for (const migration of ['001_core', '002_auth', '005_dreaming', '008_ops', '011_platform', '013_acl']) db.exec(await readFile(new URL(`../../src/db/migrations/${migration}.sql`, import.meta.url), 'utf8'));
   db.exec(`CREATE TABLE messages (
     id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('user', 'assistant')), content TEXT NOT NULL,
@@ -270,6 +273,9 @@ async function fixture() {
       { provide: LunaService, useValue: luna },
       { provide: IndexerService, useValue: indexer },
       { provide: SearchService, useValue: search },
+      AuditService,
+      { provide: UsersService, useValue: new UsersService(new UsersRepository(db)) },
+      AclService,
       DreamRunsRepository,
       EventsService,
       DreamingService,

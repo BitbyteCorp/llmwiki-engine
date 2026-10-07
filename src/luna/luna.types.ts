@@ -1,4 +1,5 @@
 import type { ResponseInputContent } from 'openai/resources/responses/responses';
+import type { User } from '../auth/users.types.js';
 
 export interface Citation {
   path: string;
@@ -18,6 +19,10 @@ export type ChatMessage = { role: 'user' | 'assistant'; content: string | Respon
 export type LunaEventHandler = (event: 'tool' | 'citation' | 'usage' | 'status', data: unknown) => void;
 
 export interface AnswerOptions {
+  /** Omitted only for trusted internal system callers. */
+  user?: Pick<User, 'id' | 'role'>;
+  onSource?: (path: string) => void;
+  assertAccess?: () => void;
   model?: string;
   effort?: string;
   context?: { notePath: string; ref?: string; selection?: string };
@@ -44,4 +49,5 @@ export interface RunAgentOptions {
   signal?: AbortSignal;
   onTextDelta?: (text: string) => void;
   maxTurns?: number;
+  assertAccess?: () => void;
 }

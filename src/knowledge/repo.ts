@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { cp, lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { commitTrailers, type CommitMetadata } from './commit-trailers.js';
@@ -232,7 +232,25 @@ export class KnowledgeRepo {
     if (!paths.length) return '';
     const from = base === null ? emptyTree : await this.resolveRef(base);
     const to = await this.resolveRef(head);
-    return this.git.run(this.path, ['diff', '--binary', '--find-renames', from, to, '--', ...paths.map((path) => repoPath(path))]);
+    const selected = new Set(paths.map((path) => repoPath(path)));
+    const temporary = await mkdtemp(join(this.worktrees, 'acl-diff-'));
+    const env = { GIT_INDEX_FILE: join(temporary, 'index') };
+    try {
+      const trees: string[] = [];
+      for (const ref of [from, to]) {
+        // A filename pathspec also selects descendants when a file becomes a
+        // directory. Membership must therefore be exact after tree discovery.
+        const entries = treeEntries(await this.git.run(this.path, ['ls-tree', '-r', '-z', ref, '--', ...selected]));
+        await this.git.run(this.path, ['read-tree', '--empty'], env);
+        const index = entries.filter((entry) => selected.has(entry.path))
+          .map((entry) => `${entry.mode} ${entry.oid}\t${entry.path}\0`).join('');
+        if (index) await this.git.run(this.path, ['update-index', '-z', '--index-info'], env, index);
+        trees.push((await this.git.run(this.path, ['write-tree'], env)).trim());
+      }
+      return await this.git.run(this.path, ['diff', '--binary', '--find-renames', trees[0]!, trees[1]!, '--']);
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
   }
   async log(opts?: LogOptions): Promise<CommitInfo[]>;
   async log(path?: string, opts?: Omit<LogOptions, 'path'>): Promise<CommitInfo[]>;
@@ -353,7 +371,7 @@ export class KnowledgeRepo {
 export class Worktree {
   private author: Author | undefined;
   private metadata: CommitMetadata | undefined;
-  onPhase?: (phase: 'resolving_conflict', detail: Record<string, unknown>) => void;
+  onPhase?: (phase: 'editing' | 'resolving_conflict', detail: Record<string, unknown>) => void;
   private disposed = false;
   constructor(readonly path: string, readonly branch: string, readonly baseSha: string, private readonly primary: string, private readonly git: Git) {}
   setCommitMetadata(metadata: CommitMetadata): void {

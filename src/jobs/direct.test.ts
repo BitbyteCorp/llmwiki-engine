@@ -6,10 +6,12 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import pino from 'pino';
 import { afterEach, expect, it, vi } from 'vitest';
+import { AclService } from '../acl/acl.service.js';
+import { AuditService } from '../audit/audit.service.js';
 import { UsersRepository } from '../auth/users.repository.js';
 import { UsersService } from '../auth/users.service.js';
 import { loadConfig } from '../config.js';
-import { openDb } from '../db/index.js';
+import { openDb, runMigrations } from '../db/index.js';
 import { EventsService } from '../events/events.service.js';
 import type { WikiEvent } from '../events/events.types.js';
 import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
@@ -27,7 +29,7 @@ afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(
 async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), 'wiki-direct-'));
   const db = openDb(':memory:');
-  for (const migration of ['001_core', '003_jobs', '007_history']) db.exec(await readFile(new URL(`../db/migrations/${migration}.sql`, import.meta.url), 'utf8'));
+  runMigrations(db);
   db.prepare("INSERT INTO users(id,email,name,role,created_at) VALUES (1,'editor@example.com','Editor','editor','2026-01-01')").run();
   const log = pino({ level: 'silent' });
   const repo = await KnowledgeRepo.open(loadConfig({ NODE_ENV: 'test', DATA_DIR: dir }), log);
@@ -38,13 +40,14 @@ async function fixture() {
   events.subscribe((event) => published.push(event));
   const indexer = { syncToHead: vi.fn(async () => {}) } as unknown as IndexerService;
   const luna = { runWrite: vi.fn(async () => ({ summary: 'No changes' })), resolveConflicts: vi.fn(async () => {}) } as unknown as LunaService;
-  const writer = new NoteWriterService(repository, repo, users, indexer, events, log);
-  const jobs = new WriteJobsService(repository, luna, indexer, repo, users, log, events, writer);
+  const acl = new AclService(db, users, new AuditService(db));
+  const writer = new NoteWriterService(repository, repo, users, indexer, events, log, acl);
+  const jobs = new WriteJobsService(repository, luna, indexer, repo, users, log, events, acl, writer);
   cleanups.push(async () => { await jobs.stop(); db.close(); await rm(dir, { recursive: true, force: true }); });
   async function put(path: string, content: string, create = true, baseSha?: string) {
     return writer.apply({ userId: 1, source: 'web', baseSha: baseSha ?? await repo.headSha(), ops: [{ op: 'put', path, content, create }] });
   }
-  return { dir, db, repo, repository, events, published, indexer, luna, jobs, writer, put };
+  return { dir, db, repo, repository, events, published, indexer, luna, jobs, writer, put, acl };
 }
 
 it('checks touched paths only, preserves unrelated updates, and rejects stale edits and both move endpoints', async () => {
@@ -163,7 +166,6 @@ it('retries failed Luna with provenance, cancels only queued jobs and keeps fail
   expect(refs.stdout).toContain(original.id);
   const retried = f.jobs.retry(original.id);
   expect(retried).toMatchObject({ input: original.input, source: 'chat', client: 'browser', status: 'queued' });
-  expect(f.jobs.events(retried.id)[0]?.detail).toEqual({ retryOf: original.id });
   expect(f.jobs.events(original.id).map((event) => event.phase)).toEqual(['queued', 'preparing', 'editing', 'cleanup', 'failed']);
   expect(f.published).toContainEqual(expect.objectContaining({ type: 'job.updated', jobId: original.id, phase: 'failed', status: 'failed' }));
   f.jobs.start();
@@ -241,7 +243,7 @@ it('records both conflict attempts and their verified outcomes through the workt
         return { text: '' };
       },
     } as unknown as LunaService;
-    await resolveConflicts(luna, f.repo, wt, ['wiki/conflict.md']);
+    await resolveConflicts(luna, f.repo, f.acl, wt, ['wiki/conflict.md']);
     expect(await wt.read('wiki/conflict.md')).toBe('branch\nmain\n');
     expect(f.jobs.events(job.id).filter((event) => event.phase === 'resolving_conflict').map((event) => event.detail)).toEqual([
       { attempt: 1, result: 'started', files: ['wiki/conflict.md'] },

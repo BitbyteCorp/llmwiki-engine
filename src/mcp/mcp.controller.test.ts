@@ -18,6 +18,11 @@ import { CatalogService } from '../rag/catalog.service.js';
 import { ComparisonService } from '../rag/comparison.service.js';
 import { IngestService } from '../ingest/ingest.service.js';
 import { McpService } from './mcp.service.js';
+import { AclService } from '../acl/acl.service.js';
+import { AuditService } from '../audit/audit.service.js';
+import { UsersService } from '../auth/users.service.js';
+import { UsersRepository } from '../auth/users.repository.js';
+import { openDb, runMigrations, type Db } from '../db/index.js';
 
 const mcpAuthGuard: CanActivate = {
   canActivate(context: ExecutionContext) {
@@ -38,6 +43,7 @@ const mcpAuthGuard: CanActivate = {
 const clients: Client[] = [];
 const transports: StreamableHTTPClientTransport[] = [];
 const apps: INestApplication[] = [];
+const databases: Db[] = [];
 
 function makeJob(id: string, userId: number, input: string): WriteJob {
   return {
@@ -48,6 +54,10 @@ function makeJob(id: string, userId: number, input: string): WriteJob {
 }
 
 async function fixture() {
+  const db = openDb(':memory:');
+  runMigrations(db);
+  databases.push(db);
+  const acl = new AclService(db, new UsersService(new UsersRepository(db)), new AuditService(db));
   const notes = new Map([
     ['index.md', '# Knowledge index\n\n- [[wiki/engine]]\n- [[wiki/backups]]\n'],
     ['wiki/engine.md', '# Engine\n\nThe engine keeps durable shared knowledge.\n'],
@@ -90,11 +100,13 @@ async function fixture() {
       return job;
     }),
     get: vi.fn((id: string) => storedJobs.get(id) ?? null),
+    visible: async (_user: User, job: WriteJob) => job,
   };
   const module = await Test.createTestingModule({
     controllers: [McpController],
     providers: [
       McpService,
+      { provide: AclService, useValue: acl },
       { provide: KnowledgeRepo, useValue: repo },
       { provide: SearchService, useValue: search },
       { provide: WriteJobsService, useValue: jobs },
@@ -135,6 +147,7 @@ afterEach(async () => {
       await Promise.all(transports.splice(0).map((transport) => transport.close()));
     } finally {
       await Promise.all(apps.splice(0).map((app) => app.close()));
+      for (const db of databases.splice(0)) db.close();
     }
   }
 });

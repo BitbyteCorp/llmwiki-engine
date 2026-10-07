@@ -9,8 +9,9 @@ import { WriteJobsService } from '../jobs/write-jobs.service.js';
 import matter from 'gray-matter';
 import { CatalogService } from '../rag/catalog.service.js';
 import { ComparisonService } from '../rag/comparison.service.js';
-import type { SearchFilters } from '../rag/types.js';
 import { IngestService } from '../ingest/ingest.service.js';
+import { AclService } from '../acl/acl.service.js';
+import { visibleBlame, visibleCommit, visibleCompare, visibleLog } from '../api/acl-history.js';
 
 const maxPatchChars = 32_000;
 const readOnly = { readOnlyHint: true, openWorldHint: false };
@@ -60,6 +61,7 @@ export class McpService {
     private readonly catalog: CatalogService,
     private readonly comparison: ComparisonService,
     private readonly ingest: IngestService,
+    private readonly acl: AclService,
   ) {}
 
   createServer(user: User, client?: string): McpServer {
@@ -82,7 +84,7 @@ export class McpService {
       },
       annotations: { readOnlyHint: true, openWorldHint: false },
     }, async ({ query, limit, ...filters }) => result({
-      hits: await this.search.search(query, { limit, ...filters } satisfies SearchFilters & { limit?: number }),
+      hits: await this.search.search(query, { limit, ...filters, user }),
     }));
 
     server.registerTool('read_note', {
@@ -90,6 +92,7 @@ export class McpService {
       inputSchema: { path: pathSchema, ref: refSchema.optional() },
       annotations: readOnly,
     }, async ({ path, ref }) => {
+      this.acl.assertRead(user, path);
       const resolved = ref ? await this.repo.resolveRef(ref) : await this.repo.headSha();
       const content = await this.repo.readFile(path, resolved);
       if (content === null) return toolError('Note not found.');
@@ -102,39 +105,44 @@ export class McpService {
       inputSchema: { prefix: z.string().optional().describe('Optional path prefix, for example wiki/.') },
       annotations: { readOnlyHint: true, openWorldHint: false },
     }, async ({ prefix }) => {
-      const files = await this.repo.listFiles(prefix || undefined);
+      const files = this.acl.filterPaths(user, await this.repo.listFiles(prefix || undefined));
       if (prefix) return result({ files });
-      return result({ files, index: await this.repo.readFile('index.md') });
+      return result({ files, index: this.acl.canRead(user, 'index.md') ? await this.repo.readFile('index.md') : null });
     });
 
     server.registerTool('note_history', {
       description: 'List commits affecting a note. follow defaults to true to include history before renames; before is a commit cursor.',
       inputSchema: { path: pathSchema, follow: z.boolean().optional(), limit: limitSchema, before: refSchema.optional() },
       annotations: readOnly,
-    }, async ({ path, follow, limit, before }) => result({
-      commits: await this.repo.log({ path, follow: follow ?? true, limit, beforeSha: before }),
-    }));
+    }, async ({ path, follow, limit, before }) => {
+      this.acl.assertRead(user, path);
+      return result({ commits: await visibleLog(this.repo, this.acl, user, { path, follow: follow ?? true, limit, beforeSha: before }) });
+    });
 
     server.registerTool('get_commit', {
       description: 'Read commit metadata, changed files, and a bounded patch against the selected one-based parent (default 1).',
       inputSchema: { sha: refSchema, parent: z.number().int().min(1).optional() },
       annotations: readOnly,
-    }, async ({ sha, parent }) => result(boundedPatch(await this.repo.show(sha, parent))));
+    }, async ({ sha, parent }) => {
+      const commit = await visibleCommit(this.repo, this.acl, user, sha, parent);
+      return commit ? result(boundedPatch(commit)) : toolError('Commit not found.');
+    });
 
     server.registerTool('compare', {
       description: 'Compare two Git revisions, optionally for one note. The patch is bounded to 32,000 characters; truncated indicates omitted content.',
       inputSchema: { base: refSchema, head: refSchema, path: pathSchema.optional() },
       annotations: readOnly,
-    }, async ({ base, head, path }) => result(boundedPatch(await this.repo.compare(base, head, path))));
+    }, async ({ base, head, path }) => result(boundedPatch(await visibleCompare(this.repo, this.acl, user, base, head, path))));
 
     server.registerTool('blame', {
       description: 'Read line ranges and their originating commits at a Git revision, with job/source provenance when available.',
       inputSchema: { path: pathSchema, ref: refSchema.optional() },
       annotations: readOnly,
     }, async ({ path, ref }) => {
+      this.acl.assertRead(user, path);
       const resolved = ref ? await this.repo.resolveRef(ref) : await this.repo.headSha();
       if (await this.repo.readFile(path, resolved) === null) return toolError('Note not found.');
-      return result(await this.repo.blame(path, resolved));
+      return result(await visibleBlame(this.repo, this.acl, user, path, resolved));
     });
 
     server.registerTool('note_links', {
@@ -142,8 +150,9 @@ export class McpService {
       inputSchema: { path: pathSchema },
       annotations: readOnly,
     }, async ({ path }) => {
+      this.acl.assertRead(user, path);
       if (await this.repo.readFile(path) === null) return toolError('Note not found.');
-      return result({ ...this.catalog.links(path) });
+      return result({ ...this.catalog.links(path, user) });
     });
 
     server.registerTool('similar_notes', {
@@ -151,8 +160,9 @@ export class McpService {
       inputSchema: { path: pathSchema, limit: limitSchema },
       annotations: readOnly,
     }, async ({ path, limit }) => {
+      this.acl.assertRead(user, path);
       if (await this.repo.readFile(path) === null) return toolError('Note not found.');
-      return result({ notes: await this.comparison.similar(path, limit) });
+      return result({ notes: await this.comparison.similar(path, limit, user) });
     });
 
     server.registerTool('ingest_source', {
@@ -192,29 +202,30 @@ export class McpService {
       description: 'Read an asynchronous write job, including its status, summary, commits, and error. You may view your own jobs; admins may view any job. Poll the jobId returned by write to confirm completion.',
       inputSchema: { jobId: z.string().min(1).describe('Job identifier returned by write.') },
       annotations: { readOnlyHint: true, openWorldHint: false },
-    }, ({ jobId }) => {
+    }, async ({ jobId }) => {
       const job = this.jobs.get(jobId);
       if (!job || (user.role !== 'admin' && job.userId !== user.id)) {
         return toolError('Write job not found.');
       }
-      return result({ job });
+      return result({ job: await this.jobs.visible(user, job) });
     });
 
     server.registerResource('index', 'llmwiki://index', {
       description: 'Tracked Markdown note tree on main.', mimeType: 'application/json',
     }, async (uri) => ({
-      contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify({ files: await this.repo.listFiles() }) }],
+      contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify({ files: this.acl.filterPaths(user, await this.repo.listFiles()) }) }],
     }));
 
     server.registerResource('note', new ResourceTemplate('llmwiki://notes/{+path}', {
       list: async () => ({
-        resources: (await this.repo.listFiles()).map(path => ({
+        resources: this.acl.filterPaths(user, await this.repo.listFiles()).map(path => ({
           name: path, uri: `llmwiki://notes/${path.split('/').map(encodeURIComponent).join('/')}`, mimeType: 'text/markdown',
         })),
       }),
     }), { description: 'Full Markdown note on main.', mimeType: 'text/markdown' }, async (uri, variables) => {
       const raw = variables.path;
       if (typeof raw !== 'string') throw new Error('A note path is required.');
+      this.acl.assertRead(user, decodeURIComponent(raw));
       const content = await this.repo.readFile(decodeURIComponent(raw));
       if (content === null) throw new Error('Note not found.');
       return { contents: [{ uri: uri.href, mimeType: 'text/markdown', text: content }] };
@@ -237,9 +248,10 @@ export class McpService {
     server.registerPrompt('review_note_history', {
       description: 'Review a note across renames and revisions.',
       argsSchema: { path: z.string().min(1) },
-    }, ({ path }) => ({
-      messages: [{ role: 'user', content: { type: 'text', text: `Review the history of note ${path}. Use note_history with follow=true, get_commit with the appropriate parent, compare, and blame. Read historical content with read_note ref. Explain substantive changes and provenance; account for truncated patches rather than assuming they are complete.` } }],
-    }));
+    }, ({ path }) => {
+      this.acl.assertRead(user, path);
+      return { messages: [{ role: 'user', content: { type: 'text', text: `Review the history of note ${path}. Use note_history with follow=true, get_commit with the appropriate parent, compare, and blame. Read historical content with read_note ref. Explain substantive changes and provenance; account for truncated patches rather than assuming they are complete.` } }] };
+    });
 
     return server;
   }

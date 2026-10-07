@@ -27,6 +27,7 @@ export class HistoryService {
   }
 
   async getCommit(sha: string, parent: number | undefined, user: User) {
+    const policy = this.acl.policyKey(user);
     const detail = await visibleCommit(this.repo, this.acl, user, sha, parent);
     if (!detail) notFound('Commit not found');
     const row = this.db.prepare(`
@@ -38,6 +39,7 @@ export class HistoryService {
     `).get(detail.commit.sha, detail.commit.sha) as { id: string } | undefined;
     const job = row ? this.jobs.get(row.id) : null;
     const visible = job && (user.role === 'admin' || job.userId === user.id) ? await this.jobs.visible(user, job) : null;
+    if (this.acl.policyKey(user) !== policy) notFound('Permissions changed during history read');
     return { ...detail, job: visible };
   }
 
@@ -56,11 +58,15 @@ export class HistoryService {
   }
 
   async listJobs(query: z.infer<typeof jobsQuerySchema>, user: User) {
+    const policy = this.acl.policyKey(user);
     const jobs = this.jobs.list({ userId: user.role === 'admin' && !query.mine ? undefined : user.id, limit: query.limit, before: query.before });
-    return Promise.all(jobs.map(async (job) => ({ ...await this.jobs.visible(user, job), user: this.requester(job) })));
+    const visible = await Promise.all(jobs.map(async (job) => ({ ...await this.jobs.visible(user, job), user: this.requester(job) })));
+    if (this.acl.policyKey(user) !== policy) notFound('Permissions changed during history read');
+    return visible;
   }
 
   async getJob(id: string, user: User) {
+    const policy = this.acl.policyKey(user);
     const job = this.jobs.get(id);
     if (!job || (user.role !== 'admin' && job.userId !== user.id)) notFound('Write job not found');
     const visible = await this.jobs.visible(user, job);
@@ -69,6 +75,7 @@ export class HistoryService {
     const commits = details.flatMap((detail) => detail ? [detail.commit] : []);
     const restricted = visible.input !== job.input || visible.summary !== job.summary || visible.error !== job.error || JSON.stringify(visible.commits) !== JSON.stringify(job.commits) || JSON.stringify(visible.conflicts) !== JSON.stringify(job.conflicts);
     const events = this.jobs.events(id).map((event) => restricted ? { ...event, detail: null } : event);
+    if (this.acl.policyKey(user) !== policy) notFound('Permissions changed during history read');
     return { job: visible, user: this.requester(job), commits, events };
   }
 

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { Worktree } from '../knowledge/repo.js';
 import type { SearchService } from '../rag/search.service.js';
 import type { AgentTool } from './luna.types.js';
+import type { AclService, AclUser } from '../acl/acl.service.js';
 
 const pathArgs = z.object({ path: z.string().min(1) }).strict();
 const searchArgs = z.object({ query: z.string().trim().min(1), limit: z.number().int().min(1).max(100).optional() }).strict();
@@ -14,6 +15,8 @@ export function makeWorktreeTools(
   search: SearchService,
   wt: Worktree,
   author: { name: string; email: string },
+  acl: AclService,
+  user?: AclUser,
 ): AgentTool[] {
   return [
     {
@@ -25,7 +28,9 @@ export function makeWorktreeTools(
       },
       async run(args: unknown) {
         const { query, limit } = searchArgs.parse(args);
-        return JSON.stringify(await search.search(query, limit === undefined ? undefined : { limit }));
+        const hits = await search.search(query, { limit, user });
+        if (user) wt.onPhase?.('editing', { sourcePaths: hits.map(hit => hit.path) });
+        return JSON.stringify(hits);
       },
     },
     {
@@ -34,7 +39,10 @@ export function makeWorktreeTools(
       parameters: { type: 'object', properties: { prefix: { type: 'string' } }, required: [], additionalProperties: false },
       async run(args: unknown) {
         const { prefix } = listArgs.parse(args);
-        return JSON.stringify(await wt.list(prefix));
+        const files = await wt.list(prefix);
+        const visible = user ? acl.filterPaths(user, files) : files;
+        if (user) wt.onPhase?.('editing', { sourcePaths: visible });
+        return JSON.stringify(visible);
       },
     },
     {
@@ -43,6 +51,8 @@ export function makeWorktreeTools(
       parameters: { type: 'object', properties: { path: { type: 'string', minLength: 1 } }, required: ['path'], additionalProperties: false },
       async run(args: unknown) {
         const { path } = pathArgs.parse(args);
+        if (user) acl.assertRead(user, path);
+        if (user) wt.onPhase?.('editing', { sourcePath: path });
         return JSON.stringify({ path, content: await wt.read(path) });
       },
     },
@@ -55,6 +65,7 @@ export function makeWorktreeTools(
       },
       async run(args: unknown) {
         const { path, content } = writeArgs.parse(args);
+        if (user) acl.assertWrite(user, path);
         await wt.write(path, content);
         return JSON.stringify({ path, written: true });
       },
@@ -65,6 +76,7 @@ export function makeWorktreeTools(
       parameters: { type: 'object', properties: { path: { type: 'string', minLength: 1 } }, required: ['path'], additionalProperties: false },
       async run(args: unknown) {
         const { path } = pathArgs.parse(args);
+        if (user) acl.assertWrite(user, path);
         await wt.remove(path);
         return JSON.stringify({ path, deleted: true });
       },
@@ -78,6 +90,10 @@ export function makeWorktreeTools(
       },
       async run(args: unknown) {
         const { from, to } = moveArgs.parse(args);
+        if (user) {
+          acl.assertWrite(user, from);
+          acl.assertWrite(user, to);
+        }
         await wt.move(from, to);
         return JSON.stringify({ from, to, moved: true });
       },

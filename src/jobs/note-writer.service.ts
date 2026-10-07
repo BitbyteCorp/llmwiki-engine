@@ -4,6 +4,8 @@ import type { Logger } from 'pino';
 import { ApiError } from '../api/api-error.js';
 import { AuditService } from '../audit/audit.service.js';
 import { UsersService } from '../auth/users.service.js';
+import { AclService } from '../acl/acl.service.js';
+import type { AclUser } from '../acl/acl.service.js';
 import { LOGGER } from '../common/tokens.js';
 import { EventsService } from '../events/events.service.js';
 import { KnowledgeRepo, repoPath, type FileChange, type Worktree } from '../knowledge/repo.js';
@@ -43,6 +45,7 @@ export class NoteWriterService {
     private readonly indexer: IndexerService,
     private readonly events: EventsService,
     @Inject(LOGGER) private readonly log: Logger,
+    private readonly acl: AclService,
     @Optional() private readonly audit?: AuditService,
   ) {}
   private phase(id: string, phase: JobPhase, detail: Record<string, unknown> | null = null): void {
@@ -89,6 +92,16 @@ export class NoteWriterService {
   async apply(input: ApplyInput): Promise<WriteResult> {
     return this.applyStored(input);
   }
+  private assertWrite(user: AclUser, path: string, source: JobSource): void {
+    // Internal ingestion preserves immutable raw sources as system storage.
+    // Integration into maintained notes always runs with requester ACLs.
+    if (source === 'import' && path.startsWith('raw/')) {
+      if (user.role !== 'editor' && user.role !== 'admin') throw new ApiError(403, 'forbidden', 'Writing requires the editor or admin role');
+      return;
+    }
+    this.acl.assertWrite(user, path);
+  }
+
 
   private async applyStored(input: ApplyInput, jobId?: string): Promise<WriteResult> {
     const deleted = input.ops.filter((op) => op.op === 'delete').map((op) => op.path);
@@ -98,6 +111,9 @@ export class NoteWriterService {
         ? { ...op, from: notePath(op.from), to: notePath(op.to) }
         : { ...op, path: notePath(op.path, input.source === 'import') });
       const touched = new Set(ops.flatMap((op) => op.op === 'move' ? [op.from, op.to] : [op.path]));
+      const requester = this.users.getById(input.userId);
+      if (!requester) throw new ApiError(404, 'not_found', 'Requesting user no longer exists');
+      for (const path of touched) this.assertWrite(requester, path, input.source);
       return await this.repo.withMergeLock(async () => {
         const head = await this.repo.headSha();
         let changes: FileChange[];
@@ -153,6 +169,11 @@ export class NoteWriterService {
   private async revertStored(input: RevertInput, jobId?: string): Promise<WriteResult | { files: FileChange[]; patch: string }> {
     try {
       const paths = input.paths?.map((path) => repoPath(path));
+      const requester = this.users.getById(input.userId);
+      if (!requester) throw new ApiError(404, 'not_found', 'Requesting user no longer exists');
+      const commit = await this.repo.show(input.sha);
+      const selected = commit.files.filter((file) => !paths || paths.includes(file.path) || (file.oldPath !== undefined && paths.includes(file.oldPath)));
+      for (const path of changedPaths(selected)) this.acl.assertWrite(requester, path);
       const result = await this.repo.withMergeLock(async () => {
         if (!input.preview) return this.run({ ...input, source: 'revert' }, 'revert', `Revert ${input.sha}`, async (wt) => {
           await wt.revert(input.sha, paths);
@@ -160,7 +181,11 @@ export class NoteWriterService {
         const wt = await this.repo.createWorktree(`preview-${randomUUID()}`);
         try {
           await wt.revert(input.sha, paths);
-          return await wt.diff();
+          const diff = await wt.diff();
+          const current = this.users.getById(input.userId);
+          if (!current) throw new ApiError(404, 'not_found', 'Requesting user no longer exists');
+          for (const path of changedPaths(diff.files)) this.acl.assertWrite(current, path);
+          return diff;
         } finally { await wt.dispose(); }
       });
       if (!input.preview) this.audit?.record({ actorId: input.userId, action: 'history.revert', target: input.sha, outcome: 'success' });
@@ -190,12 +215,18 @@ export class NoteWriterService {
       wt.setCommitMetadata({ jobId: id, source: input.source, requester: user.email, ...(input.client === undefined ? {} : { client: input.client }) });
       this.phase(id, 'editing');
       await edit(wt);
+      const current = this.users.getById(input.userId);
+      if (!current) throw new ApiError(404, 'not_found', 'Requesting user no longer exists');
+      for (const path of changedPaths((await wt.diff()).files)) this.assertWrite(current, path, input.source);
       this.phase(id, 'committing');
       const sha = await wt.commit(message, author);
       const changed = changedPaths(await this.repo.diffNames(wt.baseSha, sha ?? wt.baseSha));
       const commits = sha ? [sha] : [];
       this.repository.markMerging(id, message, commits);
       this.phase(id, 'merging');
+      const mergingUser = this.users.getById(input.userId);
+      if (!mergingUser) throw new ApiError(404, 'not_found', 'Requesting user no longer exists');
+      for (const path of changed) this.assertWrite(mergingUser, path, input.source);
       const mergeSha = await wt.fastForwardMain();
       this.repository.recordMerge(id, commits, mergeSha);
       this.events.publish({ type: 'main.updated', sha: mergeSha, paths: changed, jobId: id }, 'all');

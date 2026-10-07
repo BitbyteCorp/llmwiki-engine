@@ -7,6 +7,10 @@ import { promisify } from 'node:util';
 import Database from 'better-sqlite3';
 import pino from 'pino';
 import { afterEach, expect, it, vi } from 'vitest';
+import { AclService } from '../acl/acl.service.js';
+import { AuditService } from '../audit/audit.service.js';
+import { UsersService } from '../auth/users.service.js';
+import { UsersRepository } from '../auth/users.repository.js';
 import { loadConfig } from '../config.js';
 import { EventsService } from '../events/events.service.js';
 import type { WikiEvent } from '../events/events.types.js';
@@ -29,8 +33,7 @@ afterEach(async () => {
 async function database() {
   const db = new Database(':memory:');
   resources.push(() => { db.close(); });
-  db.exec(await readFile(new URL('../db/migrations/005_dreaming.sql', import.meta.url), 'utf8'));
-  db.exec(await readFile(new URL('../db/migrations/008_ops.sql', import.meta.url), 'utf8'));
+  for (const migration of ['001_core', '002_auth', '005_dreaming', '008_ops', '011_platform', '013_acl']) db.exec(await readFile(new URL(`../db/migrations/${migration}.sql`, import.meta.url), 'utf8'));
   db.exec('CREATE TABLE messages (id TEXT PRIMARY KEY, conversation_id TEXT, role TEXT, content TEXT, created_at TEXT, learned_at TEXT)');
   return { db, runs: new DreamRunsRepository(db) };
 }
@@ -70,8 +73,10 @@ async function fixture(slackWebhookUrl?: string) {
   } as unknown as LunaService;
   const indexer = { syncToHead: async () => ({ indexedSha: await repo.headSha() }) } as unknown as IndexerService;
   const search = { search: async () => [] } as unknown as SearchService;
-  const dreaming = new DreamingService(repo, luna, indexer, search, config, log, runs, events);
-  const other = new DreamingService(repo, luna, indexer, search, config, log, runs, events);
+  const audit = new AuditService(db);
+  const acl = new AclService(db, new UsersService(new UsersRepository(db)), audit);
+  const dreaming = new DreamingService(repo, luna, indexer, search, config, log, runs, events, acl, audit);
+  const other = new DreamingService(repo, luna, indexer, search, config, log, runs, events, acl, audit);
   return { root, repo, runs, db, dreaming, other, runAgent, events, seen, warn };
 }
 

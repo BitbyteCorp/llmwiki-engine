@@ -10,6 +10,7 @@ import pino from 'pino';
 import { afterEach, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { AuditModule } from '../audit/audit.module.js';
+import { AclModule } from '../acl/acl.module.js';
 import { UsersService } from '../auth/users.service.js';
 import type { User } from '../auth/users.types.js';
 import { CommonModule } from '../common/common.module.js';
@@ -34,7 +35,7 @@ async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), 'mcp-parity-'));
   dirs.push(dir);
   const config = loadConfig({ NODE_ENV: 'test', DATA_DIR: dir, EMBEDDING_DIMENSIONS: '2' });
-  const module = await Test.createTestingModule({ imports: [CommonModule, EventsModule, AuditModule, OpsModule, McpModule] })
+  const module = await Test.createTestingModule({ imports: [CommonModule, EventsModule, AuditModule, AclModule, OpsModule, McpModule] })
     .overrideProvider(CONFIG).useValue(config)
     .overrideProvider(LOGGER).useValue(pino({ level: 'silent' }))
     .compile();

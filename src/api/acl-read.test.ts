@@ -8,7 +8,7 @@ import type { Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pino from 'pino';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AclService } from '../acl/acl.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { ApiTokensRepository } from '../auth/api-tokens.repository.js';
@@ -245,6 +245,136 @@ describe('folder ACL at notes, history and job HTTP boundaries', () => {
     expect(linked.job?.input).toBe('');
     expect(linked.patch).toContain('+Public job edit');
     expect(JSON.stringify(linked)).not.toContain(secret);
+  });
+
+  it('never expands an authorized changed filename into hidden descendants during either file-directory transition', async () => {
+    acl.create({ prefix: 'assets/item.bin/', subjectType: 'everyone', subject: '', access: 'none' }, admin);
+    acl.create({ prefix: 'assets/item.bin/public.md', subjectType: 'everyone', subject: '', access: 'read' }, admin);
+    const base = await change('Readable file before directory replacement', async (wt) => {
+      await wt.write('assets/item.bin', 'VISIBLE-FILE-BEFORE\n');
+    });
+    const forward = await change('Replace file with partly restricted directory', async (wt) => {
+      await wt.remove('assets/item.bin');
+      await wt.write('assets/item.bin/secret.md', `${secret} nested addition\n`);
+      await wt.write('assets/item.bin/public.md', 'VISIBLE-CHILD\n');
+    });
+    const backward = await change('Replace partly restricted directory with file', async (wt) => {
+      await rm(join(wt.path, 'assets/item.bin'), { recursive: true });
+      await wt.write('assets/item.bin', 'VISIBLE-FILE-AFTER\n');
+    });
+    for (const [from, to, fileStatus, childStatus, visibleText] of [
+      [base, forward, 'D', 'A', '-VISIBLE-FILE-BEFORE'],
+      [forward, backward, 'A', 'D', '+VISIBLE-FILE-AFTER'],
+    ] as const) {
+      const detail = await json<Detail>(await request(`/history/commits/${to}`));
+      const comparison = await json<{ files: FileChange[]; patch: string }>(await request(`/history/compare?base=${from}&head=${to}`));
+      for (const projection of [detail, comparison]) {
+        expect(projection.files).toEqual([
+          { status: fileStatus, path: 'assets/item.bin' },
+          { status: childStatus, path: 'assets/item.bin/public.md' },
+        ]);
+        expect(projection.patch).toContain(visibleText);
+        expect(projection.patch).toContain('VISIBLE-CHILD');
+        expect(projection.patch).not.toContain('assets/item.bin/secret.md');
+        expect(projection.patch).not.toContain(secret);
+      }
+      expect((await json<Detail>(await request(`/history/commits/${to}`, admin))).patch).toContain(secret);
+    }
+  });
+
+  it('regenerates the initial commit against an empty tree without exposing unreadable seed files', async () => {
+    const root = await repo.resolveRef(`${seed}^`);
+    acl.create({ prefix: '/', subjectType: 'everyone', subject: '', access: 'none' }, admin);
+    acl.create({ prefix: 'index.md', subjectType: 'everyone', subject: '', access: 'read' }, admin);
+    const detail = await json<Detail>(await request(`/history/commits/${root}`));
+    expect(detail.files).toEqual([{ status: 'A', path: 'index.md' }]);
+    expect(detail.patch).toContain('+++ b/index.md');
+    expect(detail.patch).not.toContain('b/MEMORY.md');
+    expect(detail.patch).not.toContain('b/wiki/');
+    expect(detail.commit).toMatchObject({ subject: 'Restricted change', body: '', trailers: {} });
+    const privileged = await json<Detail>(await request(`/history/commits/${root}`, admin));
+    expect(privileged.files.some((file) => file.path === 'MEMORY.md')).toBe(true);
+  });
+
+  it('redacts merge-wide metadata for every selectable parent, history and blame even when one parent delta is entirely readable', async () => {
+    const publicWt = await repo.createWorktree(randomUUID());
+    const secretWt = await repo.createWorktree(`${secret}-merge`);
+    let merged: string;
+    try {
+      await publicWt.write('public/Shared.md', 'Public left revision\n');
+      await publicWt.commit('Public left change', { name: 'Author', email: 'author@example.test' });
+      await publicWt.fastForwardMain();
+      await secretWt.write('public/Shared.md', 'Public right revision\n');
+      await secretWt.write('secret/Secret.md', `${secret} branch revision\n`);
+      await secretWt.commit(`${secret} branch change`, { name: 'Author', email: 'author@example.test' });
+      secretWt.setCommitMetadata({ jobId: secret, source: 'web', requester: `${secret}@example.test` });
+      expect(await secretWt.mergeMain()).toEqual({ ok: false, conflicts: ['public/Shared.md'] });
+      await secretWt.write('public/Shared.md', 'Public resolved revision\n');
+      merged = await secretWt.finishMerge({ name: 'Author', email: 'author@example.test' });
+      await secretWt.fastForwardMain();
+    } finally {
+      await publicWt.dispose();
+      await secretWt.dispose();
+    }
+    const rawFirst = await repo.show(merged!, 1);
+    expect(rawFirst.files).toEqual([{ status: 'M', path: 'public/Shared.md' }]);
+    expect(rawFirst.commit.subject).toContain(secret);
+    for (const parent of [1, 2]) {
+      const detail = await json<Detail>(await request(`/history/commits/${merged!}?parent=${parent}`));
+      expect(detail.commit).toMatchObject({ subject: 'Restricted change', body: '', trailers: {} });
+      expect(detail.files).toEqual([{ status: 'M', path: 'public/Shared.md' }]);
+      expect(detail.patch).toContain('+Public resolved revision');
+      expect(JSON.stringify(detail)).not.toContain(secret);
+      const privileged = await json<Detail>(await request(`/history/commits/${merged!}?parent=${parent}`, admin));
+      expect(privileged.commit.subject).toContain(secret);
+      expect(privileged.commit.trailers['Wiki-Job']).toBe(secret);
+    }
+    const history = await json<{ commits: CommitInfo[] }>(await request('/history?limit=1'));
+    expect(history.commits[0]).toMatchObject({ sha: merged!, subject: 'Restricted change', body: '', trailers: {} });
+    const blame = await json<{ ranges: Array<{ sha: string; summary: string }> }>(await request('/notes/blame?path=public/Shared.md'));
+    expect(blame.ranges).toEqual([expect.objectContaining({ sha: merged!, summary: 'Restricted change' })]);
+  });
+
+  it('rejects content, raw bytes and collected commit or compare patches if permissions are revoked while Git is awaited', async () => {
+    const mixed = await change('Mixed revision for revocation races', async (wt) => {
+      await wt.write('public/Shared.md', 'VISIBLE-PENDING-READ\n');
+      await wt.write('secret/Secret.md', `${secret} pending revision\n`);
+    });
+    for (const [boundary, route, deniedPath] of [
+      ['content', '/notes/content?path=public/Shared.md', 'public/Shared.md'],
+      ['raw', '/notes/raw?path=assets/public/image.png', 'assets/public/image.png'],
+      ['patch', `/history/commits/${mixed}`, 'public/Shared.md'],
+      ['patch', `/history/compare?base=${seed}&head=${mixed}`, 'public/Shared.md'],
+    ] as const) {
+      const ready = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      async function pause<T>(read: Promise<T>): Promise<T> {
+        const result = await read;
+        ready.resolve();
+        await release.promise;
+        return result;
+      }
+      const readFile = repo.readFile.bind(repo);
+      const readBytes = repo.readFileBytes.bind(repo);
+      const diffPatch = repo.diffPatch.bind(repo);
+      const spy = boundary === 'content'
+        ? vi.spyOn(repo, 'readFile').mockImplementation((path, ref) => pause(readFile(path, ref)))
+        : boundary === 'raw'
+          ? vi.spyOn(repo, 'readFileBytes').mockImplementation((path, ref) => pause(readBytes(path, ref)))
+          : vi.spyOn(repo, 'diffPatch').mockImplementation((base, head, paths) => pause(diffPatch(base, head, paths)));
+      let rule: number | undefined;
+      try {
+        const pending = request(route);
+        await ready.promise;
+        rule = acl.create({ prefix: deniedPath, subjectType: 'everyone', subject: '', access: 'none' }, admin).id;
+        release.resolve();
+        await denied(await pending);
+      } finally {
+        release.resolve();
+        spy.mockRestore();
+        if (rule !== undefined) acl.delete(rule, admin);
+      }
+    }
   });
 
   it('rejects PUT, moves at either endpoint, delete and revert before mutation, while admins bypass folder rules', async () => {
