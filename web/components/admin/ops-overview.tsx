@@ -106,7 +106,7 @@ export function OpsOverview() {
         {jobs.isPending && <Loading label="전체 작업 이력에서 실행·대기 작업을 확인하는 중…" />}
         {jobs.error && <div className="space-y-2"><ErrorNotice error={jobs.error} /><Button variant="outline" size="sm" onClick={() => void jobs.refetch()}>작업 목록 다시 시도</Button></div>}
         {jobs.data && (jobs.data.length === 0 ? <EmptyState title="실행 중이거나 대기 중인 작업이 없습니다" /> : <ul className="divide-y rounded-lg border">{jobs.data.map(job => <JobRow key={job.id} job={job} disabled={busy} onAction={() => choose({ kind: "cancel", job })} />)}</ul>)}
-        <Link href="/history?tab=jobs" className="text-sm underline underline-offset-4">전체 쓰기 작업 보기</Link>
+        <Link href="/jobs" className="text-sm underline underline-offset-4">전체 쓰기 작업 보기</Link>
       </Section>
       <Section title="최근 실패 작업" icon={<Activity className="size-4" />}>
         {data.failedJobs.length === 0 ? <EmptyState title="실패한 작업이 없습니다" /> : <><p className="text-xs text-muted-foreground">최근 실패 작업 최대 20개입니다. 상세 화면에서 원인과 변경 이력을 확인하세요.</p><ul className="divide-y rounded-lg border">{data.failedJobs.map(job => <JobRow key={job.id} job={job} disabled={busy} onAction={() => choose({ kind: "retry", job })} />)}</ul></>}
