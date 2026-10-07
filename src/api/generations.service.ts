@@ -14,8 +14,8 @@ const columns = `g.id, g.conversation_id AS conversationId, g.user_message_id AS
 interface Frame { seq: number; event: GenerationEvent; data: string }
 interface Job { controller: AbortController; seq: number; terminal: boolean }
 type Listener = (frame: Frame, terminal: boolean) => void;
-type StartInput = Pick<Generation, 'conversationId' | 'userMessageId' | 'userId'> & {
-  assistantMessageId: string; clientId?: string; model?: string; effort?: string;
+type StartInput = Pick<Generation, 'conversationId' | 'userId'> & {
+  userMessageId: string; assistantMessageId: string; clientId?: string; model?: string; effort?: string;
 };
 
 @Injectable()

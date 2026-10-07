@@ -290,7 +290,7 @@ describe('detached replayable generations', () => {
     ]);
   });
 
-  it('retains historical replay and client deduplication when a regenerated assistant message is removed', async () => {
+  it('retains historical replay and client deduplication after both messages of a superseded turn are removed', async () => {
     const started = { ...input(), clientId: 'historical-request' };
     const generation = service.start(started, async (_signal, emit) => {
       emit('done', { message: { content: 'Historical answer' } });
@@ -299,6 +299,10 @@ describe('detached replayable generations', () => {
     db.prepare('DELETE FROM messages WHERE id = ?').run(started.assistantMessageId);
     expect(service.findClient('conversation', 'historical-request')).toMatchObject({
       id: generation.id, assistantMessageId: null, status: 'succeeded',
+    });
+    db.prepare('DELETE FROM messages WHERE id = ?').run(started.userMessageId);
+    expect(service.findClient('conversation', 'historical-request')).toMatchObject({
+      id: generation.id, userMessageId: null, assistantMessageId: null, status: 'succeeded',
     });
     expect(service.start(started, async () => { throw new Error('Old request must not restart'); }).id).toBe(generation.id);
     expect(events(await (await replay(generation.id, 1, '2')).text())).toEqual([

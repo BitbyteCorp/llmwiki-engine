@@ -4,7 +4,7 @@ export type GenerationStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' 
 export interface Generation {
   id: string;
   conversationId: string;
-  userMessageId: string;
+  userMessageId: string | null;
   assistantMessageId: string | null;
   userId: number;
   clientId: string | null;
