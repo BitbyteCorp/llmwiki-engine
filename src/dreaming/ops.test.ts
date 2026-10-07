@@ -239,3 +239,21 @@ it('rejects synchronous manual reentry from the start event without creating a s
   await rejection;
   expect(f.runs.list()).toEqual([run]);
 });
+
+it('keeps content edited after capture unlearned while acknowledging unchanged captured messages', async () => {
+  const { db, runs } = await database();
+  const insert = db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, NULL)');
+  insert.run('edited', 'conversation', 'user', 'Captured original', '2026-10-01T00:00:00.000Z');
+  insert.run('unchanged', 'conversation', 'user', 'Unchanged captured fact', '2026-10-01T00:00:00.000Z');
+  const captured = runs.unlearnedUserMessages('2026-10-01T01:00:00.000Z');
+  db.prepare('UPDATE messages SET content = ? WHERE id = ?').run('New unseen content', 'edited');
+  const learnedAt = '2026-10-01T02:00:00.000Z';
+  runs.markLearned(captured, learnedAt);
+  expect(db.prepare('SELECT id, learned_at FROM messages ORDER BY id').all()).toEqual([
+    { id: 'edited', learned_at: null },
+    { id: 'unchanged', learned_at: learnedAt },
+  ]);
+  expect(runs.unlearnedUserMessages('2026-10-01T03:00:00.000Z')).toEqual([
+    { id: 'edited', conversation_id: 'conversation', content: 'New unseen content', created_at: '2026-10-01T00:00:00.000Z' },
+  ]);
+});

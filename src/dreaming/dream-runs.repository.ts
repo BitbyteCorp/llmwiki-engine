@@ -94,9 +94,9 @@ export class DreamRunsRepository {
 
   markLearned(messages: readonly DreamUserMessage[], learnedAt: string): void {
     const mark = this.db.prepare(`UPDATE messages SET learned_at = ?
-      WHERE id = ? AND role = 'user' AND learned_at IS NULL`);
+      WHERE id = ? AND content = ? AND role = 'user' AND learned_at IS NULL`);
     this.db.transaction(() => {
-      for (const message of messages) mark.run(learnedAt, message.id);
+      for (const message of messages) mark.run(learnedAt, message.id, message.content);
     })();
   }
 
