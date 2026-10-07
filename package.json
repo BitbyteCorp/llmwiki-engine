@@ -1,0 +1,50 @@
+{
+  "name": "llmwiki-engine",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "llmwiki": "dist/cli.js"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "packageManager": "pnpm@10.34.6",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc && node scripts/build-assets.mjs && node scripts/build-web.mjs",
+    "start": "node dist/main.js",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "cli": "tsx src/cli.ts"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild"
+    ]
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "better-sqlite3": "^13.0.3",
+    "commander": "^15.0.0",
+    "cookie-parser": "^1.4.7",
+    "croner": "^10.0.1",
+    "express": "^5.2.1",
+    "gray-matter": "^4.0.3",
+    "jose": "^6.2.12",
+    "openai": "^7.28.0",
+    "pino": "^10.4.0",
+    "sqlite-vec": "^0.1.9",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/cookie-parser": "^1.4.10",
+    "@types/express": "^5.0.6",
+    "@types/node": "^24.19.1",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.0.3"
+  }
+}

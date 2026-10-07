@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "llmwiki": {
+      "type": "http",
+      "url": "${LLMWIKI_URL}/mcp"
+    }
+  }
+}

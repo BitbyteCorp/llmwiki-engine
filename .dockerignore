@@ -1,0 +1,16 @@
+.git
+**/node_modules
+**/dist
+**/coverage
+.pnpm-store
+.vite
+.env
+.env.*
+!.env.example
+**/.ssh
+*.pem
+*.key
+*.log
+data
+worktrees
+llmwiki.db*

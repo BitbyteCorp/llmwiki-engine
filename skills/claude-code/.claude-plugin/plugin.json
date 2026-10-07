@@ -1,0 +1,8 @@
+{
+  "name": "llmwiki",
+  "version": "0.1.0",
+  "description": "Search shared team knowledge and proactively submit durable lessons through llmwiki MCP.",
+  "author": {
+    "name": "llmwiki-engine"
+  }
+}

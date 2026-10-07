@@ -63,7 +63,7 @@ flowchart TB
 예를 들어 OAuth 세션과 검색 인덱스는 서로 다른 용도의 데이터지만, 별도 서비스 없이 같은 SQLite에 저장한다. 지식 파일의 배치와 백업 정책은 [지식 저장소](knowledge-repository.md)에서 다룬다.
 
 ### DB 선택
-PostgreSQL을 대안으로 검토했으며 현재 설계는 SQLite를 유지한다. SQLite 유지 권고는 사용자의 최종 확인 전이다.
+PostgreSQL을 대안으로 검토했으며 SQLite 사용을 확정했다. 구현은 `better-sqlite3`와 `sqlite-vec`를 사용하고, WAL 모드와 SQL 마이그레이션으로 상태와 검색 인덱스를 관리한다.
 
 결정적인 이유는 엔진이 어차피 인스턴스 하나로 동작한다는 점이다. 지식 저장소 git 클론과 작업 워크트리는 로컬 디스크에 있고, [main 머지](write-flow.md)는 락으로 직렬 처리한다. 따라서 PostgreSQL이 제공하는 여러 인스턴스의 DB 공유나 고가용성의 이점을 현재 구성에서는 활용할 수 없다.
 
@@ -85,3 +85,4 @@ OpenAI API는 [Luna](luna.md)와 임베딩에, Google OAuth는 [인증](auth.md)
 - [Luna](luna.md)는 엔진의 LLM과 함수 도구 경계를 설명한다.
 - [인증](auth.md), [MCP](mcp.md), [웹 버전](web.md)은 외부 접점을 설명한다.
 - [쓰기 흐름](write-flow.md), [dreaming](dreaming.md), [RAG](rag.md)는 작업과 검색의 상세 동작을 설명한다.
+- [개발 환경과 실행](development.md)은 구현 스택, 모듈별 책임, 환경 변수, 로컬 실행과 Docker 이미지의 빌드·영속 볼륨 구성을 설명한다.
