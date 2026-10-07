@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, type FormEvent } from "react"
+import { useRouter, useSearchParams } from "next/navigation"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { api, type Role, type Settings, type User } from "../lib/api"
 import { EmptyState, ErrorNotice, Loading, PageHeader, formatDate } from "../components/common"
@@ -9,6 +10,10 @@ import { Input } from "../components/ui/input"
 import { Label } from "../components/ui/label"
 import { Switch } from "../components/ui/switch"
 import { Textarea } from "../components/ui/textarea"
+import { OpsOverview } from "../components/admin/ops-overview"
+import { AuditLog } from "../components/admin/audit-log"
+import { AclRules } from "../components/admin/acl-rules"
+import { ExportPanel } from "../components/admin/export-panel"
 
 const roleLabels: Record<Role, string> = { admin: "관리자", editor: "편집자", viewer: "뷰어" }
 const selectClass = "h-9 rounded-md border bg-background px-3 text-sm disabled:opacity-50"
@@ -20,15 +25,50 @@ function RoleSelect({ value, onChange, disabled, id, label }: { value: Role; onC
 export function AdminPage() {
   const me = useQuery({ queryKey: ["me"], queryFn: api.me })
   if (me.isPending) return <Loading label="관리 권한을 확인하는 중…" />
-  if (me.isError) return <ErrorNotice error={me.error} />
+  if (me.isError) return <div className="space-y-3"><ErrorNotice error={me.error} /><Button variant="outline" onClick={() => void me.refetch()}>권한 확인 다시 시도</Button></div>
   if (me.data.user.role !== "admin") return <div className="space-y-6"><PageHeader title="관리" /><EmptyState title="관리자 권한이 필요합니다" description="사용자와 로그인 설정은 관리자만 변경할 수 있습니다." /></div>
   return <AdminConsole currentUser={me.data.user} />
 }
 
+const adminTabs = [{ id: "overview", label: "운영 개요" }, { id: "users", label: "사용자" }, { id: "settings", label: "로그인 설정" }, { id: "audit", label: "감사 로그" }, { id: "acl", label: "접근 권한" }, { id: "export", label: "내보내기" }] as const
+type AdminTab = (typeof adminTabs)[number]["id"]
+
 function AdminConsole({ currentUser }: { currentUser: User }) {
+  const router = useRouter()
+  const params = useSearchParams()
+  const requested = params.get("tab")
+  const tab: AdminTab = adminTabs.find(item => item.id === requested)?.id ?? "overview"
+  function selectTab(next: AdminTab) {
+    const query = new URLSearchParams(params.toString())
+    query.set("tab", next)
+    router.replace(`/admin?${query}`, { scroll: false })
+  }
+  return <div className="space-y-6">
+    <PageHeader title="관리" description="운영 상태, 사용자 권한과 로그인 정책을 관리합니다." />
+    <div role="tablist" aria-label="관리 화면" className="flex gap-1 overflow-x-auto border-b pb-2">
+      {adminTabs.map((item, index) => <button key={item.id} type="button" role="tab" id={`admin-tab-${item.id}`} aria-selected={tab === item.id} aria-controls={`admin-panel-${item.id}`} tabIndex={tab === item.id ? 0 : -1} className={`shrink-0 rounded-md px-3 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${tab === item.id ? "bg-secondary font-semibold text-secondary-foreground" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`} onClick={() => selectTab(item.id)} onKeyDown={event => {
+        const nextIndex = event.key === "ArrowRight" ? (index + 1) % adminTabs.length : event.key === "ArrowLeft" ? (index + adminTabs.length - 1) % adminTabs.length : event.key === "Home" ? 0 : event.key === "End" ? adminTabs.length - 1 : null
+        if (nextIndex === null) return
+        event.preventDefault()
+        const next = adminTabs[nextIndex]!
+        document.getElementById(`admin-tab-${next.id}`)?.focus()
+        selectTab(next.id)
+      }}>{item.label}</button>)}
+    </div>
+    <div role="tabpanel" id={`admin-panel-${tab}`} aria-labelledby={`admin-tab-${tab}`} tabIndex={0} className="min-w-0 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+      {tab === "overview" && <OpsOverview />}
+      {(tab === "users" || tab === "settings") && <UsersAndSettings currentUser={currentUser} tab={tab} />}
+      {tab === "audit" && <AuditLog />}
+      {tab === "acl" && <AclRules />}
+      {tab === "export" && <ExportPanel id="admin-export" />}
+    </div>
+  </div>
+}
+
+function UsersAndSettings({ currentUser, tab }: { currentUser: User; tab: "users" | "settings" }) {
   const queryClient = useQueryClient()
-  const users = useQuery({ queryKey: ["users"], queryFn: api.users })
-  const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings })
+  const users = useQuery({ queryKey: ["users"], queryFn: api.users, enabled: tab === "users" })
+  const settings = useQuery({ queryKey: ["settings"], queryFn: api.settings, enabled: tab === "settings" })
   const [email, setEmail] = useState("")
   const [name, setName] = useState("")
   const [role, setRole] = useState<Role>("editor")
@@ -42,6 +82,7 @@ function AdminConsole({ currentUser }: { currentUser: User }) {
       setRole("editor")
       void queryClient.invalidateQueries({ queryKey: ["users"] })
     },
+    onSettled: () => { void queryClient.invalidateQueries({ queryKey: ["audit"] }) },
   })
   const updateUser = useMutation({
     mutationFn: ({ id, role }: { id: number; role: Role }) => api.updateUser(id, { role }),
@@ -49,6 +90,7 @@ function AdminConsole({ currentUser }: { currentUser: User }) {
       if (user.id === currentUser.id) queryClient.setQueryData(["me"], { user })
       await queryClient.invalidateQueries({ queryKey: ["users"] })
     },
+    onSettled: () => { void queryClient.invalidateQueries({ queryKey: ["audit"] }) },
   })
   const deleteUser = useMutation({
     mutationFn: api.deleteUser,
@@ -57,6 +99,7 @@ function AdminConsole({ currentUser }: { currentUser: User }) {
       if (id === currentUser.id) await queryClient.invalidateQueries({ queryKey: ["me"] })
       await queryClient.invalidateQueries({ queryKey: ["users"] })
     },
+    onSettled: () => { void queryClient.invalidateQueries({ queryKey: ["audit"] }) },
   })
   const busy = updateUser.isPending || deleteUser.isPending
   const userToDelete = users.data?.users.find((user) => user.id === deleteId)
@@ -68,11 +111,11 @@ function AdminConsole({ currentUser }: { currentUser: User }) {
 
   return (
     <div className="space-y-6">
-      <PageHeader title="관리" description="사용자 권한과 로그인 허용 정책을 관리합니다." />
+      {tab === "users" && <>
       <section className="space-y-4" aria-labelledby="users-heading">
         <div><h2 id="users-heading" className="text-lg font-semibold">사용자</h2><p className="mt-1 text-sm text-muted-foreground">마지막 관리자는 삭제하거나 다른 역할로 변경할 수 없습니다.</p></div>
         {users.isPending && <Loading label="사용자를 불러오는 중…" />}
-        {users.error && <ErrorNotice error={users.error} />}
+        {users.error && <div className="space-y-2"><ErrorNotice error={users.error} /><Button variant="outline" onClick={() => void users.refetch()}>사용자 다시 불러오기</Button></div>}
         {updateUser.error && <ErrorNotice error={updateUser.error} />}
         {deleteUser.error && <ErrorNotice error={deleteUser.error} />}
         {users.data && (users.data.users.length === 0 ? <EmptyState title="등록된 사용자가 없습니다" /> : (
@@ -101,16 +144,18 @@ function AdminConsole({ currentUser }: { currentUser: User }) {
             <div className="flex flex-col gap-2"><Label htmlFor="user-role">역할</Label><RoleSelect id="user-role" label="새 사용자 역할" value={role} onChange={setRole} disabled={createUser.isPending} /></div>
           </div>
           {createUser.error && <ErrorNotice error={createUser.error} />}
-          {createUser.isSuccess && <p role="status" className="text-sm text-green-700">사용자를 추가했습니다.</p>}
+          {createUser.isSuccess && <p role="status" className="text-sm text-emerald-700 dark:text-emerald-400">사용자를 추가했습니다.</p>}
           <Button type="submit" disabled={createUser.isPending}>{createUser.isPending ? "추가 중…" : "사용자 추가"}</Button>
         </form>
       </section>
+      </>}
+      {tab === "settings" &&
       <section className="space-y-4" aria-labelledby="login-settings-heading">
         <h2 id="login-settings-heading" className="text-lg font-semibold">로그인 설정</h2>
         {settings.isPending && <Loading label="로그인 설정을 불러오는 중…" />}
-        {settings.error && <ErrorNotice error={settings.error} />}
+        {settings.error && <div className="space-y-2"><ErrorNotice error={settings.error} /><Button variant="outline" onClick={() => void settings.refetch()}>로그인 설정 다시 불러오기</Button></div>}
         {settings.data && <SettingsForm settings={settings.data} />}
-      </section>
+      </section>}
     </div>
   )
 }
@@ -129,6 +174,7 @@ function SettingsForm({ settings }: { settings: Settings }) {
       setDomainText(nextSettings.allowedDomains.join("\n"))
       queryClient.setQueryData(["settings"], nextSettings)
     },
+    onSettled: () => { void queryClient.invalidateQueries({ queryKey: ["audit"] }) },
   })
 
   function submitSettings(event: FormEvent<HTMLFormElement>) {
@@ -145,9 +191,9 @@ function SettingsForm({ settings }: { settings: Settings }) {
         <div className="space-y-1"><Label htmlFor="allowlist-enabled">등록된 이메일만 로그인 허용</Label><p className="text-sm leading-6 text-muted-foreground">켜면 허용 도메인에 속한 사용자 중 등록된 이메일만 로그인할 수 있습니다. 꺼도 도메인 검사는 적용됩니다.</p></div>
         <Switch id="allowlist-enabled" checked={allowlistEnabled} disabled={save.isPending} onCheckedChange={(checked) => { setAllowlistEnabled(checked); save.reset() }} />
       </div>
-      <div className="max-w-xl space-y-2"><Label htmlFor="allowed-domains">허용 도메인</Label><Textarea id="allowed-domains" rows={5} placeholder={"example.com\nteam.example.com"} value={domainText} disabled={save.isPending} onChange={(event) => { setDomainText(event.target.value); save.reset() }} /><p className="text-xs leading-5 text-muted-foreground">도메인을 한 줄에 하나씩 입력합니다. 이메일 주소나 @는 넣지 않습니다. 목록이 비어 있으면 로그인이 허용되지 않습니다.</p></div>
+      <div className="max-w-xl space-y-2"><Label htmlFor="allowed-domains">허용 도메인</Label><Textarea id="allowed-domains" rows={5} placeholder={"example.com\nteam.example.com"} value={domainText} disabled={save.isPending} onChange={(event) => { setDomainText(event.target.value); save.reset() }} /><p className="text-xs leading-5 text-muted-foreground">도메인을 한 줄에 하나씩 입력합니다. 이메일 주소나 @는 넣지 않습니다. 목록이 비어 있으면 도메인 제한을 적용하지 않습니다.</p></div>
       {save.error && <ErrorNotice error={save.error} />}
-      {save.isSuccess && <p role="status" className="text-sm text-green-700">로그인 설정을 저장했습니다.</p>}
+      {save.isSuccess && <p role="status" className="text-sm text-emerald-700 dark:text-emerald-400">로그인 설정을 저장했습니다.</p>}
       <Button type="submit" disabled={save.isPending || (!domainsChanged && !enabledChanged)}>{save.isPending ? "저장 중…" : "설정 저장"}</Button>
     </form>
   )
