@@ -2,10 +2,14 @@ import 'reflect-metadata';
 import { Global, HttpException, Module, type INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import type { Request } from 'express';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { AuditService } from '../audit/audit.service.js';
 import { SessionsService } from '../auth/sessions.service.js';
+import { UsersRepository } from '../auth/users.repository.js';
 import { UsersService } from '../auth/users.service.js';
 import type { User } from '../auth/users.types.js';
 import { HttpExceptionFilter } from '../common/filters/http-exception.filter.js';
@@ -141,7 +145,7 @@ describe('repository path access policy', () => {
     expect(acl.policyKey({ id: editor.id, role: 'viewer' })).not.toBe(acl.policyKey(editor));
   });
 
-  it('revokes deleted user grants before a replacement account reuses the user ID', async () => {
+  it('revokes deleted user grants and gives replacement accounts strictly newer identities', async () => {
     acl.create({ prefix: 'private/', subjectType: 'everyone', access: 'none' }, admin);
     const folderGrant = acl.create({ prefix: 'private/', subjectType: 'user', subject: otherEditor.id, access: 'write' }, admin);
     const fileGrant = acl.create({ prefix: 'private/exact.md', subjectType: 'user', subject: otherEditor.id, access: 'read' }, admin);
@@ -149,8 +153,10 @@ describe('repository path access policy', () => {
     expect(cachedReader.access(otherEditor, 'private/secret.md')).toBe('write');
     const grantedPolicyKey = cachedReader.policyKey(otherEditor);
     users.delete(otherEditor.id);
+    expect(cachedReader.policyKey(otherEditor)).not.toBe(grantedPolicyKey);
+    expect(cachedReader.access(otherEditor, 'private/secret.md')).toBe('none');
     const replacement = users.create({ email: 'replacement@example.com', role: 'editor' });
-    expect(replacement.id).toBe(otherEditor.id);
+    expect(replacement.id).toBeGreaterThan(otherEditor.id);
     expect(cachedReader.policyKey(replacement)).not.toBe(grantedPolicyKey);
     expect(cachedReader.access(replacement, 'private/secret.md')).toBe('none');
     expect(cachedReader.access(replacement, 'private/exact.md')).toBe('none');
@@ -164,6 +170,32 @@ describe('repository path access policy', () => {
       { actorId: null, target: `acl:${folderGrant.id}`, outcome: 'success' },
       { actorId: null, target: `acl:${fileGrant.id}`, outcome: 'success' },
     ]);
+  });
+
+  it('preserves identity allocation across deletion, explicit imported IDs, and database reopen', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'llmwiki-user-identities-'));
+    const file = join(directory, 'users.db');
+    let db = openDb(file);
+    try {
+      runMigrations(db);
+      let repository = new UsersRepository(db);
+      const createdAt = '2026-01-01T00:00:00.000Z';
+      expect(repository.create('first@example.com', null, 'admin', createdAt)).toBe(1);
+      db.prepare('INSERT INTO users (id, email, role, created_at) VALUES (?, ?, ?, ?)')
+        .run(40, 'imported@example.com', 'editor', createdAt);
+      repository.delete(40);
+      const afterImport = repository.create('after-import@example.com', null, 'editor', createdAt);
+      expect(afterImport).toBe(41);
+      repository.delete(afterImport);
+      db.close();
+      db = openDb(file);
+      runMigrations(db);
+      repository = new UsersRepository(db);
+      expect(repository.create('after-reopen@example.com', null, 'viewer', createdAt)).toBe(42);
+    } finally {
+      if (db.open) db.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('applies SQL read filtering before limits with literal prefixes and identical precedence', () => {

@@ -32,7 +32,7 @@ async function setup() {
   const jwk = { ...await exportJWK(keys.publicKey), kid: 'google-test', alg: 'RS256', use: 'sig' };
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
-  for (const migration of ['001_core.sql', '002_auth.sql']) {
+  for (const migration of ['001_core.sql', '002_auth.sql', '011_platform.sql', '013_acl.sql']) {
     db.exec(readFileSync(new URL(`../db/migrations/${migration}`, import.meta.url), 'utf8'));
   }
   const users = new UsersService(new UsersRepository(db));

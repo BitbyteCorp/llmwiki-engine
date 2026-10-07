@@ -22,7 +22,8 @@ export class UsersRepository {
     this.byId = db.prepare(`SELECT ${userColumns} FROM users WHERE id = ?`);
     this.byEmail = db.prepare(`SELECT ${userColumns} FROM users WHERE email = ?`);
     this.allUsers = db.prepare(`SELECT ${userColumns} FROM users ORDER BY id`);
-    this.insertUser = db.prepare('INSERT INTO users (email, name, role, created_at) VALUES (?, ?, ?, ?)');
+    this.insertUser = db.prepare(`INSERT INTO users (id, email, name, role, created_at)
+      SELECT highest_id + 1, ?, ?, ?, ? FROM user_id_highwater WHERE id = 1`);
     this.updateUser = db.prepare('UPDATE users SET role = ?, name = ? WHERE id = ?');
     this.removeUser = db.prepare('DELETE FROM users WHERE id = ?');
     this.adminCount = db.prepare("SELECT count(*) AS count FROM users WHERE role = 'admin'");

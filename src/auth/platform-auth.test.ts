@@ -61,7 +61,7 @@ function cookie(user: User): string {
 beforeEach(async () => {
   db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
-  for (const name of ['001_core.sql', '002_auth.sql', '011_platform.sql']) {
+  for (const name of ['001_core.sql', '002_auth.sql', '011_platform.sql', '013_acl.sql']) {
     db.exec(readFileSync(new URL(`../db/migrations/${name}`, import.meta.url), 'utf8'));
   }
   const module = await Test.createTestingModule({

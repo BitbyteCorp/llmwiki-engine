@@ -14,7 +14,9 @@ beforeEach(() => {
   vi.setSystemTime(new Date(loginTime));
   db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
-  db.exec(readFileSync(new URL('../db/migrations/001_core.sql', import.meta.url), 'utf8'));
+  for (const migration of ['001_core.sql', '002_auth.sql', '011_platform.sql', '013_acl.sql']) {
+    db.exec(readFileSync(new URL(`../db/migrations/${migration}`, import.meta.url), 'utf8'));
+  }
   users = new UsersService(new UsersRepository(db));
 });
 

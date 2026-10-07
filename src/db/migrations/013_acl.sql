@@ -29,7 +29,7 @@ CREATE TRIGGER acl_rules_delete AFTER DELETE ON acl_rules BEGIN
   UPDATE acl_policy SET revision = revision + 1 WHERE id = 1;
 END;
 
--- users.id can be reused. A removed identity must never leave grants for its successor.
+-- Remove grants even if an import explicitly replaces a deleted identity.
 CREATE TRIGGER acl_user_delete AFTER DELETE ON users BEGIN
   INSERT INTO audit_events (actor_id, action, target, outcome, summary, created_at)
     SELECT NULL, 'acl.delete', 'acl:' || id, 'success',
@@ -39,4 +39,15 @@ CREATE TRIGGER acl_user_delete AFTER DELETE ON users BEGIN
     WHERE subject_type = 'user' AND subject = CAST(OLD.id AS TEXT);
   DELETE FROM acl_rules
     WHERE subject_type = 'user' AND subject = CAST(OLD.id AS TEXT);
+END;
+
+-- Allocate durable monotonic identities without rebuilding users or its referencing tables.
+CREATE TABLE user_id_highwater (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  highest_id INTEGER NOT NULL
+);
+INSERT INTO user_id_highwater (id, highest_id)
+  SELECT 1, COALESCE(MAX(id), 0) FROM users;
+CREATE TRIGGER users_id_highwater_insert AFTER INSERT ON users BEGIN
+  UPDATE user_id_highwater SET highest_id = MAX(highest_id, NEW.id) WHERE id = 1;
 END;
