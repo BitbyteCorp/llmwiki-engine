@@ -1,8 +1,9 @@
 'use client'
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Download, FileText, ImageIcon, Paperclip, X } from 'lucide-react'
-import { request } from '@/lib/api'
+import { api, ApiError, request } from '@/lib/api'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 
@@ -105,18 +106,43 @@ function AssetSave({ id, name }: { id: string; name: string }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [saved, setSaved] = useState<string | null>(null)
+  const [conflict, setConflict] = useState(false)
+  const client = useQueryClient()
+  const baseline = useQuery({
+    queryKey: ['chat/asset-baseline'],
+    queryFn: async () => {
+      const tree = await client.fetchQuery({ queryKey: ['notes/tree'], queryFn: api.tree, staleTime: 0 })
+      const notePath = tree.files.includes('index.md') ? 'index.md' : tree.files[0]
+      if (notePath) return (await client.fetchQuery({ queryKey: ['notes/content', notePath], queryFn: () => api.note(notePath), staleTime: 0 })).updatedSha
+      const latest = await request<{ commits: Array<{ sha: string }> }>('/api/history?limit=1')
+      if (!latest.commits[0]) throw new Error('기준 커밋을 찾지 못했다. 저장소 초기화를 확인한다.')
+      return latest.commits[0].sha
+    },
+    enabled: open,
+    refetchOnWindowFocus: false,
+  })
+  useEffect(() => {
+    const sha = baseline.data
+    if (open && !baseline.isFetching && !baseline.isError && sha) setBaseSha(previous => previous || sha)
+  }, [open, baseline.data, baseline.isFetching, baseline.isError])
   return <div className="w-full text-xs">
     <Button type="button" variant="ghost" size="xs" onClick={() => setOpen(value => !value)} aria-expanded={open}><Paperclip /> 위키 자산으로 저장</Button>
     {open && <div className="mt-2 space-y-2 rounded-md border p-2">
       <label className="block">저장 경로<Input value={path} onChange={event => setPath(event.target.value)} placeholder="assets/image.png" aria-label="자산 저장 경로" /></label>
       <label className="block">기준 커밋 SHA<Input value={baseSha} onChange={event => setBaseSha(event.target.value)} placeholder="노트에서 확인한 현재 커밋 SHA" aria-label="자산 기준 커밋 SHA" /></label>
+      {baseline.isFetching && <p role="status" className="text-muted-foreground">현재 기준 커밋을 불러오는 중…</p>}
+      {baseline.isError && <p role="alert" className="text-destructive">{baseline.error.message}</p>}
+      {(baseline.isError || conflict) && <Button type="button" variant="outline" size="xs" disabled={baseline.isFetching} onClick={async () => {
+        const result = await baseline.refetch()
+        if (result.data && !result.error) { setBaseSha(result.data); setConflict(false); setError('') }
+      }}>{conflict ? '최신 기준 SHA 불러오기' : '기준 커밋 다시 불러오기'}</Button>}
       <p className="text-muted-foreground">editor 이상만 저장할 수 있다. 기존 자산 변경은 기준 커밋과 충돌을 검사한다.</p>
       {error && <p role="alert" className="text-destructive">{error}</p>}
       {saved && <p role="status">저장 완료 · {saved.slice(0, 10)}</p>}
-      <Button type="button" size="xs" disabled={busy || !path.startsWith('assets/') || !baseSha.trim()} onClick={async () => {
+      <Button type="button" size="xs" disabled={busy || baseline.isFetching || baseline.isError || conflict || !path.startsWith('assets/') || !baseSha.trim()} onClick={async () => {
         setBusy(true); setError(''); setSaved(null)
         try { const result = await request<{ mergeSha: string }>(`/api/uploads/${encodeURIComponent(id)}/save`, { method: 'POST', body: JSON.stringify({ path, baseSha: baseSha.trim() }) }); setSaved(result.mergeSha); setBaseSha(result.mergeSha) }
-        catch (cause) { setError(cause instanceof Error ? cause.message : '저장하지 못했다.') }
+        catch (cause) { setError(cause instanceof Error ? cause.message : '저장하지 못했다.'); if (cause instanceof ApiError && cause.status === 409) setConflict(true) }
         finally { setBusy(false) }
       }}>{busy ? '저장 중…' : '저장'}</Button>
     </div>}

@@ -1,9 +1,11 @@
 'use client'
 
 import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
-import { useRouter } from 'next/navigation'
+import Link from 'next/link'
+import { useQuery } from '@tanstack/react-query'
 import { Paperclip, Send, Square, X, Pin, CircleHelp } from 'lucide-react'
-import { request, type CatalogNote } from '@/lib/api'
+import { api, request, type CatalogNote } from '@/lib/api'
+import { noteHref } from '@/components/common'
 import { consumeChatContext, type ChatNoteContext } from '@/lib/chat-context'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -23,7 +25,7 @@ export interface ChatComposerProps {
 }
 interface ModelOptions { models: string[]; defaultModel: string; efforts: Array<'low' | 'medium' | 'high'>; defaultEffort: string }
 const commands = [
-  { name: '/search', description: '검색 화면 열기 · /search 검색어' },
+  { name: '/search', description: '대화 안에서 검색 · /search 검색어' },
   { name: '/note', description: '노트 문맥 고정 · /note wiki/노트.md' },
   { name: '/save', description: '마지막 답변을 위키 초안으로 저장' },
   { name: '/help', description: '입력 도움말 표시' },
@@ -31,7 +33,6 @@ const commands = [
 const contextKey = 'llmwiki.chat.pinned.'
 
 export function ChatComposer({ conversationId, disabled, streaming, onSubmit, onStop, edit, onCancelEdit, onEditLast, onSaveLast }: ChatComposerProps) {
-  const router = useRouter()
   const textarea = useRef<HTMLTextAreaElement>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const previousEdit = useRef<string | null>(null)
@@ -48,6 +49,8 @@ export function ChatComposer({ conversationId, disabled, streaming, onSubmit, on
   const [modelOptions, setModelOptions] = useState<ModelOptions | null>(null)
   const [model, setModel] = useState('')
   const [effort, setEffort] = useState<'' | 'low' | 'medium' | 'high'>('')
+  const [searchQuery, setSearchQuery] = useState('')
+  const search = useQuery({ queryKey: ['search', searchQuery], queryFn: ({ signal }) => api.search(searchQuery, { limit: 5 }, signal), enabled: !!searchQuery })
   const attachments = useChatAttachments()
   const [suggestions, setSuggestions] = useState<CatalogNote[]>([])
   const [suggestionError, setSuggestionError] = useState('')
@@ -151,7 +154,7 @@ export function ChatComposer({ conversationId, disabled, streaming, onSubmit, on
       else if (command[1] === 'save') onSaveLast()
       else if (command[1] === 'search') {
         if (!command[2]?.trim()) { setError('/search 뒤에 검색어를 입력한다.'); return }
-        router.push(`/search?q=${encodeURIComponent(command[2].trim())}`)
+        setSearchQuery(command[2].trim())
       } else {
         if (!command[2]?.trim()) { setError('/note 뒤에 노트 경로를 입력한다.'); return }
         if (!await pinPath(command[2].trim())) return
@@ -201,6 +204,18 @@ export function ChatComposer({ conversationId, disabled, streaming, onSubmit, on
         if (files.length) { event.preventDefault(); attachments.addFiles(files) }
       }} />
     </div>
+    {searchQuery && <section className="max-h-72 space-y-2 overflow-auto rounded-lg border p-3" aria-label="대화 안에서 검색 결과">
+      <div className="flex items-center gap-2 text-sm"><h3 className="min-w-0 flex-1 truncate font-medium">검색 · {searchQuery}</h3><Link href={`/search?q=${encodeURIComponent(searchQuery)}`} className="shrink-0 text-xs underline">전체 검색</Link><Button type="button" variant="ghost" size="icon-xs" aria-label="검색 결과 닫기" onClick={() => setSearchQuery('')}><X /></Button></div>
+      {search.isPending && <p role="status" className="text-xs text-muted-foreground">검색 중…</p>}
+      {search.isError && <div><p role="alert" className="text-xs text-destructive">{search.error.message}</p><Button type="button" variant="ghost" size="xs" onClick={() => void search.refetch()}>다시 시도</Button></div>}
+      {search.data?.degraded && <p className="text-xs text-muted-foreground">벡터 검색을 사용할 수 없어 키워드 검색으로 표시한다.</p>}
+      {search.data && !search.data.hits.length && <p className="text-xs text-muted-foreground">검색 결과가 없다.</p>}
+      {search.data?.hits.map(hit => <article key={`${hit.path}:${hit.anchor || hit.heading}`} className="space-y-1 border-t pt-2 text-xs">
+        <Link href={noteHref(hit.path) + (hit.anchor ? `#${encodeURIComponent(hit.anchor)}` : '')} className="font-medium underline">{hit.title || hit.path}{hit.heading ? ` · ${hit.heading}` : ''}</Link>
+        <p className="break-all text-muted-foreground">{hit.path}</p><p className="line-clamp-3 whitespace-pre-wrap">{hit.excerpt || hit.snippet}</p>
+        <Button type="button" variant="ghost" size="xs" disabled={disabled || streaming || !!edit} onClick={() => pin({ notePath: hit.path })}><Pin /> 문맥 고정</Button>
+      </article>)}
+    </section>}
     <div className="flex flex-wrap items-center gap-2">
       <input ref={fileInput} type="file" multiple hidden accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain,text/markdown,.md" onChange={event => { if (event.target.files) attachments.addFiles(Array.from(event.target.files)); event.target.value = '' }} />
       <Button type="button" variant="ghost" size="icon-sm" aria-label="파일 첨부" title="파일 첨부 · 최대 10개, 각 20 MB" disabled={disabled || streaming || !!edit || attachments.items.length >= 10} onClick={() => fileInput.current?.click()}><Paperclip /></Button>
@@ -210,6 +225,6 @@ export function ChatComposer({ conversationId, disabled, streaming, onSubmit, on
       <div className="ml-auto">{streaming ? <Button type="button" variant="outline" onClick={onStop}><Square /> 중지</Button> : <Button type="button" disabled={blocked} onClick={() => void submit()}><Send /> {edit ? '수정 후 다시 생성' : '보내기'}</Button>}</div>
     </div>
     <p className="text-xs text-muted-foreground">Enter 전송 · Shift+Enter 줄바꿈 · ↑ 마지막 질문 수정 · Esc 중지</p>
-    {help && <div className="space-y-1 rounded-md bg-muted p-3 text-xs"><p>@노트와 /note 경로로 문맥을 고정하며 후속 질문에도 유지한다. 칩의 ×로 제거한다.</p><p>/search 검색어: 검색 화면 · /save: 마지막 답변의 위키 초안 · /help: 이 도움말</p><p>제안에서 ↑↓ 선택, Enter 적용, Esc 닫기. 파일 드롭·이미지 붙여넣기를 지원한다. 업로드 오류 파일은 제거 후 다시 첨부한다.</p></div>}
+    {help && <div className="space-y-1 rounded-md bg-muted p-3 text-xs"><p>@노트와 /note 경로로 문맥을 고정하며 후속 질문에도 유지한다. 칩의 ×로 제거한다.</p><p>/search 검색어: 대화 안에서 검색 · /save: 마지막 답변의 위키 초안 · /help: 이 도움말</p><p>제안에서 ↑↓ 선택, Enter 적용, Esc 닫기. 파일 드롭·이미지 붙여넣기를 지원한다. 업로드 오류 파일은 제거 후 다시 첨부한다.</p></div>}
   </section>
 }
