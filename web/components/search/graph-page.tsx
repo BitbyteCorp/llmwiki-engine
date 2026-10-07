@@ -53,7 +53,7 @@ export function GraphPage() {
 
   return <div className="space-y-6">
     <PageHeader title="지식 그래프" description="노트의 링크와 역링크를 살펴보고 연결된 지식을 탐색합니다." actions={<Button variant="outline" disabled={graph.isFetching} onClick={() => void graph.refetch()}><RefreshCw aria-hidden="true" className={graph.isFetching ? 'animate-spin motion-reduce:animate-none' : ''} />새로고침</Button>} />
-    <form className="space-y-3 rounded-lg border p-4" onSubmit={event => {
+    <form className="space-y-3 rounded-lg border bg-card p-4" onSubmit={event => {
       event.preventDefault()
       const next = new URLSearchParams()
       if (pathDraft.trim()) {
@@ -67,7 +67,7 @@ export function GraphPage() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
         <div className="min-w-0 flex-1 space-y-1.5"><Label htmlFor="graph-root">중심 노트 경로</Label><Input id="graph-root" name="path" value={pathDraft} onChange={event => setPathDraft(event.target.value)} placeholder="전체 그래프는 비워 두세요 · wiki/노트.md" /></div>
         <div className="space-y-1.5"><Label htmlFor="graph-depth">연결 깊이 · {depthDraft}단계</Label><Input id="graph-depth" name="depth" type="range" min={1} max={5} step={1} value={depthDraft} aria-valuetext={`${depthDraft}단계`} onChange={event => setDepthDraft(Number(event.target.value))} disabled={!pathDraft.trim()} className="w-40 px-0" /></div>
-        <Button type="submit">그래프 보기</Button>
+        <Button type="submit" size="lg">그래프 보기</Button>
         {path && <Link href="/graph" className="rounded-md px-2 py-1 text-sm underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-ring">전체 그래프</Link>}
       </div>
       <p className="break-all text-xs text-muted-foreground">{path ? `${path}를 중심으로 ${depth}단계 연결을 표시합니다. 범위는 URL에 저장됩니다.` : '전체 그래프는 연결이 없는 노트도 포함합니다. 노트를 중심으로 1~5단계까지 좁힐 수 있습니다.'}</p>
@@ -84,9 +84,9 @@ export function GraphPage() {
         <GraphCanvas key={`${path ?? ''}:${depth}`} data={graph.data} focusPath={focusPath} focusRequest={focusRequest} onOpen={notePath => workspace.openNote(notePath)} />
       </section>
       <section aria-labelledby="graph-list-heading" className="space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-2"><h2 id="graph-list-heading" className="text-base font-semibold">노트 목록 · 키보드 탐색</h2><p role="status" className="text-xs text-muted-foreground">{nodes.length}개 표시</p></div>
-        {nodes.length === 0 ? <EmptyState title="일치하는 노트가 없습니다" description="제목이나 경로의 다른 부분을 입력해 보세요." /> : <ul className="max-h-[32rem] overflow-y-auto divide-y rounded-lg border">{nodes.map(node => <li key={node.path} className={`flex flex-col gap-2 p-3 sm:flex-row sm:items-center sm:justify-between ${focusPath === node.path ? 'bg-accent/50' : ''}`}>
-          <div className="min-w-0"><Link href={noteHref(node.path)} onClick={event => { if (event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); workspace.openNote(node.path) } }} className="break-words font-medium underline-offset-4 hover:underline">{node.title || node.path}</Link><p className="break-all text-xs text-muted-foreground">{node.path} · 연결 {degrees.get(node.path) ?? 0}개</p></div>
+        <div className="flex flex-wrap items-center justify-between gap-2"><h2 id="graph-list-heading" className="text-sm font-semibold">노트 목록 · 키보드 탐색</h2><p role="status" className="text-xs text-muted-foreground">{nodes.length}개 표시</p></div>
+        {nodes.length === 0 ? <EmptyState title="일치하는 노트가 없습니다" description="제목이나 경로의 다른 부분을 입력해 보세요." /> : <ul className="max-h-[32rem] divide-y overflow-y-auto rounded-lg border bg-card">{nodes.map(node => <li key={node.path} className={`flex flex-col gap-2 px-3 py-2 sm:flex-row sm:items-center sm:justify-between ${focusPath === node.path ? 'bg-accent/50' : ''}`}>
+          <div className="min-w-0"><Link href={noteHref(node.path)} onClick={event => { if (event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); workspace.openNote(node.path) } }} className="break-words text-sm font-medium underline-offset-4 hover:underline">{node.title || node.path}</Link><p className="break-all text-xs text-muted-foreground">{node.path} · 연결 {degrees.get(node.path) ?? 0}개</p></div>
           <div className="flex shrink-0 items-center gap-2"><Button variant="ghost" size="sm" onClick={() => focusNode(node.path)} aria-label={`${node.title || node.path}에 그래프 초점 이동`} aria-pressed={focusPath === node.path}><LocateFixed aria-hidden="true" />초점</Button><Link href={`/graph?${new URLSearchParams({ path: node.path, depth: String(depth) })}`} className="rounded-md px-2 py-1 text-xs underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-ring">지역 그래프</Link></div>
         </li>)}</ul>}
       </section>

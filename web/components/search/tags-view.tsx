@@ -19,8 +19,8 @@ export function TagsDirectory({ compact = false }: { compact?: boolean }) {
   const normalizedFilter = filter.normalize('NFKC').toLowerCase().trim().replace(/^#+/, '').replace(/\s+/g, '-')
   const visible = tags.data?.filter(item => item.tag.includes(normalizedFilter)) ?? []
 
-  return <div className="space-y-4">
-    <div className="space-y-2">
+  return <div className="space-y-3">
+    <div className="space-y-1.5">
       <Label htmlFor={filterId}>태그 필터</Label>
       <Input id={filterId} type="search" value={filter} onChange={event => setFilter(event.target.value)} placeholder="태그 이름으로 찾기" />
     </div>
@@ -28,9 +28,9 @@ export function TagsDirectory({ compact = false }: { compact?: boolean }) {
     {tags.isError && <div className="space-y-2"><ErrorNotice error={tags.error} /><Button variant="outline" disabled={tags.isFetching} onClick={() => void tags.refetch()}>태그 다시 시도</Button></div>}
     {tags.data && <>
       <p aria-live="polite" className="text-xs text-muted-foreground">{visible.length}개 태그{normalizedFilter ? ` · 전체 ${tags.data.length}개` : ''} · 숫자는 태그가 포함된 노트 수입니다.</p>
-      {visible.length ? <ul className={compact ? 'divide-y rounded-lg border' : 'grid gap-3 sm:grid-cols-2 lg:grid-cols-3'}>
+      {visible.length ? <ul className={compact ? 'divide-y overflow-hidden rounded-lg border bg-card' : 'grid gap-3 sm:grid-cols-2 lg:grid-cols-3'}>
         {visible.map(({ tag, count }) => <li key={tag}>
-          <Link href={`/tags/${encodeURIComponent(tag)}`} className={`flex h-full items-center justify-between gap-3 rounded-lg p-3 text-sm hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring ${compact ? '' : 'border'}`}>
+          <Link href={`/tags/${encodeURIComponent(tag)}`} className={`flex h-full items-center justify-between gap-3 text-sm hover:bg-accent focus-visible:outline-2 focus-visible:outline-ring ${compact ? 'px-3 py-2' : 'rounded-lg border bg-card p-4'}`}>
             <span className="flex min-w-0 items-start gap-1.5"><Hash aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-muted-foreground" /><span className="break-all font-medium">{tag}</span></span>
             <span className="shrink-0 rounded bg-muted px-2 py-0.5 text-xs tabular-nums" aria-label={`${count}개 노트`}>{count}</span>
           </Link>

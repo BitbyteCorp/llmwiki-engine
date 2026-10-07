@@ -1,6 +1,6 @@
 'use client'
 
-import { createElement, useId, useLayoutEffect, useRef, useState } from 'react'
+import { createElement, memo, useCallback, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { ExtraProps } from 'react-markdown'
 import { createPortal } from 'react-dom'
@@ -126,10 +126,10 @@ function imageSource(src: string | undefined, path?: string, ref?: string): stri
   return `/api/notes/raw?${query}`
 }
 
-export function Markdown({ content, path, ref, split = false, onNavigate }: { content: string; path?: string; ref?: string; split?: boolean; onNavigate?: Navigate }) {
+export const Markdown = memo(function Markdown({ content, path, ref, split = false, onNavigate }: { content: string; path?: string; ref?: string; split?: boolean; onNavigate?: Navigate }) {
   const root = useRef<HTMLDivElement>(null)
-  const workspace = useOptionalWorkspace()
-  function scrollFragment(fragment: string) {
+  const openNote = useOptionalWorkspace()?.openNote
+  const scrollFragment = useCallback((fragment: string) => {
     const target = [...(root.current?.querySelectorAll<HTMLElement>('[id]') ?? [])].find((element) => element.id === fragment)
     if (target) {
       // IDs may be duplicated between the main and split article. Scope lookup.
@@ -138,14 +138,15 @@ export function Markdown({ content, path, ref, split = false, onNavigate }: { co
       target.scrollIntoView({ block: 'start' })
     }
     if (!split) window.history.replaceState(null, '', `#${encodeURIComponent(fragment)}`)
-  }
-  const navigate: Navigate | undefined = onNavigate || workspace ? (target, options) => {
-    const navigation = onNavigate ?? workspace!.openNote
+  }, [split])
+  const navigate = useMemo<Navigate | undefined>(() => onNavigate || openNote ? (target, options) => {
+    const navigation = onNavigate ?? openNote!
     navigation(target, { ...options, split })
     if (target === path && options?.fragment) scrollFragment(options.fragment)
-  } : undefined
-  return (
-    <div ref={root} className={`markdown ${styles.reader} min-w-0 [&_input]:mr-2 [&_input]:accent-neutral-900 [&>:first-child]:mt-0 [&>:last-child]:mb-0`}>
+  } : undefined, [onNavigate, openNote, path, split, scrollFragment])
+  // Preserve the parsed subtree across workspace/sidebar renders. Path and ref
+  // remain dependencies because they determine relative links and image URLs.
+  const rendered = useMemo(() => (
       <ReactMarkdown
         remarkPlugins={[remarkGfm, remarkMath, remarkCallouts, remarkWikilinks]}
         rehypePlugins={[rehypeSlug, [rehypeHighlight, { detect: false, ignoreMissing: true }], [rehypeKatex, { trust: false, strict: 'warn' }]]}
@@ -188,6 +189,6 @@ export function Markdown({ content, path, ref, split = false, onNavigate }: { co
           },
         }}
       >{content}</ReactMarkdown>
-    </div>
-  )
-}
+  ), [content, path, ref, navigate, scrollFragment])
+  return <div ref={root} className={`markdown ${styles.reader} min-w-0 [&_input]:mr-2 [&_input]:accent-primary [&>:first-child]:mt-0 [&>:last-child]:mb-0`}>{rendered}</div>
+})

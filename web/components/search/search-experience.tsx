@@ -144,17 +144,17 @@ export function SearchExperience({ value, onChange, compact = false, onCompositi
         <div className="relative min-w-0 flex-1">
           <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input ref={input} id={`${id}-query`} type="search" name="q" value={value.q} autoComplete="off"
-            maxLength={200} placeholder={compact ? '검색어 또는 질문…' : '찾고 싶은 주제나 질문을 입력하세요'} className="h-10 pl-9"
+            maxLength={200} placeholder={compact ? '검색어 또는 질문…' : '찾고 싶은 주제나 질문을 입력하세요'} className="pl-9"
             aria-controls={`${id}-suggestions ${id}-results`} aria-activedescendant={activeItem ? `${id}-option-${active}` : undefined}
             onChange={event => { setActive(-1); setSuggestionsDismissed(false); onChange({ ...value, q: event.target.value }) }}
             onCompositionStart={() => changeComposition(true)} onCompositionEnd={() => changeComposition(false)} onKeyDown={handleKeys} />
         </div>
-        <Button type="submit" className="h-10" disabled={!value.q.trim() || composing}>검색</Button>
+        <Button type="submit" size="lg" disabled={!value.q.trim() || composing}>검색</Button>
       </div>
       <p className="text-xs text-muted-foreground">↑ ↓ 결과 선택 · Enter 열기 · Ctrl/⌘ Enter 나란히 열기</p>
-      <details className="rounded-lg border p-3">
-        <summary className="flex cursor-pointer items-center gap-2 text-sm font-medium"><SlidersHorizontal aria-hidden="true" className="size-4" />검색 필터{Object.values(value.filters).filter(Boolean).length > 0 && <Badge variant="secondary">{Object.values(value.filters).filter(Boolean).length}</Badge>}</summary>
-        <div className={`mt-4 grid gap-4 ${compact ? '' : 'sm:grid-cols-2 lg:grid-cols-3'}`}>
+      <details className="rounded-lg border bg-card p-4">
+        <summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold"><SlidersHorizontal aria-hidden="true" className="size-4" />검색 필터{Object.values(value.filters).filter(Boolean).length > 0 && <Badge variant="secondary">{Object.values(value.filters).filter(Boolean).length}</Badge>}</summary>
+        <div className={`mt-3 grid gap-3 ${compact ? '' : 'sm:grid-cols-2 lg:grid-cols-3'}`}>
           <div className="space-y-2"><Label htmlFor={`${id}-folder`}>폴더</Label>
             <NativeSelect id={`${id}-folder`} className="w-full" value={value.filters.folder ?? ''} onChange={event => updateFilter('folder', event.target.value)}>
               <NativeSelectOption value="">전체 폴더</NativeSelectOption>
@@ -174,7 +174,7 @@ export function SearchExperience({ value, onChange, compact = false, onCompositi
             {tags.isError && <><ErrorNotice error={tags.error} /><Button type="button" variant="outline" size="sm" onClick={() => void tags.refetch()}>태그 다시 불러오기</Button></>}
             {tags.data?.length === 0 && !selectedTags.length && <p className="text-xs text-muted-foreground">색인된 태그가 없습니다.</p>}
             <div className="flex max-h-48 flex-wrap gap-2 overflow-auto">
-              {[...(tags.data ?? []), ...selectedTags.filter(tag => !tags.data?.some(item => item.tag === tag)).map(tag => ({ tag, count: null }))].map(item => <label key={item.tag} className="flex cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1 text-xs">
+              {[...(tags.data ?? []), ...selectedTags.filter(tag => !tags.data?.some(item => item.tag === tag)).map(tag => ({ tag, count: null }))].map(item => <label key={item.tag} className="flex min-h-7 cursor-pointer items-center gap-1.5 rounded-md border px-2 py-1 text-xs">
                 <input type="checkbox" className="accent-primary" checked={selectedTags.includes(item.tag)} onChange={event => updateFilter('tags', (event.target.checked ? [...selectedTags, item.tag] : selectedTags.filter(tag => tag !== item.tag)).join(','))} />
                 <span className="break-all">#{item.tag}</span><span className="text-muted-foreground">{item.count === null ? '미색인' : `${item.count}개`}</span>
               </label>)}
@@ -191,7 +191,7 @@ export function SearchExperience({ value, onChange, compact = false, onCompositi
       {!suggestionsDismissed && <section id={`${id}-suggestions`} aria-label="노트 제목 및 경로 제안" className="space-y-2">
         {suggest.isPending && <p role="status" className="text-xs text-muted-foreground">제목 제안을 불러오는 중…</p>}
         {suggest.isError && <><ErrorNotice error={suggest.error} /><Button variant="outline" size="sm" onClick={() => void suggest.refetch()}>제안 다시 불러오기</Button></>}
-        {suggestions.length > 0 && <><h2 className="text-xs font-semibold text-muted-foreground">제목 · 경로 제안</h2><ul className="max-h-60 overflow-auto rounded-lg border">
+        {suggestions.length > 0 && <><h2 className="text-xs font-semibold text-muted-foreground">제목 · 경로 제안</h2><ul className="max-h-60 divide-y overflow-auto rounded-lg border bg-card">
           {suggestions.map((item, index) => <li key={item.path} id={`${id}-option-${index}`} className={active === index ? 'bg-accent' : ''}>
             <Link href={noteHref(item.path)} className="block px-3 py-2 text-sm hover:bg-accent focus-visible:outline focus-visible:outline-ring" onClick={event => clickNote(event, item.path, null)}>
               <span className="block break-words font-medium">{item.title || item.path}</span><span className="block break-all text-xs text-muted-foreground">{item.path}</span>
@@ -202,17 +202,17 @@ export function SearchExperience({ value, onChange, compact = false, onCompositi
       <section id={`${id}-results`} aria-label="검색 결과" className="space-y-3" aria-busy={search.isFetching}>
         {metadata && <>
           <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-2"><h2 className="text-sm font-semibold">“{query}” 검색 결과</h2><span aria-live="polite" className="text-xs text-muted-foreground">{hits.length}건{search.hasNextPage ? '+' : ''} · {metadata.mode === 'hybrid' ? '의미 + 키워드' : '키워드'}</span></div>
-          {(degraded || metadata.mode === 'keyword') && <p role="status" className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-900 dark:text-amber-200">{degraded ? DEGRADED_REASONS[degraded.reason] ?? '의미 검색을 사용할 수 없어 키워드 결과를 표시합니다.' : '키워드 검색 결과를 표시합니다. 제목과 본문의 일치하는 단어로 검색합니다.'}</p>}
+          {(degraded || metadata.mode === 'keyword') && <p role="status" className="rounded-lg border border-warning/30 bg-warning/10 p-3 text-sm text-warning">{degraded ? DEGRADED_REASONS[degraded.reason] ?? '의미 검색을 사용할 수 없어 키워드 결과를 표시합니다.' : '키워드 검색 결과를 표시합니다. 제목과 본문의 일치하는 단어로 검색합니다.'}</p>}
         </>}
         {search.isError && !search.isFetchNextPageError && <><ErrorNotice error={search.error} /><Button variant="outline" onClick={() => void search.refetch()}>검색 다시 시도</Button></>}
         {metadata && !hits.length && <EmptyState title="검색 결과가 없습니다" description="다른 표현을 사용하거나 폴더·태그·날짜 필터를 줄여 보세요." />}
         <ul className="space-y-3">
-          {hits.map((hit, index) => <li key={`${hit.path}:${hit.anchor ?? hit.heading}:${index}`} id={`${id}-option-${suggestions.length + index}`} className={`space-y-2 rounded-lg border p-3 ${active === suggestions.length + index ? 'border-ring bg-accent/40' : ''}`}>
-            <Link href={hitHref(hit)} onClick={event => clickNote(event, hit.path, hit.anchor)} className="group block space-y-2 rounded-sm focus-visible:outline focus-visible:outline-ring">
-            <div className="flex items-start justify-between gap-2"><span className="min-w-0 break-words font-semibold underline-offset-4 group-hover:underline">{hit.title || hit.path.split('/').pop()?.replace(/\.md$/i, '')}</span><Badge variant="outline">{KIND_LABELS[hit.kind] ?? '노트'}</Badge></div>
+          {hits.map((hit, index) => <li key={`${hit.path}:${hit.anchor ?? hit.heading}:${index}`} id={`${id}-option-${suggestions.length + index}`} className={`space-y-3 rounded-lg border p-4 ${active === suggestions.length + index ? 'border-ring bg-accent/40' : 'bg-card'}`}>
+            <Link href={hitHref(hit)} onClick={event => clickNote(event, hit.path, hit.anchor)} className="group block space-y-3 rounded-sm focus-visible:outline focus-visible:outline-ring">
+            <div className="flex items-start justify-between gap-2"><span className="min-w-0 break-words text-sm font-semibold underline-offset-4 group-hover:underline">{hit.title || hit.path.split('/').pop()?.replace(/\.md$/i, '')}</span><Badge variant="outline">{KIND_LABELS[hit.kind] ?? '노트'}</Badge></div>
             <p className="break-all text-xs text-muted-foreground" aria-label={`경로: ${hit.path}`}>{hit.path.split('/').join(' / ')}</p>
             {hit.heading && <p className="break-words text-sm font-medium">{hit.heading}</p>}
-            <p className="whitespace-pre-wrap break-words text-sm leading-6 text-muted-foreground">{excerptParts(hit.excerpt || hit.snippet, hit.highlights).map((part, partIndex) => part.marked ? <mark key={partIndex} className="rounded-sm bg-yellow-200 px-0.5 text-yellow-950 dark:bg-yellow-500/30 dark:text-yellow-100">{part.text}</mark> : part.text)}</p>
+            <p className="whitespace-pre-wrap break-words text-sm leading-6 text-muted-foreground">{excerptParts(hit.excerpt || hit.snippet, hit.highlights).map((part, partIndex) => part.marked ? <mark key={partIndex} className="rounded-sm bg-warning/15 px-0.5 text-foreground">{part.text}</mark> : part.text)}</p>
             <div className="flex flex-wrap items-center gap-2">{hit.tags.map(tag => <Badge key={tag} variant="secondary">#{tag}</Badge>)}{hit.updatedAt && <time dateTime={hit.updatedAt} className="text-xs text-muted-foreground">수정 {formatDate(hit.updatedAt)}</time>}</div>
             </Link>
             <Button variant="ghost" size="sm" onClick={() => open(hit.path, hit.anchor, true)}>나란히 열기</Button>

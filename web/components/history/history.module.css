@@ -1,15 +1,23 @@
 .scroll { overflow-x: auto; }
-.diff { width: 100%; border-collapse: collapse; font-family: var(--font-geist-mono), monospace; font-size: 12px; line-height: 1.7; }
+.diff { width: 100%; border-collapse: collapse; font-family: var(--font-mono), monospace; font-size: 12px; line-height: 1.7; }
 .diff td { white-space: pre-wrap; overflow-wrap: anywhere; vertical-align: top; padding: 0 8px; }
 .split { table-layout: fixed; min-width: 600px; }
 .number { width: 3rem; user-select: none; text-align: right; color: var(--muted-foreground); background: var(--muted); border-right: 1px solid var(--border); }
 .diff .fold { white-space: normal; background: var(--muted); color: var(--muted-foreground); padding: 5px 8px; }
-.added { background: light-dark(#e6f6e9, #143826); color: light-dark(#194c29, #bbefc8); }
-.removed { background: light-dark(#fce8e8, #461e26); color: light-dark(#7d2424, #ffc7cb); }
-.word { background: light-dark(#00000018, #ffffff22); font-weight: 600; border-radius: 2px; }
-.blame { width: 100%; border-collapse: collapse; font-size: 12px; }
-.blame td { vertical-align: top; padding: 2px 8px; }
-.gutter { width: 180px; min-width: 150px; border-right: 1px solid var(--border); font-size: 11px; }
-.blameContent { white-space: pre; font-family: var(--font-geist-mono), monospace; }
-.blame details { position: relative; }
-.blame details > div { position: absolute; z-index: 20; top: 100%; left: 0; width: 280px; white-space: normal; background: var(--popover); color: var(--popover-foreground); border: 1px solid var(--border); border-radius: 6px; padding: 12px; box-shadow: 0 8px 24px #0003; }
+.added { background: var(--diff-added); color: var(--diff-added-foreground); }
+.removed { background: var(--diff-removed); color: var(--diff-removed-foreground); }
+.word { background: color-mix(in srgb, var(--foreground) 12%, transparent); font-weight: 600; border-radius: 2px; }
+.blameScroll { min-height: 0; min-width: 0; flex: 1; overflow: auto; overscroll-behavior: contain; border: 1px solid var(--border); border-radius: .375rem; background: var(--card); }
+.blame { width: 100%; border-collapse: separate; border-spacing: 0; font-family: var(--font-mono), monospace; font-size: 12px; line-height: 24px; }
+.blame tr { height: 24px; }
+.blame td { vertical-align: top; padding: 0 8px; }
+.gutter { position: sticky; left: 0; z-index: 2; width: 212px; min-width: 212px; border-left: 4px solid var(--link); border-right: 1px solid var(--border); background: var(--card); font-family: var(--font-sans), sans-serif; font-size: 11px; }
+.blameMeta { position: sticky; top: 0; display: flex; align-items: center; gap: 6px; width: 191px; height: 24px; white-space: nowrap; }
+.blameNumber { position: sticky; left: 212px; z-index: 1; min-width: 3rem; width: 3rem; user-select: none; text-align: right; color: var(--muted-foreground); background: var(--muted); border-right: 1px solid var(--border); }
+.blameContent { white-space: pre; height: 24px; }
+.blamePopover { position: fixed; z-index: 80; width: min(288px, calc(100vw - 16px)); max-height: min(212px, calc(100dvh - 16px)); overflow: auto; display: grid; gap: .5rem; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; background: var(--card); color: var(--foreground); border: 1px solid var(--border); border-radius: .375rem; padding: 12px; box-shadow: 0 8px 24px color-mix(in srgb, var(--foreground) 18%, transparent); }
+@media (max-width: 640px) {
+  .gutter { width: 168px; min-width: 168px; }
+  .blameMeta { width: 147px; }
+  .blameNumber { left: 168px; min-width: 2.5rem; width: 2.5rem; }
+}

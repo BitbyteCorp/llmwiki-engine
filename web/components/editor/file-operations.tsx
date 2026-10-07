@@ -9,6 +9,8 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useWorkspace } from '@/components/workspace/context'
+import { notify } from '@/components/notifications'
+import type { EditorCommand } from './state'
 import { confirmEditorLeave } from './state'
 
 type Operation = { kind: 'new' | 'folder' | 'move' | 'delete'; path: string }
@@ -39,7 +41,6 @@ export function useFileOperations(files: string[]) {
   const [busy, setBusy] = useState(false)
   const busyRef = useRef(false)
   const [error, setError] = useState<unknown>(null)
-  const [notice, setNotice] = useState('')
   const [overwrite, setOverwrite] = useState<string | null>(null)
   const [replacementRemoved, setReplacementRemoved] = useState<string | null>(null)
   const dialog = useRef<HTMLDialogElement>(null)
@@ -50,7 +51,7 @@ export function useFileOperations(files: string[]) {
   function start(kind: Operation['kind'], path = '', destination?: string) {
     if (!canWrite || busyRef.current) return
     pendingFocus.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    setError(null); setNotice(''); setOverwrite(null); setReplacementRemoved(null)
+    setError(null); setOverwrite(null); setReplacementRemoved(null)
     setValue(kind === 'move' ? (destination ?? path) : kind === 'new' ? (destination ?? `${path ? `${path}/` : ''}새 노트.md`) : path)
     setFolder(kind === 'move' ? parentFolder(destination ?? path) : path)
     setTitle(kind === 'new' && destination ? destination.split('/').pop()!.replace(/\.md$/, '') : ''); setTags(''); setOperation({ kind, path })
@@ -102,7 +103,7 @@ export function useFileOperations(files: string[]) {
     }
     await request<WriteResult>('/api/notes/move', { method: 'POST', body: JSON.stringify({ from, to, baseSha }) })
     workspace.renameNotePath(from, to)
-    setNotice(`노트를 ${to}(으)로 이동했습니다.`)
+    notify({ title: `노트를 ${to}(으)로 이동했습니다.`, tone: 'success' })
     await refresh()
     return true
   }
@@ -116,7 +117,7 @@ export function useFileOperations(files: string[]) {
         const baseSha = await currentHead(operation.path)
         await request<WriteResult>(`/api/notes?${new URLSearchParams({ path: operation.path, baseSha })}`, { method: 'DELETE' })
         workspace.removeNotePath(operation.path)
-        setNotice('노트를 삭제했습니다. 변경 이력에서 복원할 수 있습니다.')
+        notify({ title: '노트를 삭제했습니다. 변경 이력에서 복원할 수 있습니다.', tone: 'success' })
         await refresh()
       } else if (operation.kind === 'move') {
         if (!await moveNote(operation.path, path, replace)) return
@@ -128,7 +129,7 @@ export function useFileOperations(files: string[]) {
           if (files.includes(path)) throw new Error('같은 경로에 노트가 있습니다.')
           setVirtualFolders(previous => [...previous, path])
           workspace.revealFolder(path)
-          setNotice('가상 폴더를 준비했습니다. 이 폴더에 첫 노트를 저장하면 저장소에 생성됩니다.')
+          notify({ title: '가상 폴더를 준비했습니다. 이 폴더에 첫 노트를 저장하면 저장소에 생성됩니다.' })
         } else {
           if (!title.trim()) throw new Error('노트 제목을 입력하세요.')
           const baseSha = await currentHead()
@@ -138,7 +139,7 @@ export function useFileOperations(files: string[]) {
           await refresh()
           workspace.openNote(path, { pin: true })
           workspace.revealFolder(path)
-          setNotice('새 노트를 만들었습니다. 노트의 편집 버튼으로 내용을 작성하세요.')
+          notify({ title: '새 노트를 만들었습니다. 노트의 편집 버튼으로 내용을 작성하세요.', tone: 'success' })
         }
       }
       setOperation(null); setOverwrite(null); setReplacementRemoved(null)
@@ -165,7 +166,7 @@ export function useFileOperations(files: string[]) {
   }
   useEffect(() => {
     const listener = (event: Event) => {
-      const detail = (event as CustomEvent<{ command: string; path?: string; exactPath?: boolean }>).detail
+      const detail = (event as CustomEvent<{ command: EditorCommand; path?: string; exactPath?: boolean }>).detail
       if (!detail || !canWrite) return
       const path = detail.path ?? workspace.activePath
       if (detail.command === 'new') {
@@ -181,12 +182,11 @@ export function useFileOperations(files: string[]) {
   async function copy(path: string, wikilink = false) {
     try {
       await navigator.clipboard.writeText(wikilink ? `[[${path.replace(/\.md$/, '')}]]` : path)
-      setNotice(wikilink ? '위키링크를 복사했습니다.' : '경로를 복사했습니다.'); setError(null)
-    } catch { setError(new Error('클립보드에 접근할 수 없습니다. 아래 내용을 선택해 직접 복사하세요.')); setNotice(wikilink ? `[[${path.replace(/\.md$/, '')}]]` : path) }
+      notify({ title: wikilink ? '위키링크를 복사했습니다.' : '경로를 복사했습니다.', tone: 'success' }); setError(null)
+    } catch { notify({ title: '클립보드에 접근할 수 없습니다. 아래 내용을 선택해 직접 복사하세요.', description: wikilink ? `[[${path.replace(/\.md$/, '')}]]` : path, tone: 'error' }) }
   }
 
   const panel = <>
-    {notice && <p role="status" className="px-3 py-2 text-xs text-muted-foreground break-words">{notice}</p>}
     {!operation && error != null && <div className="px-2 pb-2"><ErrorNotice error={error} /><p className="mt-1 text-xs text-muted-foreground">입력 내용을 확인하고 같은 작업을 다시 시도하세요.</p><Button variant="ghost" size="sm" onClick={() => setError(null)}>닫기</Button></div>}
     {operation && mounted && createPortal(<dialog ref={dialog} aria-labelledby="editor-file-operation-title" className="workspace-dialog max-h-[85dvh] w-[min(32rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border bg-popover p-5 text-popover-foreground shadow-xl" onCancel={event => { event.preventDefault(); dismiss() }}>
       <form className="space-y-4" onSubmit={event => { event.preventDefault(); void submit() }}>
@@ -196,8 +196,8 @@ export function useFileOperations(files: string[]) {
         {operation.kind === 'move' && <div className="space-y-2"><Label htmlFor="editor-move-folder">대상 폴더</Label><select id="editor-move-folder" className="h-9 w-full rounded-md border bg-background px-2 text-sm" disabled={busy} value={folder} onChange={event => { setFolder(event.target.value); setValue(`${event.target.value ? `${event.target.value}/` : ''}${value.split('/').pop()}`); setOverwrite(null) }}><option value="">저장소 루트</option>{folders.map(path => <option key={path} value={path}>{path}</option>)}</select><p className="text-xs text-muted-foreground">아래 경로를 직접 입력하면 새 폴더로도 이동할 수 있습니다. 기존 위키링크는 자동 변경되지 않습니다.</p></div>}
         {operation.kind !== 'delete' && <div className="space-y-2"><Label htmlFor="editor-file-path">{operation.kind === 'folder' ? '폴더 경로' : '노트 경로 (.md)'}</Label><Input id="editor-file-path" required disabled={busy} value={value} onChange={event => { setValue(event.target.value); setOverwrite(null) }} autoComplete="off" /><p className="text-xs text-muted-foreground">예: wiki/주제/{operation.kind === 'folder' ? '새 폴더' : '새 노트.md'}</p></div>}
         {operation.kind === 'new' && <><div className="space-y-2"><Label htmlFor="editor-new-title">제목</Label><Input id="editor-new-title" required disabled={busy} value={title} onChange={event => setTitle(event.target.value)} /></div><div className="space-y-2"><Label htmlFor="editor-new-tags">태그 (쉼표로 구분)</Label><Input id="editor-new-tags" disabled={busy} value={tags} onChange={event => setTags(event.target.value)} /></div><p className="text-xs text-muted-foreground">title, tags, updated 메타데이터를 포함한 Markdown 노트로 저장됩니다.</p></>}
-        {operation.kind === 'delete' && <><p className="text-sm">이 노트를 삭제하시겠습니까? 내용은 변경 이력에 남으며 복원할 수 있습니다.</p>{links.isPending && <Loading label="이 노트를 참조하는 링크 확인 중…" />}{links.error && <div className="space-y-2"><ErrorNotice error={links.error} /><Button type="button" variant="outline" onClick={() => void links.refetch()}>링크 다시 확인</Button></div>}{links.data && <p className={links.data.backlinks.length ? 'rounded-md border border-amber-500/40 bg-amber-500/10 p-3 text-sm' : 'text-sm text-muted-foreground'}>이 노트를 참조하는 노트 {links.data.backlinks.length}개{links.data.backlinks.length > 0 && '의 링크가 끊어집니다. 위키링크는 자동 수정되지 않습니다.'}</p>}</>}
-        {replacementRemoved && <p role="alert" className="rounded-md border border-amber-500/40 p-3 text-sm">대상 노트 {replacementRemoved}는 삭제 커밋으로 이력에 남았습니다. 원본 {operation.path}는 이동이 성공할 때까지 보존됩니다. 다시 시도하면 최신 저장소 기준으로 이동합니다. 취소 시 대상 노트는 변경 이력에서 복원하세요.</p>}
+        {operation.kind === 'delete' && <><p className="text-sm">이 노트를 삭제하시겠습니까? 내용은 변경 이력에 남으며 복원할 수 있습니다.</p>{links.isPending && <Loading label="이 노트를 참조하는 링크 확인 중…" />}{links.error && <div className="space-y-2"><ErrorNotice error={links.error} /><Button type="button" variant="outline" onClick={() => void links.refetch()}>링크 다시 확인</Button></div>}{links.data && <p className={links.data.backlinks.length ? 'rounded-md border border-warning/40 bg-warning/10 p-3 text-sm' : 'text-sm text-muted-foreground'}>이 노트를 참조하는 노트 {links.data.backlinks.length}개{links.data.backlinks.length > 0 && '의 링크가 끊어집니다. 위키링크는 자동 수정되지 않습니다.'}</p>}</>}
+        {replacementRemoved && <p role="alert" className="rounded-md border border-warning/40 p-3 text-sm">대상 노트 {replacementRemoved}는 삭제 커밋으로 이력에 남았습니다. 원본 {operation.path}는 이동이 성공할 때까지 보존됩니다. 다시 시도하면 최신 저장소 기준으로 이동합니다. 취소 시 대상 노트는 변경 이력에서 복원하세요.</p>}
         {overwrite && <div role="alert" className="space-y-3 rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm"><p>{overwrite} 노트가 이미 있습니다. 교체하면 대상 노트 삭제와 원본 이동이 별도 두 커밋으로 실행됩니다. 중간 실패 시 원본은 유지되지만 대상 노트는 이력에서 복원해야 합니다. 대상 노트를 삭제하고 이동하시겠습니까?</p><div className="flex flex-wrap gap-2"><Button type="button" variant="destructive" disabled={busy} onClick={() => void submit(true)}>대상 삭제 후 이동</Button><Button type="button" variant="outline" disabled={busy} onClick={() => setOverwrite(null)}>다른 경로 선택</Button></div></div>}
         <ErrorNotice error={error} />
         <div className="flex justify-end gap-2"><Button type="button" variant="outline" disabled={busy} onClick={dismiss}>취소</Button><Button type="submit" variant={operation.kind === 'delete' ? 'destructive' : 'default'} disabled={busy || Boolean(overwrite) || (operation.kind === 'delete' && !links.data)}>{busy ? '처리 중…' : error ? '다시 시도' : operation.kind === 'delete' ? '삭제' : operation.kind === 'folder' ? '가상 폴더 준비' : operation.kind === 'move' ? '이동' : '노트 만들기'}</Button></div>

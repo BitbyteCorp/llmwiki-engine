@@ -16,25 +16,25 @@ export function JobProgress({ job, events }: { job: WriteJob; events: JobEvent[]
   const last = events.at(-1)?.phase
   const active = last ?? (job.status === 'queued' ? 'queued' : job.status === 'merging' ? 'merging' : null)
   const steps = [...phases, job.status === 'failed' ? 'failed' : 'done'] as JobEvent['phase'][]
-  return <section className="space-y-4" aria-labelledby="job-progress-title">
-    <h2 id="job-progress-title" className="text-base font-semibold">작업 진행</h2>
+  return <section className="space-y-3" aria-labelledby="job-progress-title">
+    <h2 id="job-progress-title" className="text-sm font-semibold">작업 진행</h2>
     <p role="status" aria-live="polite" className="text-sm text-muted-foreground">{job.error === 'canceled' ? '대기 중인 작업을 취소했습니다.' : active ? `현재 단계: ${jobPhaseLabels[active]}` : '단계 기록이 없는 작업입니다.'}</p>
     <ol className="grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-9" aria-label="작업 단계">
       {steps.map(phase => {
         const recorded = events.some(event => event.phase === phase)
         const current = active === phase
         const Icon = phase === 'failed' && current ? X : current && !terminal ? LoaderCircle : recorded ? Check : Circle
-        return <li key={phase} aria-current={current ? 'step' : undefined} className={`flex items-center gap-2 rounded-lg border p-3 text-xs ${current ? 'border-primary bg-primary/5 text-foreground' : recorded ? 'bg-muted/40' : 'text-muted-foreground'}`}>
+        return <li key={phase} aria-current={current ? 'step' : undefined} className={`relative flex items-center gap-2 rounded-lg border p-4 text-xs ${current ? phase === 'failed' ? 'border-destructive/30 bg-destructive/5 text-destructive' : phase === 'done' ? 'border-success/30 bg-success/10 text-success' : 'border-primary bg-primary/5 text-foreground' : recorded ? 'bg-muted/40' : 'bg-card text-muted-foreground'}`}>
           <Icon aria-hidden="true" className={`size-4 shrink-0 ${current && !terminal ? 'animate-spin motion-reduce:animate-none' : ''}`} />
           <span>{jobPhaseLabels[phase]}{phase === 'resolving_conflict' && !recorded && <span className="block text-[10px]">해당 시</span>}<span className="sr-only">{current ? ' · 현재 단계' : recorded ? ' · 기록 있음' : ' · 기록 없음'}</span></span>
         </li>
       })}
     </ol>
-    <details className="rounded-lg border" open={job.conflicts.length > 0 || job.status === 'failed'}>
-      <summary className="cursor-pointer px-4 py-3 text-sm font-medium focus-visible:outline-2 focus-visible:outline-ring">단계 이벤트 · {events.length}건</summary>
+    <details className="rounded-lg border bg-card" open={job.conflicts.length > 0 || job.status === 'failed'}>
+      <summary className="cursor-pointer px-4 py-3 text-sm font-semibold focus-visible:outline-2 focus-visible:outline-ring">단계 이벤트 · <span className="tabular-nums">{events.length}</span>건</summary>
       {events.length === 0 ? <p className="px-4 pb-4 text-sm text-muted-foreground">이 작업에는 저장된 단계 이벤트가 없습니다.</p> : <ol className="divide-y border-t">
-        {events.map((event, index) => <li key={`${event.at}-${index}`} className="space-y-2 px-4 py-3">
-          <div className="flex flex-wrap items-center justify-between gap-2 text-sm"><span className="font-medium">{jobPhaseLabels[event.phase]}</span><time className="text-xs text-muted-foreground" dateTime={event.at}>{formatDate(event.at)}</time></div>
+        {events.map((event, index) => <li key={`${event.at}-${index}`} className="space-y-3 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 text-sm"><span className="font-medium">{jobPhaseLabels[event.phase]}</span><time className="shrink-0 whitespace-nowrap text-right text-xs tabular-nums text-muted-foreground" dateTime={event.at} title={formatDate(event.at)}>{formatDate(event.at)}</time></div>
           {event.detail && <EventDetail detail={event.detail} />}
         </li>)}
       </ol>}

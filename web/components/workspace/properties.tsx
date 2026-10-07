@@ -30,11 +30,11 @@ export function Properties({ frontmatter }: { frontmatter: Record<string, unknow
   })
   if (!tags.length && !fields.length) return null
   return (
-    <details className="rounded-lg border px-3 py-2">
-      <summary className="cursor-pointer rounded text-xs font-medium focus-visible:outline-2 focus-visible:outline-ring">노트 속성</summary>
+    <details className="rounded-lg border bg-card p-4">
+      <summary className="cursor-pointer rounded text-sm font-semibold focus-visible:outline-2 focus-visible:outline-ring">노트 속성</summary>
       <div className="mt-3 space-y-3">
         {tags.length > 0 && <div className="flex flex-wrap gap-2" aria-label="태그">{tags.map(tag => <Link key={tag} href={`/tags/${encodeURIComponent(tag)}`} className="rounded focus-visible:outline-2 focus-visible:outline-ring"><Badge variant="secondary">#{tag}</Badge></Link>)}</div>}
-        {fields.length > 0 && <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-2 text-xs">{fields.map(field => <div key={field.key} className="contents"><dt className="break-all text-muted-foreground">{field.label}</dt><dd className="break-words whitespace-pre-wrap">{field.text}</dd></div>)}</dl>}
+        {fields.length > 0 && <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-3 text-xs">{fields.map(field => <div key={field.key} className="contents"><dt className="break-all text-muted-foreground">{field.label}</dt><dd className="break-words whitespace-pre-wrap">{field.text}</dd></div>)}</dl>}
       </div>
     </details>
   )

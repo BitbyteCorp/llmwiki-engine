@@ -26,8 +26,8 @@ function ActivityRow({ item, fresh }: { item: ActivityItem; fresh: boolean }) {
   return <li className={`relative flex gap-3 p-4 transition-colors ${fresh ? 'bg-primary/5 ring-1 ring-inset ring-primary/30' : ''}`}>
     <Icon aria-hidden="true" className="mt-1 size-5 shrink-0 text-muted-foreground" />
     <article className="min-w-0 flex-1 space-y-2">
-      <div className="flex flex-wrap items-center gap-2"><Badge variant="outline">{activityTypeLabels[item.type]}</Badge><Badge variant="secondary">{activitySourceLabels[item.source] ?? item.source}</Badge>{status && <Badge variant={status === 'failed' ? 'destructive' : 'outline'}>{item.push ? pushLabels[item.push.status] : activityStatusLabels[status] ?? status}</Badge>}{fresh && <Badge>새 기록</Badge>}<time dateTime={item.at} className="text-xs text-muted-foreground">{formatDate(item.at)}</time></div>
-      <h2 className="break-words text-sm font-semibold">{canOpen ? <Link className="rounded-sm hover:underline focus-visible:outline-2 focus-visible:outline-ring" href={href}>{title}</Link> : title}</h2>
+      <div className="flex flex-wrap items-center gap-2"><Badge variant="outline">{activityTypeLabels[item.type]}</Badge><Badge variant="secondary">{activitySourceLabels[item.source] ?? item.source}</Badge>{status && <Badge variant={status === 'failed' ? 'destructive' : 'outline'} className={status === 'succeeded' ? 'border-success/30 bg-success/10 text-success' : status === 'skipped' ? 'border-warning/30 bg-warning/10 text-warning' : undefined}>{item.push ? pushLabels[item.push.status] : activityStatusLabels[status] ?? status}</Badge>}{fresh && <Badge>새 기록</Badge>}<time dateTime={item.at} title={formatDate(item.at)} className="ml-auto shrink-0 whitespace-nowrap text-right text-xs tabular-nums text-muted-foreground">{formatDate(item.at)}</time></div>
+      <h2 className="line-clamp-2 break-words text-sm font-semibold" title={title}>{canOpen ? <Link className="rounded-sm hover:underline focus-visible:outline-2 focus-visible:outline-ring" href={href}>{title}</Link> : title}</h2>
       <p className="break-all text-xs text-muted-foreground">{item.commit ? <>작성자 {item.commit.authorName} · <span className="font-mono">{item.id.slice(0, 8)}</span></> : <span className="font-mono">{item.id}</span>}</p>
       {!canOpen && <p className="text-xs text-muted-foreground">작업 상세는 요청자와 관리자만 볼 수 있습니다.</p>}
       {item.push?.status === 'skipped' && <p className="text-xs text-muted-foreground">원격에 저장되지 않은 로컬 전용 기록입니다.</p>}
@@ -70,13 +70,13 @@ function ActivityTimeline({ filters }: { filters: ActivityFilters }) {
     observer.observe(node)
     return () => observer.disconnect()
   }, [activity.hasNextPage, activity.isFetching, activity.isError, activity.fetchNextPage])
-  return <section className="space-y-4" aria-label="활동 기록">
+  return <section className="space-y-3" aria-label="활동 기록">
     <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-xs text-muted-foreground">최신 기록부터 표시하며 변경 사항은 실시간으로 갱신합니다.</p>{highlighted.size > 0 && <Button size="sm" variant="ghost" onClick={() => setHighlighted(new Set())}>새 기록 표시 지우기</Button>}</div>
     <p role="status" aria-live="polite" className="sr-only">{highlighted.size > 0 ? `새 활동 기록 ${highlighted.size}개가 표시되었습니다.` : ''}</p>
     {activity.isPending && <Loading label="타임라인을 불러오는 중…" />}
     {activity.isError && <div className="space-y-2"><ErrorNotice error={activity.error} /><Button variant="outline" disabled={activity.isFetching} onClick={() => void (activity.isFetchNextPageError ? activity.fetchNextPage() : activity.refetch())}>다시 시도</Button></div>}
     {!activity.isPending && !activity.isError && items.length === 0 && <EmptyState title="표시할 활동이 없습니다" description="선택한 필터에 맞는 기록이 없습니다. 필터를 바꾸거나 새 변경을 기다려 주세요." />}
-    {items.length > 0 && <ol className="divide-y overflow-hidden rounded-lg border">{items.map(item => <ActivityRow key={activityKey(item)} item={item} fresh={highlighted.has(activityKey(item))} />)}</ol>}
+    {items.length > 0 && <ol className="divide-y overflow-hidden rounded-lg border bg-card">{items.map(item => <ActivityRow key={activityKey(item)} item={item} fresh={highlighted.has(activityKey(item))} />)}</ol>}
     <div ref={sentinel} aria-hidden="true" className="h-px" />
     {activity.hasNextPage && <Button variant="outline" disabled={activity.isFetching} onClick={() => void activity.fetchNextPage()}>{activity.isFetchingNextPage ? '이전 활동을 불러오는 중…' : '이전 활동 더 보기'}</Button>}
     {!activity.hasNextPage && items.length > 0 && <p className="text-center text-xs text-muted-foreground">모든 활동을 확인했습니다.</p>}
@@ -89,10 +89,10 @@ export function ActivityPage() {
   const router = useRouter()
   const filters: ActivityFilters = { type: (params.get('type') || undefined) as ActivityKind | undefined, source: (params.get('source') || undefined) as ActivitySource | undefined, path: params.get('path') || undefined }
   const filterKey = JSON.stringify(filters)
-  return <div className="space-y-6">
+  return <div className="min-w-0 space-y-6">
     <PageHeader title="전체 타임라인" description="커밋, 쓰기 작업, dreaming과 원격 백업 기록을 한곳에서 확인합니다." actions={<nav aria-label="관련 기록" className="flex flex-wrap gap-3 text-sm"><Link className="hover:underline" href="/jobs">쓰기 작업</Link><Link className="hover:underline" href="/dreams">dreaming 기록</Link><Link className="hover:underline" href="/journal">일기</Link></nav>} />
-    <div className="rounded-lg border bg-muted/20 p-4"><BackupBadge /></div>
-    <form key={`filters:${filterKey}`} className="flex flex-wrap items-end gap-3 rounded-lg border p-4" aria-label="타임라인 필터" onSubmit={event => {
+    <div className="rounded-lg border bg-card p-4"><BackupBadge /></div>
+    <form key={`filters:${filterKey}`} className="flex flex-wrap items-end gap-3 rounded-lg border bg-card p-4" aria-label="타임라인 필터" onSubmit={event => {
       event.preventDefault()
       const form = new FormData(event.currentTarget)
       const next = new URLSearchParams(params.toString())
@@ -105,9 +105,9 @@ export function ActivityPage() {
       }
       router.push(`${pathname}?${next}`)
     }}>
-      <label className="space-y-1 text-xs font-medium"><span className="block">기록 종류</span><NativeSelect name="type" defaultValue={filters.type ?? ''}><option value="">전체 종류</option>{Object.entries(activityTypeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</NativeSelect></label>
-      <label className="space-y-1 text-xs font-medium"><span className="block">출처</span><NativeSelect name="source" defaultValue={filters.source ?? ''}><option value="">전체 출처</option>{Object.entries(activitySourceLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</NativeSelect></label>
-      <label className="min-w-0 flex-1 basis-48 space-y-1 text-xs font-medium"><span className="block">노트 또는 파일 경로</span><Input name="path" defaultValue={filters.path ?? ''} placeholder="예: wiki/시작.md" /></label>
+      <label className="space-y-1 text-xs font-medium"><span className="block">기록 종류</span><NativeSelect size="sm" name="type" defaultValue={filters.type ?? ''}><option value="">전체 종류</option>{Object.entries(activityTypeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</NativeSelect></label>
+      <label className="space-y-1 text-xs font-medium"><span className="block">출처</span><NativeSelect size="sm" name="source" defaultValue={filters.source ?? ''}><option value="">전체 출처</option>{Object.entries(activitySourceLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</NativeSelect></label>
+      <label className="min-w-0 flex-1 basis-48 space-y-1 text-xs font-medium"><span className="block">노트 또는 파일 경로</span><Input className="h-8" name="path" defaultValue={filters.path ?? ''} placeholder="예: wiki/시작.md" /></label>
       <Button type="submit" variant="outline">필터 적용</Button>
       {(filters.type || filters.source || filters.path) && <Button variant="ghost" nativeButton={false} render={<Link href="/history" />}>초기화</Button>}
     </form>

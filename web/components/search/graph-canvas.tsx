@@ -9,13 +9,13 @@ import type { KnowledgeGraph } from '@/lib/api'
 import { Loading } from '@/components/common'
 import { Button } from '@/components/ui/button'
 
-const LIGHT_COLORS = ['#2563eb', '#b45309', '#7c3aed', '#047857', '#be185d', '#0e7490', '#c2410c', '#4d7c0f']
-const DARK_COLORS = ['#93c5fd', '#fcd34d', '#c4b5fd', '#6ee7b7', '#f9a8d4', '#67e8f9', '#fdba74', '#bef264']
+const FOLDER_COLOR_TOKENS = ['--link', '--warning', '--success', '--destructive', '--muted-foreground']
+type GraphColors = { background: string; link: string; foreground: string; folders: string[] }
 
-function colorOf(folder: string, dark: boolean) {
+function colorOf(folder: string, colors: string[]) {
   let hash = 0
   for (let index = 0; index < folder.length; index++) hash = ((hash * 31) + folder.charCodeAt(index)) >>> 0
-  return (dark ? DARK_COLORS : LIGHT_COLORS)[hash % LIGHT_COLORS.length]
+  return colors[hash % colors.length]
 }
 type GraphNode = KnowledgeGraph['nodes'][number] & { id: string; degree: number; folder: string }
 
@@ -26,7 +26,7 @@ export default function GraphCanvas({ data, focusPath, focusRequest, onOpen }: {
   onOpen(path: string): void
 }) {
   const { resolvedTheme } = useTheme()
-  const dark = resolvedTheme === 'dark'
+  const [colors, setColors] = useState<GraphColors | null>(null)
   const container = useRef<HTMLDivElement>(null)
   const graph = useRef<ForceGraphMethods<GraphNode> | undefined>(undefined)
   const fitted = useRef(false)
@@ -46,6 +46,29 @@ export default function GraphCanvas({ data, focusPath, focusRequest, onOpen }: {
   }, [data])
   const folders = useMemo(() => [...new Set(graphData.nodes.map(node => node.folder))].sort(), [graphData])
 
+  const folderColors = useMemo(() => new Map(folders.map(folder => [folder, colors ? colorOf(folder, colors.folders) : ''])), [folders, colors])
+
+  useEffect(() => {
+    const element = container.current
+    if (!element) return
+    const probe = document.createElement('span')
+    probe.hidden = true
+    element.append(probe)
+    const resolve = (token: string) => {
+      probe.style.color = `var(${token})`
+      return getComputedStyle(probe).color
+    }
+    const update = () => setColors({
+      background: resolve('--card'),
+      link: resolve('--border'),
+      foreground: resolve('--foreground'),
+      folders: FOLDER_COLOR_TOKENS.map(resolve),
+    })
+    update()
+    const observer = new MutationObserver(update)
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style'] })
+    return () => { observer.disconnect(); probe.remove() }
+  }, [resolvedTheme])
   useEffect(() => {
     fitted.current = false
     setHovered(null)
@@ -82,18 +105,18 @@ export default function GraphCanvas({ data, focusPath, focusRequest, onOpen }: {
       <p id="graph-canvas-help" className="text-xs text-muted-foreground">끌어서 이동 · 휠이나 두 손가락으로 확대 · 노트를 눌러 열기. 키보드 사용자는 아래 노트 목록을 이용하세요.</p>
       <Button variant="outline" onClick={() => graph.current?.zoomToFit(400, 36)}><Maximize aria-hidden="true" />전체 맞춤</Button>
     </div>
-    <div ref={container} role="img" aria-label={`${data.nodes.length}개 노트의 연결 그래프`} aria-describedby="graph-canvas-help" className="relative h-[min(60vh,540px)] min-h-80 overflow-hidden rounded-lg border bg-background">
-      {size.width === 0 ? <div className="p-4"><Loading label="그래프 화면을 준비하는 중" /></div> : <ForceGraph<GraphNode>
+    <div ref={container} role="img" aria-label={`${data.nodes.length}개 노트의 연결 그래프`} aria-describedby="graph-canvas-help" className="relative h-[min(60vh,540px)] min-h-80 overflow-hidden rounded-lg border bg-card">
+      {size.width === 0 || !colors ? <div className="p-4"><Loading label="그래프 화면을 준비하는 중" /></div> : <ForceGraph<GraphNode>
         ref={graph}
         graphData={graphData}
         width={size.width}
         height={size.height}
-        backgroundColor={dark ? '#111827' : '#f8fafc'}
+        backgroundColor={colors.background}
         nodeVal={node => 1 + Math.min(node.degree, 40)}
         nodeRelSize={3}
-        nodeColor={node => colorOf(node.folder, dark)}
+        nodeColor={node => folderColors.get(node.folder)!}
         nodeLabel=""
-        linkColor={() => dark ? '#64748b88' : '#94a3b888'}
+        linkColor={() => colors.link}
         linkDirectionalArrowLength={3}
         linkDirectionalArrowRelPos={1}
         cooldownTicks={150}
@@ -110,7 +133,7 @@ export default function GraphCanvas({ data, focusPath, focusRequest, onOpen }: {
           if (selected) {
             context.beginPath()
             context.arc(node.x, node.y, 3 * Math.sqrt(1 + Math.min(node.degree, 40)) + 3 / scale, 0, Math.PI * 2)
-            context.strokeStyle = dark ? '#f8fafc' : '#0f172a'
+            context.strokeStyle = colors.foreground
             context.lineWidth = 2 / scale
             context.stroke()
           }
@@ -120,13 +143,13 @@ export default function GraphCanvas({ data, focusPath, focusRequest, onOpen }: {
           context.font = `${12 / scale}px sans-serif`
           context.textAlign = 'center'
           context.textBaseline = 'top'
-          context.fillStyle = dark ? '#e2e8f0' : '#334155'
+          context.fillStyle = colors.foreground
           context.fillText(label, node.x, node.y + 3 * Math.sqrt(1 + Math.min(node.degree, 40)) + 3 / scale)
         }}
       />}
       {hovered && <div className="pointer-events-none absolute bottom-3 left-3 right-3 w-fit max-w-[calc(100%-1.5rem)] rounded-md border bg-background/95 px-3 py-2 text-xs shadow-sm"><p className="break-words font-semibold">{hovered.title || hovered.path}</p><p className="break-all text-muted-foreground">{hovered.path}</p></div>}
     </div>
-    <ul aria-label="최상위 폴더 색상" className="flex flex-wrap gap-x-4 gap-y-2 text-xs text-muted-foreground">{folders.map(folder => <li key={folder} className="flex items-center gap-1.5"><span aria-hidden="true" className="size-2.5 rounded-full" style={{ backgroundColor: colorOf(folder, dark) }} />{folder}</li>)}</ul>
+    <ul aria-label="최상위 폴더 색상" className="flex flex-wrap gap-3 text-xs text-muted-foreground">{folders.map(folder => <li key={folder} className="flex items-center gap-1.5"><span aria-hidden="true" className="size-2.5 rounded-full" style={{ backgroundColor: folderColors.get(folder) }} />{folder}</li>)}</ul>
     <p className="text-xs text-muted-foreground">노트 크기는 연결 수를 나타냅니다. 화살표는 링크 방향입니다. 큰 그래프는 축소 시 제목을 숨기고, 배치 계산은 최대 6초 뒤 멈춥니다.</p>
   </div>
 }

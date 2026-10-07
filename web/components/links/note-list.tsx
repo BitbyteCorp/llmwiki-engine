@@ -10,9 +10,9 @@ type NoteSummary = { path: string; title: string; score?: number }
 
 export function KnowledgeNoteList({ notes }: { notes: NoteSummary[] }) {
   const { openNote, activePath, recentPaths } = useWorkspace()
-  return <ul className="divide-y rounded-lg border">
-    {notes.map(note => <li key={note.path} className="flex min-w-0 items-start gap-1 p-2">
-      <Link href={noteHref(note.path)} onNavigate={event => { event.preventDefault(); openNote(note.path) }} className="min-w-0 flex-1 rounded px-1 py-1 text-sm hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring">
+  return <ul className="divide-y overflow-hidden rounded-lg border bg-card">
+    {notes.map(note => <li key={note.path} className="flex min-w-0 items-start gap-2 px-3 py-2">
+      <Link href={noteHref(note.path)} onNavigate={event => { event.preventDefault(); openNote(note.path) }} className="min-w-0 flex-1 rounded text-sm hover:text-primary focus-visible:outline-2 focus-visible:outline-ring">
         <span className="block break-words font-medium">{note.title || note.path}</span>
         <span className="block break-all text-xs text-muted-foreground">{note.path}</span>
         {note.score !== undefined && <span className="block text-xs text-muted-foreground">의미 유사도 {note.score.toFixed(3)}</span>}

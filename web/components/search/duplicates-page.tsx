@@ -36,7 +36,7 @@ export function DuplicatesPage() {
     {duplicates.isError && <div className="space-y-3"><ErrorNotice error={duplicates.error} /><Button variant="outline" onClick={() => void duplicates.refetch()} disabled={duplicates.isFetching}>다시 시도</Button></div>}
     {duplicates.data && (duplicates.data.length === 0 ? <EmptyState title="중복 후보가 없습니다" description="현재 색인에서 내용이 같거나 의미 유사도가 높은 노트 쌍을 찾지 못했습니다. 의미 기반 후보는 임베딩이 준비된 노트만 포함합니다." /> : <section aria-label="중복 후보 목록" className="space-y-4">
       <div className="space-y-1"><p aria-live="polite" className="text-sm font-medium">{duplicates.data.length}쌍 · 최대 100쌍 표시</p><p className="text-xs text-muted-foreground">점수는 후보 유사도이며 중복 여부의 확정 판정이 아닙니다. 비교를 누르면 왼쪽 노트가 고정 탭으로 열리고 오른쪽 노트는 분할 화면에 열립니다.</p></div>
-      {duplicates.data.map(pair => <article key={`${pair.left.path}:${pair.right.path}`} className="space-y-4 rounded-lg border p-4 sm:p-5">
+      {duplicates.data.map(pair => <article key={`${pair.left.path}:${pair.right.path}`} className="space-y-3 rounded-lg border bg-card p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2"><Badge variant={pair.reason === 'exact' ? 'default' : 'secondary'}>{pair.reason === 'exact' ? '정확히 일치' : '의미 유사'}</Badge><span className="text-sm tabular-nums">유사도 {(pair.score * 100).toFixed(2)}%</span></div>
           <Button variant="outline" onClick={() => compare(pair)} aria-label={`${pair.left.title || pair.left.path}와 ${pair.right.title || pair.right.path} 분할 비교`}><Columns2 aria-hidden="true" />비교</Button>
