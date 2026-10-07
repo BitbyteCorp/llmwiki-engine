@@ -27,7 +27,6 @@ export function ChatProposal({ conversationId, messageId, mode, onClose }: {
   const [path, setPath] = useState('')
   const [proposal, setProposal] = useState<NoteProposal | null>(null)
   const [content, setContent] = useState('')
-  const [diffMode, setDiffMode] = useState<'split' | 'unified'>('split')
   const [saved, setSaved] = useState<{ path: string; jobId: string; mergeSha: string } | null>(null)
   const tree = useQuery({ queryKey: ['notes/tree'], queryFn: api.tree, enabled: mode === 'edit' })
   const draft = useMutation({
@@ -77,7 +76,7 @@ export function ChatProposal({ conversationId, messageId, mode, onClose }: {
       <ErrorNotice error={draft.error}/>{draft.isPending && <Loading label="Luna가 노트 초안을 작성하고 있습니다…"/>}
       {proposal && <>
         <div className="space-y-2"><Label htmlFor={`${prefix}-content`}>제안 내용 · 편집 가능</Label><Textarea id={`${prefix}-content`} value={content} onChange={event => { setContent(event.target.value); if (!stale) save.reset() }} disabled={busy || Boolean(saved)} className="min-h-64 font-mono text-xs"/><p className="text-xs text-muted-foreground">기준 버전 {proposal.baseSha.slice(0, 8)} · {proposal.original === null ? '새 파일' : '기존 파일 수정'}</p></div>
-        <section aria-label="노트 변경 미리보기" className="min-w-0 space-y-2"><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-medium">변경 미리보기</h3><div className="flex gap-1"><Button variant={diffMode === 'split' ? 'secondary' : 'ghost'} size="sm" aria-pressed={diffMode === 'split'} onClick={() => setDiffMode('split')}>나란히</Button><Button variant={diffMode === 'unified' ? 'secondary' : 'ghost'} size="sm" aria-pressed={diffMode === 'unified'} onClick={() => setDiffMode('unified')}>통합</Button></div></div><DiffView before={proposal.original ?? ''} after={content} mode={diffMode}/></section>
+        <section aria-label="노트 변경 미리보기" className="min-w-0 space-y-2"><h3 className="text-sm font-medium">변경 미리보기</h3><DiffView before={proposal.original ?? ''} after={content} mode="split"/></section>
         <ErrorNotice error={save.error}/>
         {stale && <div role="alert" className="space-y-2 rounded border border-amber-500/30 bg-amber-500/5 p-3 text-sm"><p>대상 노트가 변경되었거나 같은 경로가 생겼습니다. 현재 초안은 유지됩니다. 최신 원문으로 다시 제안받은 뒤 차이를 확인하세요.</p><Button variant="outline" size="sm" onClick={propose} disabled={busy}>최신 버전으로 다시 제안</Button></div>}
         {saved ? <div role="status" className="rounded border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm"><p className="mb-2 font-medium">노트가 저장되었습니다.</p><div className="flex flex-wrap gap-4"><Link className="underline" href={noteHref(saved.path)} onClick={onClose}>노트 열기</Link><Link className="underline" href={`/jobs/${encodeURIComponent(saved.jobId)}`} onClick={onClose}>쓰기 작업 확인</Link><Link className="underline" href={`/history/commits/${encodeURIComponent(saved.mergeSha)}`} onClick={onClose}>변경 이력</Link></div></div> : <div className="flex flex-wrap justify-end gap-2"><Button variant="outline" disabled={busy} onClick={onClose}>취소</Button><Button disabled={busy || !path.trim() || stale || (mode === 'edit' && content === proposal.original)} onClick={() => save.mutate()}>{save.isPending ? '저장 중…' : mode === 'new' ? '새 노트 저장' : '변경 적용'}</Button></div>}
