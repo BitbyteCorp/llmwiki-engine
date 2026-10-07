@@ -17,7 +17,7 @@
 
 ### 대화 기록과 학습
 
-웹 질의응답 대화 기록은 DB에 저장하며, 대화한 사용자 본인만 볼 수 있다.
+웹 질의응답 대화 기록은 DB에 저장하며 기본적으로 생성자만 접근한다. 소유자가 편집자나 조회자를 초대하면 해당 대화 구성원에게만 공유한다. 관리자라도 구성원이 아니면 대화와 생성 작업에 접근하지 못한다.
 
 대화에서 지식으로 추출하는 대상은 사용자가 말한 사실과 정정뿐이다. Luna의 답변은 기존 위키에서 나온 지식을 다시 넣어 지식이 순환하게 만들 수 있으므로 학습 대상에서 제외한다.
 
@@ -79,19 +79,37 @@
 | `GET /search?q=&limit=` | 검색 결과를 반환한다. |
 | `GET /history?path=&limit=&before=`, `/commits/:sha` | 전체 또는 노트별 커밋 목록과 커밋·파일 변경·patch·연결된 쓰기 작업을 반환한다. |
 | `GET /jobs?mine=1&limit=&before=`, `/jobs/:id` | 요청자 이메일·이름을 포함한 쓰기 작업 목록과 작업별 커밋을 반환한다. |
-| `GET`, `POST /conversations`, `GET`, `DELETE /conversations/:id` | 본인의 대화 목록 조회·생성·상세 조회·삭제를 처리한다. |
-| `POST /conversations/:id/messages` | 질문을 저장하고 Luna의 답변을 SSE로 전달한다. |
+| `GET /conversations?q=`, `POST /conversations`, `GET`, `PATCH`, `DELETE /conversations/:id` | 구성원 대화의 검색·생성·조회·제목 변경·소유자 삭제를 처리한다. |
+| `POST /conversations/:id/messages`, `PATCH /conversations/:id/messages/:mid`, `POST .../:mid/retry`, `POST .../:mid/regenerate` | 질문 제출·수정·재시도·답변 재생성을 SSE로 전달한다. |
+| `GET /generations/:id/events`, `POST /generations/:id/cancel` | 생성 이벤트 재연결과 명시적인 중지를 처리한다. |
+| `GET`, `POST /conversations/:id/members`, `DELETE /conversations/:id/members/:userId`, `POST /conversations/:id/presence` | 구성원과 30초 TTL 접속 상태를 관리한다. |
+| `POST /uploads`, `GET /uploads/:id`, `POST /uploads/:id/save` | 첨부 업로드·소유자 다운로드·assets 저장을 처리한다. |
+| `POST /conversations/:id/messages/:mid/proposal` | 답변에서 새 노트나 수정 초안을 만들며 저장하지 않는다. |
 | `/admin/users`, `/admin/settings` | 사용자와 역할, 허용 목록 사용 여부와 허용 도메인 설정을 관리한다. |
 
 표의 경로 앞에는 `/api`를 붙인다. 노트 내용은 main의 HEAD를 먼저 고정한 뒤 같은 커밋에서 읽으므로, `updatedSha`는 본문과 일치하는 저장소 스냅샷이다. `path`는 저장소 상대 `.md` 경로이며 절대 경로·상위 경로·git 메타데이터 경로는 거절한다. 위키 링크는 확장자를 제외한 파일의 마지막 이름으로 대소문자를 구분하지 않고 찾는다. 같은 이름이 여러 폴더에 있으면 경로를 정렬해 첫 번째 노트를 선택한다.
 
 목록의 `limit`은 기본 50, 최대 100이다. 변경 이력의 `before`는 마지막 커밋 SHA이며 해당 커밋보다 오래된 결과를 요청한다. 쓰기 작업의 `before`는 마지막 작업의 `createdAt`인 UTC ISO 시각이다. 커밋과 쓰기 작업은 작업의 `commits` 배열 또는 `mergeSha`로 연결한다. 요청자가 삭제되어도 쓰기 작업 이력은 남으며 요청자 표시는 이메일 대신 `deleted user`, 이름 대신 `null`을 반환한다.
 
-대화는 SQLite의 `conversations`, 메시지는 `messages`에 저장한다. 다른 사용자의 대화 조회·삭제·질문 요청은 관리자에게도 `404`를 반환한다. 대화 목록은 최근 활동 순서로, 메시지는 생성 시각과 삽입 순서로 정렬한다. 대화를 삭제하면 메시지도 삭제한다. 제목 없이 만든 대화는 첫 질문의 공백을 정리하고 Unicode 문자 80개까지 잘라 제목을 정하며, 별도 LLM 요청이나 후속 질문으로 제목을 바꾸지 않는다. 명시적인 제목은 200자, 질문은 100,000자까지 허용하며 빈 질문은 거절한다.
+대화는 `conversations`, 메시지는 `messages`, 구성원은 `conversation_members`, 생성 작업은 `generations`, 순서가 있는 SSE 프레임은 `generation_frames`에 저장한다. 대화 목록은 최근 활동 순서이며 `q`는 제목과 메시지의 부분 문자열을 검색해 최대 240자 `snippet`을 추가한다. 메시지는 삽입 순서다. 구성원이 아닌 사용자의 요청은 관리자도 `404`, 대화 조회자의 변경 요청은 `403`이다. 소유자만 대화 삭제와 구성원 변경을 수행하며 자기 소유권을 제거할 수 없다. 구성원 편집자는 제목·메시지를 변경한다. 전역 `viewer`도 자신이 만든 대화의 소유자로 질문할 수 있다.
 
-대화 SQL과 소유자별 데이터 접근은 `ConversationsRepository`가, 질문 제출과 Luna 호출·완성 답변 저장은 `ConversationsService`가 담당한다. `ConversationsController`는 Nest의 `@Res()`로 SSE 헤더와 이벤트를 직접 전달하며 요청 중단이나 응답 연결 종료를 `AbortSignal`로 Luna에 전달한다.
+제목 없이 만든 대화는 첫 질문의 공백을 정리하고 Unicode 문자 80개까지 잘라 제목을 정한다. 명시적 제목은 200자, 질문은 100,000자이며 빈 질문은 거절한다. `PATCH /conversations/:id` 입력은 `{title}`이다. `GET /conversations/:id`는 `{conversation,messages}`이며 메시지는 `{id,role,content,citations,attachments,context,status,usage,model,effort,createdAt}`이다. `status`는 `completed|running|failed|cancelled|interrupted`, `usage`는 `{inputTokens,outputTokens,reasoningTokens}|null`, `context`는 `{notePath,ref?,selection?}|null`이다. `citations`는 `{path,heading?,anchor?,excerpt?,sha?}` 객체 배열이다.
 
-질문 API는 앞선 사용자·Luna 메시지와 새 질문을 Luna에 전달한다. `delta`의 `{text}`를 순서대로 표시하고, `done`의 `{message}`를 완성된 답변으로 사용한다. 완성 답변에는 메시지 ID·내용·근거 노트 경로 배열·생성 시각을 포함하며 같은 내용과 인용 배열을 DB에 저장한다. 실패하면 `error`의 `{message}`를 반환한다. 연결을 끊으면 Luna 요청을 중단하며 실패하거나 중단된 답변 조각은 저장하지 않는다. 이미 제출한 사용자 질문은 남고 `learned_at`은 아직 학습하지 않은 상태인 `NULL`로 저장한다.
+`POST /conversations/:id/messages` 입력은 `{content,attachments?:string[],context?:{notePath,ref?,selection?},clientId?,model?,effort?}`이다. 첨부는 최대 10개이며 업로드 소유자만 새 질문에 첨부한다. 이전 구성원이 제출한 첨부는 권한을 검사한 대화 기록을 통해 서버에서 다시 읽는다. `model`은 `LUNA_MODELS`의 허용 목록이고 미설정 시 `LUNA_MODEL`만 허용한다. `effort`는 `low|medium|high`다. 고정 노트 문맥은 서버가 지정 ref의 정식 원문을 읽으며 selection은 신뢰하지 않는 인용문으로 다룬다.
+
+SSE는 `id: <정수 seq>`, `event: <유형>`, `data: <JSON>` 뒤 빈 줄을 보낸다. 이벤트는 `generation {generationId,userMessageId}`, `status {phase}`, `tool {name,state:'start'|'end',summary,path?}`, `citation {path,heading?,anchor?,excerpt?,sha?}`, `delta {text}`, `usage {inputTokens,outputTokens,reasoningTokens}`, `done {message}`, `error {code,message}`다. 도구 요약은 검색어와 노트 경로만 포함하며 노트 본문을 포함하지 않는다. `GET /generations/:id/events`의 `Last-Event-ID`는 해당 생성의 마지막 정수 seq이며 이후 프레임만 재생하고 실시간 프레임으로 이어진다. 완료된 생성도 재생한다.
+
+HTTP 연결 종료는 생성 작업을 중지하지 않는다. 명시적 `POST /generations/:id/cancel`만 구성원 편집자나 소유자의 생성을 중지한다. 서버 재시작 시 실행 중 작업은 `interrupted`로 전환한다. 실패·취소된 답변도 부분 텍스트와 상태를 저장한다. 공급자 오류는 내부 로그에만 남기며 사용자에게 `generation_failed` 등 안전한 코드와 메시지를 전달한다. 대화에 실행 중 생성은 하나만 허용하며 중복 실행·수정·삭제는 `409 generation_active`다.
+
+동일 대화의 동일 `clientId` 제출은 기존 생성 이벤트를 반환하며 질문을 중복 저장하지 않는다. `POST .../messages/:mid/retry`는 실패·취소·중단된 답변이나 남아 있는 사용자 질문을 재시도한다. `POST .../:mid/regenerate`는 assistant 메시지에서 이전 질문의 답변을 새로 만든다. `PATCH .../:mid` 입력은 `{content}`이며 사용자 질문만 수정한다. 이 세 경로는 같은 SSE 형식으로 응답하고 해당 질문 뒤의 턴을 삭제하며 사용자 질문을 새로 추가하지 않는다. 저장된 과거 요약도 무효화한다. 긴 대화는 최근 턴을 원문으로 유지하고 오래된 턴을 대화별 요약으로 저장한다. 아직 학습하지 않은 사용자 질문의 `learned_at`은 `NULL`이다.
+
+수정·재생성으로 대화에서 제거한 턴의 생성 이벤트와 `clientId` 기록도 대화가 존재하는 동안 유지한다. 늦게 재전송한 이전 질문은 기존 이벤트를 재생하며 제거한 턴을 복원하지 않는다. 생성 중 요청자가 구성원에서 제거되어도 나머지 구성원에게 완성 메시지를 전달하며, 제거된 사용자의 실시간 스트림은 종료한다. 편집한 사용자 질문은 다시 미학습 상태가 되고 dreaming은 수집한 질문 내용과 현재 내용이 같은 경우에만 학습 완료로 기록한다.
+
+구성원 추가 입력은 `{email,role:'editor'|'viewer'}`이며 조회·추가는 `{members:[{userId,email,name,role}]}`를 반환한다. 삭제는 `204`다. presence 입력은 `{typing}`이며 `{expiresAt}`를 반환한다. 30초 동안 갱신하지 않은 사용자는 제거하며 `conversation.presence {conversationId,users:[{id,name,typing}]}`와 `conversation.updated {conversationId,messageId?}` 이벤트는 구성원 userIds에만 전달한다.
+
+업로드 multipart 필드는 `file`, 선택 필드 `purpose=chat|import`이며 기본값은 `chat`이다. chat은 20 MB 이하 PNG/JPEG/WebP/GIF/PDF/UTF-8 text/Markdown이고 실제 바이트를 검사한다. import는 전역 editor 이상만 생성하며 ZIP을 추가 허용하고 100 MB 한도다. import 목적 파일은 chat 첨부로 사용할 수 없다. 응답은 `{id,userId,name,mediaType,size,createdAt,purpose}`다. 다운로드는 소유자만 가능하며 안전한 Content-Disposition과 탐지한 Content-Type을 반환한다. save 입력은 `{path,baseSha}`이고 경로는 `assets/` 아래이며 공용 NoteWriter를 통해 저장한다. 메시지에서 참조하지 않고 assets로 저장하지 않은 업로드는 `UPLOAD_RETENTION_DAYS`(기본 7일) 이후 제거한다.
+
+proposal 입력은 `{mode:'new'|'edit',path?}`이며 edit에는 경로가 필요하다. 완성된 assistant 답변을 기반으로 `{path,baseSha,original:string|null,proposed}` 전체 노트 초안을 반환한다. 이 호출은 커밋이나 노트 쓰기를 수행하지 않는다. 클라이언트가 diff를 확인한 뒤 별도의 노트 쓰기 접점으로 적용한다.
 
 ## 관련 문서
 

@@ -15,13 +15,21 @@ import { MeController } from './me.controller.js';
 import { NotesController } from './notes.controller.js';
 import { NotesService } from './notes.service.js';
 import { SearchController } from './search.controller.js';
+import { UploadsModule } from '../uploads/uploads.module.js';
+import { UploadsController } from './uploads.controller.js';
+import { GenerationsController } from './generations.controller.js';
+import { GenerationsService } from './generations.service.js';
+import { LinksController, GraphController } from './links.controller.js';
+import { TagsController } from './tags.controller.js';
 
 @Module({
-  imports: [AuthModule, JobsModule, KnowledgeModule, LunaModule, RagModule],
+  imports: [AuthModule, JobsModule, KnowledgeModule, LunaModule, RagModule, UploadsModule],
   controllers: [
     MeController, NotesController, SearchController, HistoryController,
     JobsController, ConversationsController, AdminController,
+    UploadsController, GenerationsController,
+    LinksController, GraphController, TagsController,
   ],
-  providers: [ConversationsRepository, ConversationsService, NotesService, HistoryService],
+  providers: [ConversationsRepository, ConversationsService, GenerationsService, NotesService, HistoryService],
 })
 export class ApiModule {}
