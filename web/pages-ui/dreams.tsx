@@ -41,10 +41,10 @@ export function DreamsPage() {
   })
   const runs = query.data?.pages.flatMap((page) => page.runs) ?? []
   return <div className="min-w-0 space-y-6">
-    <PageHeader title="Dreaming 실행 기록" description="하루치 지식 정리 결과와 일기, 원격 백업 결과를 확인합니다." actions={<Button variant="outline" nativeButton={false} render={<Link href="/journal" />}>일기 보기</Button>} />
+    <PageHeader title="꿈꾸기 실행 기록" description="하루치 지식 정리 결과와 일기, 원격 백업 결과를 확인합니다." actions={<Button variant="outline" nativeButton={false} render={<Link href="/journal" />}>일기 보기</Button>} />
     {query.isPending && <Loading label="실행 기록을 불러오는 중…" />}
     {query.error && <div className="space-y-3"><ErrorNotice error={query.error} /><Button variant="outline" onClick={() => void (query.isFetchNextPageError ? query.fetchNextPage() : query.refetch())} disabled={query.isFetching}>다시 시도</Button></div>}
-    {!query.isPending && !query.error && runs.length === 0 && <EmptyState title="아직 dreaming 실행 기록이 없습니다" description="일일 지식 정리가 실행되면 여기에 기록됩니다." />}
+    {!query.isPending && !query.error && runs.length === 0 && <EmptyState title="아직 꿈꾸기 실행 기록이 없습니다" description="일일 지식 정리가 실행되면 여기에 기록됩니다." />}
     {runs.length > 0 && <ul className="divide-y rounded-lg border bg-card">{runs.map((run) => <li key={run.id} className="space-y-3 p-4">
       <div className="flex flex-wrap items-center justify-between gap-3"><div className="flex min-w-0 flex-wrap items-center gap-2"><DreamStatus status={run.status} /><Link href={`/dreams/${encodeURIComponent(run.id)}`} className="break-all font-mono text-xs underline underline-offset-4">{run.id}</Link></div><time className="shrink-0 whitespace-nowrap text-right text-xs tabular-nums text-muted-foreground" dateTime={run.startedAt} title={formatDate(run.startedAt)}>{formatDate(run.startedAt)}</time></div>
       <Link href={`/dreams/${encodeURIComponent(run.id)}`} className="line-clamp-3 whitespace-pre-wrap break-words text-sm font-medium leading-6 hover:underline" title={run.summary || run.error || undefined}>{run.summary || (run.status === 'running' ? '지식을 정리하고 있습니다.' : run.error || '기록된 요약이 없습니다.')}</Link>
@@ -59,11 +59,11 @@ export function DreamPage() {
   const id = encodedId === undefined ? undefined : decodeURIComponent(encodedId)
   const query = useQuery({ queryKey: ['dream', id], queryFn: ({ signal }) => dreamsApi.detail(id!, signal), enabled: !!id })
   if (!id) return <EmptyState title="실행 기록을 선택해 주세요" />
-  if (query.isPending) return <Loading label="Dreaming 보고서를 불러오는 중…" />
+  if (query.isPending) return <Loading label="꿈꾸기 보고서를 불러오는 중…" />
   if (query.isError) return <div className="space-y-3"><ErrorNotice error={query.error} /><Button variant="outline" onClick={() => void query.refetch()} disabled={query.isFetching}>다시 시도</Button></div>
   const run = query.data
   return <div className="min-w-0 space-y-6">
-    <PageHeader title="Dreaming 보고서" description={<span className="break-all font-mono text-xs">{run.id}</span>} actions={<><Button variant="outline" nativeButton={false} render={<Link href="/dreams" />}>실행 기록</Button>{run.journalPath && <Button variant="outline" nativeButton={false} render={<Link href={journalHref(run.journalPath)} />}>일기 보기</Button>}</>} />
+    <PageHeader title="꿈꾸기 보고서" description={<span className="break-all font-mono text-xs">{run.id}</span>} actions={<><Button variant="outline" nativeButton={false} render={<Link href="/dreams" />}>실행 기록</Button>{run.journalPath && <Button variant="outline" nativeButton={false} render={<Link href={journalHref(run.journalPath)} />}>일기 보기</Button>}</>} />
     <dl className="grid gap-3 rounded-lg border bg-card p-4 text-sm sm:grid-cols-2 xl:grid-cols-4">
       <div><dt className="text-muted-foreground">상태</dt><dd className="mt-1"><DreamStatus status={run.status} /></dd></div>
       <div className="min-w-0"><dt className="text-muted-foreground">시작 시각</dt><dd className="mt-1 whitespace-nowrap text-right tabular-nums"><time dateTime={run.startedAt} title={formatDate(run.startedAt)}>{formatDate(run.startedAt)}</time></dd></div>

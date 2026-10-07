@@ -41,8 +41,8 @@ export function OpsPanel({ userId }: { userId: number }) {
         <p className={`text-xs ${data.index.lastError ? 'text-destructive' : 'text-muted-foreground'}`}>{data.index.syncing ? '동기화 중' : data.index.lastError ? '색인 오류' : data.index.indexedSha === data.index.headSha ? 'main과 동기화됨' : 'main 변경 반영 대기'}</p>
         <dl className="flex justify-between gap-3 text-xs"><dt className="text-muted-foreground">임베딩 대기</dt><dd className="tabular-nums">{data.index.pendingVectors.toLocaleString('ko-KR')}개</dd></dl>
       </section>
-      <section aria-label="dreaming 상태" className="space-y-3 rounded-lg border bg-card p-4">
-        <h3 className="flex items-center gap-2 text-xs font-semibold"><Sparkles className="size-4" />dreaming</h3>
+      <section aria-label="꿈꾸기 상태" className="space-y-3 rounded-lg border bg-card p-4">
+        <h3 className="flex items-center gap-2 text-xs font-semibold"><Sparkles className="size-4" />꿈꾸기</h3>
         {data.dreams.running && <Link href={`/dreams/${encodeURIComponent(data.dreams.running.id)}`} className="block text-xs underline underline-offset-4">현재 실행 중 · {formatDate(data.dreams.running.startedAt)}</Link>}
         {data.dreams.last ? <Link href={`/dreams/${encodeURIComponent(data.dreams.last.id)}`} className={`block text-xs underline underline-offset-4 ${data.dreams.last.status === 'failed' ? 'text-destructive' : 'text-muted-foreground'}`}>최근 {dreamLabels[data.dreams.last.status]} · {formatDate(data.dreams.last.finishedAt ?? data.dreams.last.startedAt)}</Link> : <p className="text-xs text-muted-foreground">실행 기록 없음</p>}
       </section>
@@ -56,7 +56,7 @@ export function OpsPanel({ userId }: { userId: number }) {
     <section aria-label="빠른 실행" className="space-y-3 rounded-lg border bg-card p-4">
       <h3 className="text-xs font-semibold">빠른 실행</h3>
       <div className="flex flex-col gap-3">
-        <Button size="sm" className="justify-start" disabled={actions.busy || !data || Boolean(data.dreams.running)} onClick={() => actions.request({ kind: 'dream' })}><Sparkles className="size-4" />{data?.dreams.running ? 'dreaming 실행 중' : 'dreaming 지금 실행'}</Button>
+        <Button size="sm" className="justify-start" disabled={actions.busy || !data || Boolean(data.dreams.running)} onClick={() => actions.request({ kind: 'dream' })}><Sparkles className="size-4" />{data?.dreams.running ? '꿈꾸기 실행 중' : '꿈꾸기 지금 실행'}</Button>
         <Button size="sm" variant="outline" className="justify-start" disabled={actions.busy || !data || data.index.syncing} onClick={() => actions.request({ kind: 'incremental' })}><RefreshCw className="size-4" />색인 갱신</Button>
         <Button size="sm" variant="outline" className="justify-start" disabled={actions.busy || !data || data.index.syncing} onClick={() => actions.request({ kind: 'full' })}><Database className="size-4" />전체 색인 재구축</Button>
         <Button size="sm" variant="outline" className="justify-start" disabled={actions.busy} onClick={() => actions.request({ kind: 'import' })}><FileInput className="size-4" />원문 가져오기</Button>

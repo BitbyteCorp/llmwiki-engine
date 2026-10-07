@@ -7,7 +7,7 @@ export function registerDreamCommands(
   getApp: () => Promise<INestApplicationContext>,
 ): void {
   program.command('dream').description('지식 정리와 백업').command('run')
-    .description('dreaming을 즉시 한 번 실행한다')
+    .description('꿈꾸기를 즉시 한 번 실행한다')
     .action(async () => {
       const app = await getApp();
       const run = await app.get(DreamingService).runOnce();

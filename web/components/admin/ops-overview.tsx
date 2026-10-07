@@ -61,14 +61,14 @@ export function OpsOverview() {
         <dl className="grid grid-cols-1 gap-3 @2xl/settings-panel:grid-cols-2"><Field label="색인된 커밋"><Sha value={data.index.indexedSha} /></Field><Field label="main HEAD"><Sha value={data.index.headSha} /></Field><Field label="최근 동기화">{formatDate(data.index.lastSyncAt)}</Field><Field label="임베딩 대기 청크">{data.index.pendingVectors.toLocaleString("ko-KR")}</Field><Field label="임베딩 상태">{data.index.embedding.ready ? "준비 완료" : data.index.embedding.configured ? "준비 중 또는 오류" : "API 키 미설정 · 키워드 검색 사용"}</Field><Field label="임베딩 모델">{data.index.embedding.model} · {data.index.embedding.dimensions}차원</Field></dl>
         {data.index.lastError && <ErrorNotice error={data.index.lastError} />}
       </Section>
-      <Section title="dreaming" icon={<Sparkles className="size-4" />} actions={<Button size="sm" disabled={busy || Boolean(data.dreams.running)} onClick={() => choose({ kind: "dream" })}>{data.dreams.running ? "dreaming 실행 중" : "수동 실행"}</Button>}>
+      <Section title="꿈꾸기" icon={<Sparkles className="size-4" />} actions={<Button size="sm" disabled={busy || Boolean(data.dreams.running)} onClick={() => choose({ kind: "dream" })}>{data.dreams.running ? "꿈꾸기 실행 중" : "수동 실행"}</Button>}>
         {data.dreams.running && <DreamSummary run={data.dreams.running} title="현재 실행" />}
-        {data.dreams.last ? <DreamSummary run={data.dreams.last} title="최근 실행" /> : <EmptyState title="아직 dreaming 실행 기록이 없습니다" description="수동 실행 또는 예약 실행이 끝나면 결과가 여기에 표시됩니다." />}
-        <Link href="/dreams" className="text-sm underline underline-offset-4">dreaming 기록 보기</Link>
+        {data.dreams.last ? <DreamSummary run={data.dreams.last} title="최근 실행" /> : <EmptyState title="아직 꿈꾸기 실행 기록이 없습니다" description="수동 실행 또는 예약 실행이 끝나면 결과가 여기에 표시됩니다." />}
+        <Link href="/dreams" className="text-sm underline underline-offset-4">꿈꾸기 기록 보기</Link>
       </Section>
       <Section title="원격 git push 백업" icon={<UploadCloud className="size-4" />}>
-        <p className="text-xs leading-5 text-muted-foreground">dreaming의 원격 push 결과입니다. SQLite·git bundle 로컬 백업 상태가 아닙니다.</p>
-        {data.backup.lastAttempt ? <dl className="grid grid-cols-1 gap-3 @2xl/settings-panel:grid-cols-2"><Field label="최근 시도">{formatDate(data.backup.lastAttempt.push.at ?? data.backup.lastAttempt.startedAt)}</Field><Field label="결과">{pushLabels[data.backup.lastAttempt.push.status]}</Field><Field label="원격 저장소">{data.backup.lastAttempt.push.remote ?? "설정 없음"}</Field><Field label="push 커밋"><Sha value={data.backup.lastAttempt.push.sha} /></Field>{data.backup.lastAttempt.push.reason && <Field label="결과 사유">{data.backup.lastAttempt.push.reason}</Field>}<Field label="최근 성공">{formatDate(data.backup.lastSuccess?.push.at ?? null)}</Field></dl> : <EmptyState title="원격 push 기록이 없습니다" description="dreaming 실행 후 백업 결과를 확인할 수 있습니다." />}
+        <p className="text-xs leading-5 text-muted-foreground">꿈꾸기의 원격 push 결과입니다. SQLite·git bundle 로컬 백업 상태가 아닙니다.</p>
+        {data.backup.lastAttempt ? <dl className="grid grid-cols-1 gap-3 @2xl/settings-panel:grid-cols-2"><Field label="최근 시도">{formatDate(data.backup.lastAttempt.push.at ?? data.backup.lastAttempt.startedAt)}</Field><Field label="결과">{pushLabels[data.backup.lastAttempt.push.status]}</Field><Field label="원격 저장소">{data.backup.lastAttempt.push.remote ?? "설정 없음"}</Field><Field label="push 커밋"><Sha value={data.backup.lastAttempt.push.sha} /></Field>{data.backup.lastAttempt.push.reason && <Field label="결과 사유">{data.backup.lastAttempt.push.reason}</Field>}<Field label="최근 성공">{formatDate(data.backup.lastSuccess?.push.at ?? null)}</Field></dl> : <EmptyState title="원격 push 기록이 없습니다" description="꿈꾸기 실행 후 백업 결과를 확인할 수 있습니다." />}
       </Section>
     </>}
   </div>

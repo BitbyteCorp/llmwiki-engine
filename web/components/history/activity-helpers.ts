@@ -1,8 +1,8 @@
 import type { ActivityItem, BackupStatus, OpsDreamRun } from '@/lib/api'
 
 export const activityKey = (item: ActivityItem) => `${item.type}:${item.id}`
-export const activityTypeLabels = { commit: '커밋', job: '쓰기 작업', dream: 'dreaming', backup: '백업' } as const
-export const activitySourceLabels: Record<string, string> = { git: 'Git', mcp: 'MCP', web: '웹', chat: '대화', dreaming: 'dreaming', import: '가져오기', revert: '되돌리기' }
+export const activityTypeLabels = { commit: '커밋', job: '쓰기 작업', dream: '꿈꾸기', backup: '백업' } as const
+export const activitySourceLabels: Record<string, string> = { git: 'Git', mcp: 'MCP', web: '웹', chat: '대화', dreaming: '꿈꾸기', import: '가져오기', revert: '되돌리기' }
 export const activityStatusLabels: Record<string, string> = { queued: '대기 중', running: '처리 중', merging: '병합 중', succeeded: '완료', failed: '실패', cancelled: '취소됨', pending: '백업 대기', skipped: '로컬 전용' }
 export const pushLabels: Record<OpsDreamRun['push']['status'], string> = { pending: '백업 대기', succeeded: '백업 성공', failed: '백업 실패', skipped: '로컬 전용 · 백업 건너뜀' }
 

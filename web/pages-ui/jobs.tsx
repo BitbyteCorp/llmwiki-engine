@@ -13,7 +13,7 @@ import { JobProgress } from '@/components/history/job-progress'
 
 const statusLabels: Record<WriteJob['status'], string> = { queued: '대기 중', running: '처리 중', merging: '병합 중', succeeded: '완료', failed: '실패' }
 const kindLabels: Record<WriteJob['kind'], string> = { luna: 'Luna 작업', direct: '직접 편집', revert: '변경 되돌리기' }
-const sourceLabels: Record<WriteJob['source'], string> = { mcp: 'MCP', web: '웹', chat: '대화', dreaming: 'dreaming', import: '가져오기', revert: '되돌리기' }
+const sourceLabels: Record<WriteJob['source'], string> = { mcp: 'MCP', web: '웹', chat: '대화', dreaming: '꿈꾸기', import: '가져오기', revert: '되돌리기' }
 
 function JobStatus({ job }: { job: WriteJob }) {
   return <Badge variant="outline" className={job.status === 'failed' ? 'border-destructive/30 bg-destructive/5 text-destructive' : job.status === 'succeeded' ? 'border-success/30 bg-success/10 text-success' : 'text-muted-foreground'}>{job.error === 'canceled' ? '취소됨' : statusLabels[job.status]}</Badge>

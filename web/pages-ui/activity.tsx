@@ -90,7 +90,7 @@ export function ActivityPage() {
   const filters: ActivityFilters = { type: (params.get('type') || undefined) as ActivityKind | undefined, source: (params.get('source') || undefined) as ActivitySource | undefined, path: params.get('path') || undefined }
   const filterKey = JSON.stringify(filters)
   return <div className="min-w-0 space-y-6">
-    <PageHeader title="전체 타임라인" description="커밋, 쓰기 작업, dreaming과 원격 백업 기록을 한곳에서 확인합니다." actions={<nav aria-label="관련 기록" className="flex flex-wrap gap-3 text-sm"><Link className="hover:underline" href="/jobs">쓰기 작업</Link><Link className="hover:underline" href="/dreams">dreaming 기록</Link><Link className="hover:underline" href="/journal">일기</Link></nav>} />
+    <PageHeader title="전체 타임라인" description="커밋, 쓰기 작업, 꿈꾸기와 원격 백업 기록을 한곳에서 확인합니다." actions={<nav aria-label="관련 기록" className="flex flex-wrap gap-3 text-sm"><Link className="hover:underline" href="/jobs">쓰기 작업</Link><Link className="hover:underline" href="/dreams">꿈꾸기 기록</Link><Link className="hover:underline" href="/journal">일기</Link></nav>} />
     <div className="rounded-lg border bg-card p-4"><BackupBadge /></div>
     <form key={`filters:${filterKey}`} className="flex flex-wrap items-end gap-3 rounded-lg border bg-card p-4" aria-label="타임라인 필터" onSubmit={event => {
       event.preventDefault()

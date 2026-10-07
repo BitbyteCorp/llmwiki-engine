@@ -119,7 +119,7 @@ export function Palettes({ mode, setMode, admin, selectPanel, toggleSidebar, tog
     { id: 'note-history', label: '현재 노트 변경 이력 열기', keywords: ['Note History Follow Rename'], action: () => router.push(`/history?path=${encodeURIComponent(activePath)}&follow=1`) },
     { id: 'activity-timeline', label: '전체 타임라인', keywords: ['Activity Timeline History'], action: () => router.push('/history') },
     { id: 'history-journal', label: '일기', keywords: ['Journal Diary'], action: () => router.push('/journal') },
-    { id: 'history-dreams', label: 'dreaming 기록', keywords: ['Dreaming Runs'], action: () => router.push('/dreams') },
+    { id: 'history-dreams', label: '꿈꾸기 기록', keywords: ['Dreaming Runs'], action: () => router.push('/dreams') },
     { id: 'favorite', label: '현재 노트 즐겨찾기 전환', keywords: ['Favorite'], action: () => workspace.toggleFavorite(activePath) },
     { id: 'reveal', label: '현재 노트 탐색기에서 표시', keywords: ['Reveal Explorer'], action: () => { selectPanel('explorer'); workspace.revealFolder(activePath) } },
     { id: 'theme', label: '밝은 / 어두운 테마 전환', keywords: ['Toggle Theme Dark Light'], action: () => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark') },

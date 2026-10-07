@@ -17,7 +17,7 @@ export function HistoryPanel() {
       <nav aria-label="이력 탐색" className="space-y-1">
         <Link className="explorer-row" href="/history"><History className="size-4 shrink-0" />전체 타임라인</Link>
         <Link className="explorer-row" href="/jobs"><ListTodo className="size-4 shrink-0" />쓰기 작업</Link>
-        <Link className="explorer-row" href="/dreams"><Moon className="size-4 shrink-0" />dreaming 기록</Link>
+        <Link className="explorer-row" href="/dreams"><Moon className="size-4 shrink-0" />꿈꾸기 기록</Link>
         <Link className="explorer-row" href="/journal"><NotebookPen className="size-4 shrink-0" />일기</Link>
       </nav>
     </section>

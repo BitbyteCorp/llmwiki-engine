@@ -9,7 +9,7 @@ import { confirmEditorLeave } from '@/components/editor/state'
 type OpsRunCommand = { kind: 'incremental' | 'full' | 'dream' } | { kind: 'retry' | 'cancel'; job: OpsJob }
 export type OpsCommand = OpsRunCommand | { kind: 'import' }
 export const opsMutationKey = ['ops', 'command'] as const
-const labels = { incremental: '증분 재색인', full: '전체 재색인', dream: 'dreaming 수동 실행', retry: '실패 작업 재시도', cancel: '대기 작업 취소', import: '원문 가져오기' }
+const labels = { incremental: '증분 재색인', full: '전체 재색인', dream: '꿈꾸기 수동 실행', retry: '실패 작업 재시도', cancel: '대기 작업 취소', import: '원문 가져오기' }
 
 function confirmation(command: OpsCommand): string | null {
   switch (command.kind) {
@@ -23,7 +23,7 @@ function confirmation(command: OpsCommand): string | null {
 
 function actionLink(command: OpsCommand) {
   if (command.kind === 'retry' || command.kind === 'cancel') return { label: '작업 보기', href: `/jobs/${encodeURIComponent(command.job.id)}` }
-  if (command.kind === 'dream') return { label: 'dreaming 기록 보기', href: '/dreams' }
+  if (command.kind === 'dream') return { label: '꿈꾸기 기록 보기', href: '/dreams' }
   return { label: '운영 상태 보기', href: '/settings?tab=ops' }
 }
 
@@ -48,9 +48,9 @@ export function useOpsActions(openImport?: () => void) {
       const failed = dream?.status === 'failed'
       notify({
         tone: failed ? 'error' : 'success',
-        title: failed ? 'dreaming 실행에 실패했습니다.' : `${labels[command.kind]} 요청을 완료했습니다.`,
+        title: failed ? '꿈꾸기 실행에 실패했습니다.' : `${labels[command.kind]} 요청을 완료했습니다.`,
         description: failed ? dream.error ?? '실행 기록에서 오류를 확인하세요.' : undefined,
-        action: dream ? { label: 'dreaming 보기', href: `/dreams/${encodeURIComponent(dream.id)}` } : job ? { label: '작업 보기', href: `/jobs/${encodeURIComponent(job.id)}` } : actionLink(command),
+        action: dream ? { label: '꿈꾸기 보기', href: `/dreams/${encodeURIComponent(dream.id)}` } : job ? { label: '작업 보기', href: `/jobs/${encodeURIComponent(job.id)}` } : actionLink(command),
       })
     },
     onError: (error, command) => notify({ tone: 'error', title: `${labels[command.kind]} 요청에 실패했습니다.`, description: error instanceof Error ? error.message : String(error), action: actionLink(command) }),
