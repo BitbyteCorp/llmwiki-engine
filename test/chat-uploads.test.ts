@@ -172,9 +172,15 @@ describe('chat replay and retained assets', () => {
     const result = await request(app.getHttpServer()).post(`/api/uploads/${saved.id}/save`).set('x-user', '1')
       .send({ path: 'assets/pixel.png', baseSha }).expect(201);
     expect(result.body.mergeSha).toBe(await repo.headSha());
-    await request(app.getHttpServer()).post(`/api/uploads/${discarded.id}/save`).set('x-user', '1')
-      .send({ path: 'assets/pixel.png', baseSha: result.body.mergeSha }).expect(409);
+    const stale = await request(app.getHttpServer()).post(`/api/uploads/${discarded.id}/save`).set('x-user', '1')
+      .send({ path: 'assets/pixel.png', baseSha }).expect(409);
+    expect(stale.body.error.code).toBe('stale_note');
     expect(readFileSync(join(directory, 'knowledge/assets/pixel.png'))).toEqual(png);
+    const replacementBytes = Buffer.concat([png, Buffer.from('updated')]);
+    const replacement = await uploads.save(1, { name: 'replacement.png', mediaType: 'image/png', buffer: replacementBytes });
+    await request(app.getHttpServer()).post(`/api/uploads/${replacement.id}/save`).set('x-user', '1')
+      .send({ path: 'assets/pixel.png', baseSha: result.body.mergeSha }).expect(201);
+    expect(readFileSync(join(directory, 'knowledge/assets/pixel.png'))).toEqual(replacementBytes);
     const orphanPath = join(directory, 'uploads', 'crashed-before-insert');
     writeFileSync(orphanPath, 'orphan');
     utimesSync(orphanPath, new Date(stamp), new Date(stamp));

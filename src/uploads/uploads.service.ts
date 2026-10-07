@@ -113,7 +113,7 @@ export class UploadsService implements OnModuleInit, OnModuleDestroy {
     const stored = this.get(userId, id);
     this.saving.add(id);
     try {
-      const result = await this.writer.apply({ userId, source: 'web', baseSha, ops: [{ op: 'put', path, create: true, contentBase64: readFileSync(stored.path).toString('base64') }] });
+      const result = await this.writer.apply({ userId, source: 'web', baseSha, ops: [{ op: 'put', path, contentBase64: readFileSync(stored.path).toString('base64') }] });
       this.db.prepare('UPDATE uploads SET saved_at = ? WHERE id = ?').run(new Date().toISOString(), id);
       return { jobId: result.jobId, mergeSha: result.mergeSha };
     } finally { this.saving.delete(id); }

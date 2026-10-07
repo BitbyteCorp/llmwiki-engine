@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Param, Post, Res, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import type { Response } from 'express';
-import { z } from 'zod';
+import type { z } from 'zod';
 import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
 import { Roles } from '../auth/decorators/roles.decorator.js';
 import { RolesGuard } from '../auth/guards/roles.guard.js';
@@ -10,9 +10,8 @@ import type { User } from '../auth/users.types.js';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe.js';
 import { IMPORT_UPLOAD_LIMIT, UploadsService } from '../uploads/uploads.service.js';
 import { ApiError } from './api-error.js';
+import { uploadPurposeSchema, uploadSaveSchema } from './api.dto.js';
 
-const purposeSchema = z.object({ purpose: z.enum(['chat', 'import']).default('chat') });
-const saveSchema = z.object({ path: z.string().min(1), baseSha: z.string().regex(/^[a-f0-9]{40}$/i) });
 interface MultipartFile { originalname: string; mimetype: string; buffer: Buffer }
 
 function disposition(name: string): string {
@@ -31,7 +30,7 @@ export class UploadsController {
   upload(
     @CurrentUser() user: User,
     @UploadedFile() file: MultipartFile | undefined,
-    @Body(new ZodValidationPipe(purposeSchema)) body: z.infer<typeof purposeSchema>,
+    @Body(new ZodValidationPipe(uploadPurposeSchema)) body: z.infer<typeof uploadPurposeSchema>,
   ) {
     if (!file) throw new ApiError(400, 'invalid_input', 'Multipart field file is required');
     if (body.purpose === 'import' && user.role === 'viewer') throw new ApiError(403, 'forbidden', 'editor role required for import uploads');
@@ -51,7 +50,7 @@ export class UploadsController {
 
   @Post(':id/save')
   @Roles('editor')
-  save(@CurrentUser() user: User, @Param('id') id: string, @Body(new ZodValidationPipe(saveSchema)) body: z.infer<typeof saveSchema>) {
+  save(@CurrentUser() user: User, @Param('id') id: string, @Body(new ZodValidationPipe(uploadSaveSchema)) body: z.infer<typeof uploadSaveSchema>) {
     return this.uploads.saveAsset(user.id, id, body.path, body.baseSha);
   }
 }
