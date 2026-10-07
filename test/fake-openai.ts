@@ -18,9 +18,11 @@ export interface FakeFunctionCall {
 export type FakeOutputItem = string | FakeFunctionCall;
 export type FakeTurn =
   | FakeOutputItem
-  | { text: string }
+  | ({ text: string }
   | { output: readonly FakeOutputItem[] }
-  | { functionCalls: readonly FakeFunctionCall[]; text?: string };
+  | { functionCalls: readonly FakeFunctionCall[]; text?: string }) & {
+    usage?: { inputTokens: number; outputTokens: number; reasoningTokens: number };
+  };
 export type FakeScript = readonly FakeTurn[];
 
 export interface FakeOpenAIRequest {
@@ -100,6 +102,7 @@ function makeResponse(turn: FakeTurn, number: number, params: z.infer<typeof res
       call_id: item.call_id ?? `call_fake_${number}_${index}`,
     };
   });
+  const usage = typeof turn !== 'string' && 'usage' in turn ? turn.usage : undefined;
   return {
     id: `resp_fake_${number}`, object: 'response', created_at: 0, completed_at: 0,
     status: 'completed', access_programs: null, error: null, incomplete_details: null,
@@ -110,8 +113,9 @@ function makeResponse(turn: FakeTurn, number: number, params: z.infer<typeof res
     tool_choice: 'auto', tools: params.tools, top_p: params.top_p ?? 1,
     previous_response_id: params.previous_response_id ?? null, reasoning: null,
     text: { format: { type: 'text' } }, truncation: 'disabled',
-    usage: { input_tokens: 0, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 }, output_tokens: 0,
-      output_tokens_details: { reasoning_tokens: 0 }, total_tokens: 0 },
+    usage: { input_tokens: usage?.inputTokens ?? 0, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+      output_tokens: usage?.outputTokens ?? 0, output_tokens_details: { reasoning_tokens: usage?.reasoningTokens ?? 0 },
+      total_tokens: (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0) },
   };
 }
 

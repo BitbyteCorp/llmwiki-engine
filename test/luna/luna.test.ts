@@ -43,7 +43,7 @@ async function fixture(script: FakeScript, notes: Record<string, string> = {}) {
   cleanup.push(() => fake.close());
   const config = loadConfig({ NODE_ENV: 'test', OPENAI_API_KEY: 'test-key', OPENAI_BASE_URL: fake.url });
   // Keep model and git dependencies controllable while resolving the real Nest service.
-  const repo = { readFile: async (path: string) => notes[path] ?? null, log: async () => [] } as unknown as KnowledgeRepo;
+  const repo = { readFile: async (path: string) => notes[path] ?? null, headSha: async () => 'test-sha', log: async () => [] } as unknown as KnowledgeRepo;
   const search = { search: async () => [{ path: 'wiki/cache.md', title: '캐시', snippet: '근거', score: 1, heading: '', kind: 'wiki', related: [] }] } as unknown as SearchService;
   const log = pino({ level: 'silent' });
   return { luna: await createLuna(config, repo, search, log), fake, config, repo, search, log };
@@ -60,6 +60,7 @@ const lookup: AgentTool = {
 
 const job: WriteJob = {
   id: 'test-write', userId: 1, source: 'mcp', input: '캐시의 정의를 정리한다.', status: 'running', summary: null,
+  kind: 'luna', client: null, conflicts: [],
   commits: [], mergeSha: null, error: null, createdAt: '2026-10-07T00:00:00.000Z', startedAt: null, finishedAt: null,
 };
 
@@ -122,7 +123,8 @@ describe('read-only answers', () => {
     ], { 'wiki/cache.md': '# 캐시\n결과를 재사용한다.', 'wiki/unused.md': '# 미사용\n다른 근거다.' });
     const deltas: string[] = [];
     const result = await luna.answer([{ role: 'user', content: '캐시란?' }], (delta) => deltas.push(delta));
-    expect(result).toEqual({ text, citations: ['wiki/cache.md'] });
+    expect(result.text).toBe(text);
+    expect(result.citations).toEqual([{ path: 'wiki/cache.md', sha: 'test-sha' }]);
     expect(deltas.join('')).toBe(text);
   });
 
