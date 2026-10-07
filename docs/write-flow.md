@@ -1,73 +1,80 @@
 # 지식 쓰기 흐름
 
-엔진은 쓰기 요청을 작업 워크트리에서 처리하고 직렬 머지를 거쳐 지식 저장소에 반영한다.
+엔진의 모든 쓰기는 요청자별 작업 워크트리에서 수행하고, 같은 프로세스 전역 머지 락으로 main 반영과 색인 갱신을 직렬화한다. 자연어를 정리하는 Luna 작업과 사용자가 직접 편집한 노트를 반영하는 작업, Git 변경을 되돌리는 작업은 같은 이력과 이벤트 형식을 사용한다.
 
-## 배경
+## 작업 종류와 출처
 
-여러 쓰기 요청이 동시에 같은 파일을 수정할 수 있으므로 요청마다 작업 워크트리를 사용해 편집을 격리한다. 예를 들어 두 요청이 같은 노트를 확장하더라도 각 요청의 편집은 서로의 작업 파일을 덮어쓰지 않는다. 최종 반영 대상인 main의 역할은 [지식 저장소](knowledge-repository.md)에 설명한다.
+`WriteJob.kind`는 `luna`, `direct`, `revert`다. `source`는 `mcp`, `web`, `chat`, `dreaming`, `import`, `revert` 중 하나이며, `client`에는 호출 클라이언트 이름을 선택적으로 기록한다. `WriteJobsService.submit({ userId, input, source, client? })`는 출처를 명시해야 한다. direct 작업의 입력에는 재실행에 필요한 `baseSha`, 연산, 메시지와 호출자 정보가 JSON으로 보존되고, revert 작업에는 대상 SHA와 선택 경로가 보존된다.
 
-작업 워크트리는 편집을 격리하지만 머지 충돌까지 없애지는 않는다. main에 대한 머지를 한 번에 하나씩 처리하면 동시 쓰기 작업의 최종 반영이 서로 경합하지 않으며, 충돌은 Luna가 해결한다.
+작업 상태는 `queued → running → merging → succeeded`이며 실행 오류나 취소는 `failed`로 끝난다. 상태 외에 `queued`, `preparing`, `editing`, `committing`, `merging`, `resolving_conflict`, `indexing`, `cleanup`, `done`, `failed` 단계 이벤트를 순서대로 저장한다. 각 이벤트는 `{ phase, at, detail }`이며 UTC ISO-8601 시각과 선택적 세부 정보를 포함한다. `WriteJobsRepository.events(id)`와 `WriteJobsService.events(id)`로 동일한 이력을 조회한다.
 
-## 내용
+`EventsService`는 각 단계에서 `job.updated`를 작업 소유자와 관리자에게 발행하고, main 반영 후 `main.updated`를 모든 로그인 사용자에게 발행한다. 색인 서비스는 별도로 `index.updated`를 발행한다. SSE 이벤트는 갱신 알림이고, 영속적인 작업 이력의 원천은 SQLite다.
 
-### 비동기 작업과 상태 조회
+## Luna 비동기 쓰기
 
-MCP `write`는 비동기로 처리하며, 호출 즉시 작업 ID를 반환한다. 클라이언트는 `get_write_status`로 해당 작업의 상태를 조회한다. 작업 상태는 SQLite에서 관리하므로, 제출 응답이 아니라 상태 조회를 통해 반영 결과를 확인한다.
+1. MCP나 채팅 등의 요청을 받으면 즉시 queued 작업 ID를 반환한다.
+2. 단일 Luna 워커가 대기 작업을 생성 시각 순으로 실행한다. 같은 시각이면 삽입 순서를 따른다.
+3. main에서 작업 워크트리를 만들고 요청자 이름·이메일과 커밋 메타데이터를 설정한다.
+4. Luna는 main 검색 결과와 작업 워크트리의 실제 파일을 읽고, [작성 규칙](writing-rules.md)에 따라 편집하고 의미 단위로 커밋한다.
+5. 남은 수정은 엔진이 요약 첫 줄을 최대 200자로 잘라 커밋한다. 빈 요약은 `Update knowledge`를 사용한다. 변경이 없는 작업은 빈 커밋 없이 성공한다.
+6. 전역 머지 락 안에서 최신 main을 작업 브랜치에 병합한다. 충돌 경로를 작업 행에 저장하고 Luna가 해결한다. 각 해결 시도의 시작과 `resolved`, `unresolved`, `error` 결과를 `resolving_conflict` 단계 세부 정보로 기록한다. 파일 부재와 충돌 마커를 검증한 뒤 머지를 완료한다.
+7. main을 fast-forward하고 머지 SHA와 작업 커밋을 기록한 후 이벤트를 발행하고 색인을 갱신한다. 워크트리를 정리하고 done 이벤트를 남긴다.
 
-`write_jobs`에는 `queued → running → merging → succeeded` 전이를 저장한다. 실패 시에는 `failed`로 끝나며 오류 메시지를 남긴다. 생성·시작·종료 시각은 UTC ISO-8601 문자열이다. 작업의 요약, 작업 브랜치에서 만든 커밋 SHA 배열, 최종 main SHA도 기록한다. main에서 이미 존재하던 다른 작업의 커밋은 이 배열에 넣지 않으며, 이번 작업의 머지 커밋은 포함한다.
+Luna 편집은 머지 락 밖에서 진행하므로 direct 작업이 느린 모델 응답을 기다릴 필요가 없다. dreaming 등 다른 쓰기 경로도 저장소의 같은 머지 락을 사용한다. 한 데이터 디렉터리에는 엔진 프로세스 하나만 실행한다.
 
-`JobsModule`은 `WriteJobsRepository`와 `WriteJobsService`를 제공자로 등록하고 서비스를 다른 모듈에 내보낸다. `write-job.types.ts`의 `WriteJob`이 작업 데이터 형식을 정의하며, `write-jobs.repository.ts`가 SQLite 작업 조회와 상태 갱신 SQL을 맡는다. `write-jobs.service.ts`의 서비스는 저장소, `LunaService`, `IndexerService`, `KnowledgeRepo`, `UsersService`와 로그를 생성자 DI로 받아 워커와 머지 흐름을 수행한다. 요청자 조회는 `UsersService`를 통해 사용자 모듈의 저장소에 위임한다.
+## 직접 편집과 낙관적 동시성 제어
 
-현재 쓰기 큐는 Luna 실행 하나만 사용하는 단일 워커다. 대기 작업은 생성 시각 순으로 처리하고 같은 시각이면 삽입 순서를 따른다. dreaming처럼 큐 밖에서 실행하는 작업과의 main 경합도 저장소의 프로세스 내 머지 락으로 직렬화한다. 이 구성은 하나의 엔진 프로세스를 전제로 하며 여러 엔진을 같은 데이터 디렉터리에 실행하지 않는다.
+`NoteWriterService.apply({ userId, source, ops, baseSha, message?, client? })`는 Luna 큐에 들어가지 않고 즉시 실행한다. 성공 결과는 `{ jobId, mergeSha, changed }`다. 락을 얻은 뒤 현재 main과 `baseSha`를 비교하고, **그 최신 main에서** 작업 워크트리를 만든다. 신선도 확인부터 편집·커밋·main 반영·색인까지 같은 락을 유지한다.
 
-엔진을 시작할 때 이전 실행의 `running`·`merging` 작업은 중단 사유와 종료 시각을 기록해 `failed`로 바꾼다. `queued` 작업만 다시 처리한다. 종료 요청은 현재 실행 중인 작업을 끝까지 기다리고 다음 대기 작업을 시작하지 않는다.
+`baseSha`는 클라이언트가 노트를 읽었을 때 받은 main HEAD인 `updatedSha`다. 다른 파일만 바뀌었다면 오래된 baseSha로도 편집할 수 있으며 다른 변경을 보존한다. 연산이 건드리는 경로가 바뀌었다면 `409 stale_note`를 반환하고 메시지에 현재 main SHA를 포함한다. 이동은 원본과 대상 경로를 모두 검사한다.
 
-워커 시작은 HTTP 진입점 `main.ts`에서 `WriteJobsService.start()`를 명시적으로 호출한다. 모듈 초기화나 CLI 애플리케이션 컨텍스트 생성만으로는 큐를 소비하지 않는다. 애플리케이션 종료 훅은 `stop()`을 기다려 실행 중인 작업과 워크트리 정리가 끝난 뒤 공용 DB 연결을 닫을 수 있게 한다.
+연산은 다음과 같다.
 
-### 일곱 단계
+- `put`: `{ op: 'put', path, content?, contentBase64?, create? }`. `create: true`는 독점 생성이며 이미 존재하면 `409 note_exists`다. 생략하거나 false이면 생성 또는 교체한다. 문자열 내용과 base64 내용 중 정확히 하나를 제공한다.
+- `delete`: `{ op: 'delete', path }`. 없으면 `404 note_missing`다.
+- `move`: `{ op: 'move', from, to }`. 원본이 없으면 `404 note_missing`, 대상이 있으면 `409 note_exists`다.
 
-1. MCP `write` 도구가 자연어 지시나 원문을 받아 쓰기 작업을 생성한다.
-2. main에서 해당 작업의 작업 워크트리를 파생한다.
-3. Luna가 검색으로 관련 노트를 먼저 찾고 기존 노트 확장과 새 노트 생성 중 적합한 방식을 선택해 편집한다. 필요하면 `index.md`와 메모리 파일도 갱신하며, 편집에는 [작성 규칙](writing-rules.md)을 적용한다.
-4. 의미 단위마다 커밋하며, 한 작업에서도 여러 번 커밋할 수 있다.
-5. 락으로 main 머지를 한 번에 하나씩 직렬 처리한다.
-6. 머지 충돌이 발생하면 Luna가 작업 워크트리에서 해결한 뒤 머지를 완료한다. 엔진은 충돌 파일과 워크트리의 파일에서 충돌 마커가 남았는지 검사하며, 마커가 남으면 main에 반영하지 않고 작업을 실패 처리한다.
-7. 머지 후 변경 파일을 재인덱싱하고 작업 워크트리를 정리한다. 재인덱싱 실패는 로그에 기록하지만 이미 main에 반영된 작업은 성공으로 유지한다. 재인덱싱 방식과 main 기준 검색의 경계는 [RAG](rag.md)에 설명한다.
+잘못된 경로, 허용되지 않은 파일 형식, 내용 인코딩이나 요청은 `400 invalid_note`다. 절대 경로, 상위 디렉터리 접근과 Git 내부 경로는 허용하지 않으며 워크트리의 경로 격리를 유지한다. 여러 연산 중 하나라도 실패하면 main에는 어떤 연산도 반영하지 않는다.
 
-```mermaid
-flowchart TD
-    A[1. MCP write 입력과 작업 생성] --> B[2. main에서 작업 워크트리 파생]
-    B --> C[3. Luna 검색과 편집]
-    C --> D[4. 의미 단위 커밋]
-    D --> E[5. 락으로 직렬 머지]
-    E --> F{6. 머지 충돌 여부}
-    F -->|충돌| G[Luna가 작업 워크트리에서 해결]
-    G --> H[머지 완료]
-    F -->|충돌 없음| H
-    H --> I[7. 재인덱싱과 작업 워크트리 정리]
-```
+일반 직접 쓰기는 `.md` 노트와 `assets/**` 파일만 허용한다. 바이너리는 `contentBase64`로 전달하고 실제 바이트로 저장한다. **가져오기 예외**로 `source: 'import'`인 요청은 `raw/**`에도 바이너리 원본을 새로 생성할 수 있다. 기존 raw 경로는 출처와 관계없이 불변이며 교체·삭제·이동 시 `409 note_exists`다. raw로의 이동도 금지한다. 가져오기는 원본 생성에 `create: true`를 사용한다.
 
-### 요청자와 커밋 수행자의 구분
+## 이력 조회와 되돌리기
 
-커밋의 author는 요청한 사용자로, committer는 Luna 봇 계정으로 기록한다. 이렇게 하면 누가 요청한 지식인지 추적하면서 실제 커밋 수행자도 구분할 수 있다. 예를 들어 사용자가 기존 노트에 새 근거를 반영하도록 요청하면, Luna가 편집하고 커밋하더라도 author에는 그 사용자를 기록한다.
+`NoteWriterService.applyRevert({ userId, sha, paths?, preview?, client? })`는 main의 최신 워크트리에서 대상 커밋의 역변경을 적용한다. merge 커밋은 첫 부모를 기준으로 되돌린다. `paths`를 지정하면 격리된 저장소 상대 경로만 되돌리며 assets도 선택할 수 있다. 충돌을 자동으로 임의 해결하지 않고 오류로 반환한다. raw 불변성은 일반 direct/import 연산의 경계이며, 명시적으로 요청하고 감사 이력을 남기는 history revert는 보상 변경으로 raw 추가·변경도 되돌릴 수 있다.
 
-사용자 이름과 이메일은 실행 시 `users` 테이블에서 읽는다. 이름이 없으면 이메일을 author 이름으로 사용한다. 요청자가 실행 전에 삭제되었다면 작업을 실패 처리한다. 완료된 작업은 사용자 삭제 후에도 감사 이력을 위해 남긴다.
+`preview: true`는 `{ files, patch }`를 반환하며 main, 커밋, 작업 행을 만들지 않는다. 실제 적용은 `kind: 'revert'`, `source: 'revert'` 작업을 생성하고 direct와 같은 머지 락·커밋·색인·이벤트 흐름을 따른다. 성공 결과는 `{ jobId, mergeSha, changed }`다. 삭제와 실제 revert의 성공·실패는 요청자를 포함해 감사 로그에 기록한다.
 
-Luna가 커밋하지 않고 남긴 수정은 엔진이 실행 요약의 첫 줄을 최대 200자로 잘라 커밋한다. 요약이 비어 있으면 `Update knowledge`를 사용한다. 내용이 바뀌지 않은 작업은 새 커밋 없이 성공할 수 있다. 일반 커밋과 충돌을 해결한 머지 커밋 모두 요청자를 author로, 설정의 `GIT_BOT_NAME`·`GIT_BOT_EMAIL`을 committer로 사용한다.
+REST 계약은 다음과 같다.
 
-쓰기 또는 충돌 해결 실패 시에는 워크트리와 작업 브랜치를 정리하며 해당 작업의 변경을 main에 반영하지 않는다. 이미 main을 반영한 뒤 워크트리 정리가 실패하면 작업 성공은 유지하고 정리 실패를 로그에 남긴다. 다음 시작 시 저장소 복구가 남은 워크트리와 작업 브랜치를 제거한다.
+| 요청 | 결과 |
+|---|---|
+| `GET /api/notes/content?path=&ref=` | 내용, frontmatter, body, `updatedSha`, 해석된 커밋 SHA인 `ref` |
+| `PUT /api/notes` | 200 `{ jobId, mergeSha }` |
+| `POST /api/notes/move` | 201 `{ jobId, mergeSha }` |
+| `DELETE /api/notes?path=&baseSha=` | 200 `{ jobId, mergeSha }` |
+| `GET /api/notes/resolve?name=` | 유일하면 path와 단일 후보, 모호하면 null path와 후보 목록 |
+| `GET /api/notes/blame?path=&ref=` | 해석된 ref와 줄별 커밋·요청자·작업 출처 범위 |
+| `GET /api/history?path=&follow=1&before=&limit=` | 경로별 커밋 이력과 이동 추적 |
+| `GET /api/history/compare?base=&head=&path=` | 두 커밋의 파일 변경과 patch |
+| `GET /api/history/commits/:sha?parent=N` | 지정 부모 기준 커밋 상세; 이전 `/api/commits/:sha` 경로를 대체 |
+| `POST /api/history/revert` | 미리보기 `{ files, patch }` 또는 201 `{ jobId, mergeSha }` |
 
-### 잘못된 지식의 정정
+## 요청자 추적과 실패 복구
 
-별도의 되돌리기(revert) 기능이나 승인 단계를 두지 않는다. 잘못된 지식은 자연어 지시나 원문으로 정정 `write`를 제출해 다시 쓰는 방식으로 고친다. 예를 들어 이전에 저장한 사실이 틀렸다면 올바른 사실과 정정 지시를 제출하고, 같은 쓰기 흐름으로 기존 노트에 반영한다.
+일반 커밋과 자동 병합·충돌 해결 커밋의 author는 요청한 사용자이며 committer는 `GIT_BOT_NAME`·`GIT_BOT_EMAIL`의 봇이다. 모든 작업 커밋에 `Wiki-Job`, `Wiki-Source`, `Wiki-Requester`와 선택적 `Wiki-Client` trailer를 기록한다. 사용자의 이름이 없으면 이메일을 사용하고, 실행 전에 사용자가 삭제되면 실패한다. 작업 이력은 사용자 삭제 후에도 보존된다.
 
-누가 요청했고 무엇이 바뀌었는지를 확인하는 화면과 이력의 원천은 [웹 변경 이력](web.md#변경-이력)에 설명한다.
+실패하면 main을 바꾸지 않고 오류와 만든 커밋을 기록한다. 워크트리 정리 전에 HEAD를 `refs/wiki/failed/<jobId>`에 보존하므로 작업 브랜치를 제거한 뒤에도 실패 커밋을 조회할 수 있다. 색인 실패는 이미 main에 반영된 쓰기를 실패로 되돌리지 않으며 단계 세부 정보와 로그에 남긴다. 정리 실패 역시 성공한 쓰기를 무효화하지 않는다.
+
+시작할 때 이전 실행의 running·merging 작업은 중단 사유와 failed 이벤트를 남긴다. queued Luna 작업은 워커에서 다시 처리하고, queued direct/revert 재시도는 Luna 큐 밖에서 재개한다. `main.ts`가 명시적으로 `WriteJobsService.start()`를 호출하므로 CLI 컨텍스트 생성만으로 Luna 큐를 소비하지 않는다. 종료는 현재 Luna 실행과 direct/revert 재시도를 기다린다.
+
+`retry(id)`는 failed 작업의 원래 출처·클라이언트·입력을 유지한 **새 작업**을 만들고 queued 이벤트의 `detail.retryOf`에 원래 ID를 남긴다. Luna는 일반 큐로, direct/revert는 바로 머지 락으로 실행한다. direct 재시도도 원래 baseSha를 사용하므로 충돌한 입력은 다시 stale_note로 실패할 수 있다. 원래 실패 이력은 변경하지 않는다. `cancel(id)`는 queued 상태에서만 원자적으로 상태를 failed, 오류를 `canceled`로 바꾸며 이미 실행 중인 작업은 취소하지 않는다.
+
+`GET /api/jobs`와 상세 조회는 소유자 또는 관리자만 허용한다. 상세 결과는 `{ job, user, commits, events }`이며 kind, source, client, conflicts는 job 안에 있다. 목록 커서는 작업 ID를 받으며 생성 시각과 ID를 함께 비교해 같은 시각의 행을 빠뜨리지 않는다. 기존 ISO 시각 커서도 허용한다. 다른 사용자의 커밋을 조회해도 해당 작업에 대한 권한이 없으면 연결된 job은 null이다. `POST /api/jobs/:id/retry`와 `/cancel`은 editor 이상인 소유자 또는 관리자에게 허용하며 `{ job }`을 반환한다.
 
 ## 관련 문서
 
-- [MCP](mcp.md)는 쓰기 요청을 포함한 클라이언트 제공 범위를 설명한다.
-- [Luna](luna.md)는 편집과 충돌 해결에 사용하는 모델과 도구를 설명한다.
-- [작성 규칙](writing-rules.md)은 노트 검색과 편집의 기준을 설명한다.
-- [지식 저장소](knowledge-repository.md)는 main과 파일 배치의 역할을 설명한다.
-- [RAG](rag.md)는 머지 후 검색 인덱스 갱신 방식을 설명한다.
-- [웹 버전](web.md#변경-이력)은 노트별·쓰기 작업별 변경 이력을 설명한다.
+- [지식 저장소](knowledge-repository.md): main, 워크트리, Git 이력
+- [Luna](luna.md): 모델 실행과 편집 도구
+- [RAG](rag.md): main 기준 검색과 색인 갱신
+- [MCP](mcp.md): 외부 쓰기 클라이언트
+- [웹 버전](web.md#변경-이력): 직접 편집과 변경 이력 화면

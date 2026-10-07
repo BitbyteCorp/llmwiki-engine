@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import type Database from 'better-sqlite3';
 import type { z } from 'zod';
 import { UsersService } from '../auth/users.service.js';
+import type { User } from '../auth/users.types.js';
 import { DB } from '../common/tokens.js';
 import type { WriteJob } from '../jobs/write-job.types.js';
 import { WriteJobsService } from '../jobs/write-jobs.service.js';
@@ -19,11 +20,11 @@ export class HistoryService {
   ) {}
 
   listCommits(query: z.infer<typeof historyQuerySchema>) {
-    return this.repo.log({ path: query.path, limit: query.limit, beforeSha: query.before });
+    return this.repo.log({ path: query.path, limit: query.limit, beforeSha: query.before, ...(query.follow ? { follow: true } : {}) });
   }
 
-  async getCommit(sha: string) {
-    const detail = await this.repo.show(sha);
+  async getCommit(sha: string, parent?: number, user?: User) {
+    const detail = await this.repo.show(sha, parent);
     const row = this.db.prepare(`
       SELECT id FROM write_jobs
       WHERE merge_sha = ? OR EXISTS (
@@ -31,20 +32,22 @@ export class HistoryService {
       )
       ORDER BY created_at DESC LIMIT 1
     `).get(detail.commit.sha, detail.commit.sha) as { id: string } | undefined;
-    return { ...detail, job: row ? this.jobs.get(row.id) : null };
+    const job = row ? this.jobs.get(row.id) : null;
+    const visible = job && (!user || user.role === 'admin' || job.userId === user.id) ? job : null;
+    return { ...detail, job: visible };
   }
 
-  listJobs(query: z.infer<typeof jobsQuerySchema>, userId: number) {
-    const jobs = this.jobs.list({ userId: query.mine ? userId : undefined, limit: query.limit, before: query.before });
+  listJobs(query: z.infer<typeof jobsQuerySchema>, user: User) {
+    const jobs = this.jobs.list({ userId: user.role === 'admin' && !query.mine ? undefined : user.id, limit: query.limit, before: query.before });
     return jobs.map((job) => ({ ...job, user: this.requester(job) }));
   }
 
-  async getJob(id: string) {
+  async getJob(id: string, user: User) {
     const job = this.jobs.get(id);
-    if (!job) notFound('Write job not found');
+    if (!job || (user.role !== 'admin' && job.userId !== user.id)) notFound('Write job not found');
     const shas = [...new Set([...job.commits, ...(job.mergeSha ? [job.mergeSha] : [])])];
     const commits = await Promise.all(shas.map(async (sha) => (await this.repo.show(sha)).commit));
-    return { job, user: this.requester(job), commits };
+    return { job, user: this.requester(job), commits, events: this.jobs.events(id) };
   }
 
   private requester(job: WriteJob) {

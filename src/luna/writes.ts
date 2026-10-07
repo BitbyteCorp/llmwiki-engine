@@ -75,6 +75,7 @@ export async function resolveConflicts(
   repo: KnowledgeRepo,
   wt: Worktree,
   files: string[],
+  onPhase: Worktree['onPhase'] = wt.onPhase,
 ): Promise<void> {
   const paths = [...new Set(files)];
   if (paths.length === 0) return;
@@ -94,21 +95,27 @@ export async function resolveConflicts(
 
   let remaining = paths;
   for (let attempt = 1; attempt <= 2; attempt++) {
+    onPhase?.('resolving_conflict', { attempt, result: 'started', files: remaining });
     const current = await Promise.all(remaining.map(async (path) => {
       const snapshot = snapshots.get(path)!;
       return { ...snapshot, conflicted: attempt === 1 ? snapshot.conflicted : await wt.read(path) };
     }));
-    await luna.runAgent({
-      instructions,
-      input: JSON.stringify({
-        attempt,
-        workBranch: wt.branch,
-        baseSha: wt.baseSha,
-        task: attempt === 1 ? 'Resolve every listed file without losing either intent.' : 'The previous attempt left missing files or conflict marker lines. Repair every remaining invalid file.',
-        files: current,
-      }),
-      tools: conflictTools(luna, wt, remaining),
-    });
+    try {
+      await luna.runAgent({
+        instructions,
+        input: JSON.stringify({
+          attempt,
+          workBranch: wt.branch,
+          baseSha: wt.baseSha,
+          task: attempt === 1 ? 'Resolve every listed file without losing either intent.' : 'The previous attempt left missing files or conflict marker lines. Repair every remaining invalid file.',
+          files: current,
+        }),
+        tools: conflictTools(luna, wt, remaining),
+      });
+    } catch (error) {
+      onPhase?.('resolving_conflict', { attempt, result: 'error', error: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
 
     // Always check all requested paths, including files resolved during the first attempt.
     const invalid = await Promise.all(paths.map(async (path) => {
@@ -116,6 +123,7 @@ export async function resolveConflicts(
       return content === null || conflictMarker.test(content) ? path : null;
     }));
     remaining = invalid.filter((path): path is string => path !== null);
+    onPhase?.('resolving_conflict', { attempt, result: remaining.length ? 'unresolved' : 'resolved', files: remaining });
     if (remaining.length === 0) return;
   }
   throw new Error(`Conflict resolution failed after 2 attempts: missing files or conflict marker lines remain in ${remaining.join(', ')}`);

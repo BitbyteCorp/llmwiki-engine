@@ -9,6 +9,7 @@ import { UsersRepository } from '../auth/users.repository.js';
 import { UsersService } from '../auth/users.service.js';
 import { loadConfig } from '../config.js';
 import { openDb, type Db } from '../db/index.js';
+import { EventsService } from '../events/events.service.js';
 import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
 import type { LunaService } from '../luna/luna.service.js';
 import type { IndexerService } from '../rag/indexer.service.js';
@@ -27,6 +28,7 @@ async function fixture() {
   const db = openDb(':memory:');
   db.exec(await readFile(new URL('../db/migrations/001_core.sql', import.meta.url), 'utf8'));
   db.exec(await readFile(new URL('../db/migrations/003_jobs.sql', import.meta.url), 'utf8'));
+  db.exec(await readFile(new URL('../db/migrations/007_history.sql', import.meta.url), 'utf8'));
   db.prepare('INSERT INTO users(id,email,name,role,created_at) VALUES (1,?,?,?,?)')
     .run(author.email, author.name, 'editor', new Date().toISOString());
   const repo = await KnowledgeRepo.open(config, log);
@@ -41,8 +43,9 @@ async function fixture() {
     syncToHead: vi.fn(async () => ({ indexedSha: await repo.headSha(), changedFiles: 1 })),
   } as unknown as IndexerService;
   const users = new UsersService(new UsersRepository(db));
-  const jobs = new WriteJobsService(new WriteJobsRepository(db), luna, indexer, repo, users, log);
-  const ctx = { config, db, log, repo, luna, indexer, users, jobs };
+  const events = new EventsService();
+  const jobs = new WriteJobsService(new WriteJobsRepository(db), luna, indexer, repo, users, log, events);
+  const ctx = { config, db, log, repo, luna, indexer, users, jobs, events };
   fixtures.push({ dir, db, jobs });
   return { dir, ctx, jobs };
 }
@@ -92,7 +95,7 @@ describe('WriteJobsService with real git and a Luna double', () => {
       return { indexedSha: await ctx.repo.headSha(), changedFiles: 2 };
     });
     jobs.start();
-    const queued = jobs.submit({ userId: 1, input: 'Remember this' });
+    const queued = jobs.submit({ userId: 1, input: 'Remember this', source: 'mcp' });
     expect(queued.status).toBe('queued');
     const result = await completed(jobs, queued.id);
     await jobs.stop();
@@ -126,7 +129,7 @@ describe('WriteJobsService with real git and a Luna double', () => {
       await wt.write(files[0]!, 'requested update\nconcurrent update\n');
     });
     jobs.start();
-    const result = await completed(jobs, jobs.submit({ userId: 1, input: 'merge' }).id);
+    const result = await completed(jobs, jobs.submit({ userId: 1, input: 'merge', source: 'mcp' }).id);
     expect(result.status).toBe('succeeded');
     expect(await ctx.repo.readFile('wiki/shared.md')).toBe('requested update\nconcurrent update\n');
     const merge = await ctx.repo.show(result.mergeSha!);
@@ -146,7 +149,7 @@ describe('WriteJobsService with real git and a Luna double', () => {
       return { summary: 'Conflict unresolved' };
     });
     jobs.start();
-    const result = await completed(jobs, jobs.submit({ userId: 1, input: 'conflict' }).id);
+    const result = await completed(jobs, jobs.submit({ userId: 1, input: 'conflict', source: 'mcp' }).id);
     expect(result.status).toBe('failed');
     expect(result.error).toContain('Unresolved conflict markers');
     expect(result.mergeSha).toBeNull();
@@ -163,7 +166,7 @@ describe('WriteJobsService with real git and a Luna double', () => {
       throw new Error('Luna request failed');
     });
     jobs.start();
-    const result = await completed(jobs, jobs.submit({ userId: 1, input: 'fail' }).id);
+    const result = await completed(jobs, jobs.submit({ userId: 1, input: 'fail', source: 'mcp' }).id);
     await jobs.stop();
     expect(result.status).toBe('failed');
     expect(result.error).toBe('Luna request failed');
@@ -178,7 +181,7 @@ describe('WriteJobsService with real git and a Luna double', () => {
     const { ctx, jobs } = await fixture();
     vi.mocked(ctx.indexer.syncToHead).mockRejectedValue(new Error('Embedding service unavailable'));
     jobs.start();
-    const result = await completed(jobs, jobs.submit({ userId: 1, input: 'save' }).id);
+    const result = await completed(jobs, jobs.submit({ userId: 1, input: 'save', source: 'mcp' }).id);
     expect(result.status).toBe('succeeded');
     expect(result.error).toBeNull();
     expect(await ctx.repo.readFile('wiki/result.md')).toBe('saved knowledge\n');
@@ -193,7 +196,7 @@ describe('WriteJobsService with real git and a Luna double', () => {
       return { summary: 'Nothing new to save' };
     });
     jobs.start();
-    const result = await completed(jobs, jobs.submit({ userId: 1, input: 'already known' }).id);
+    const result = await completed(jobs, jobs.submit({ userId: 1, input: 'already known', source: 'mcp' }).id);
     expect(result.status).toBe('succeeded');
     expect(result.commits).toEqual([]);
     expect(result.mergeSha).toBe(before);
@@ -202,9 +205,9 @@ describe('WriteJobsService with real git and a Luna double', () => {
 
   it('fails interrupted running/merging jobs on boot and resumes only queued jobs', async () => {
     const { ctx, jobs } = await fixture();
-    const running = jobs.submit({ userId: 1, input: 'interrupted running' });
-    const merging = jobs.submit({ userId: 1, input: 'interrupted merging' });
-    const queued = jobs.submit({ userId: 1, input: 'resume queued' });
+    const running = jobs.submit({ userId: 1, input: 'interrupted running', source: 'mcp' });
+    const merging = jobs.submit({ userId: 1, input: 'interrupted merging', source: 'mcp' });
+    const queued = jobs.submit({ userId: 1, input: 'resume queued', source: 'mcp' });
     ctx.db.prepare('UPDATE write_jobs SET status = ?, started_at = ? WHERE id = ?')
       .run('running', running.createdAt, running.id);
     ctx.db.prepare('UPDATE write_jobs SET status = ?, started_at = ? WHERE id = ?')
@@ -226,8 +229,8 @@ describe('WriteJobsService with real git and a Luna double', () => {
       await wt.write('wiki/first.md', 'first\n');
       return { summary: 'First write' };
     });
-    const first = jobs.submit({ userId: 1, input: 'first' });
-    const second = jobs.submit({ userId: 1, input: 'second' });
+    const first = jobs.submit({ userId: 1, input: 'first', source: 'mcp' });
+    const second = jobs.submit({ userId: 1, input: 'second', source: 'mcp' });
     jobs.start();
     await vi.waitFor(() => expect(ctx.luna.runWrite).toHaveBeenCalledTimes(1));
     expect(jobs.get(second.id)?.status).toBe('queued');
@@ -242,7 +245,7 @@ describe('WriteJobsService with real git and a Luna double', () => {
 
   it('paginates deterministically across identical timestamps and preserves deleted-user history', async () => {
     const { ctx, jobs } = await fixture();
-    const records = Array.from({ length: 4 }, (_, index) => jobs.submit({ userId: index === 3 ? 2 : 1, input: String(index) }));
+    const records = Array.from({ length: 4 }, (_, index) => jobs.submit({ userId: index === 3 ? 2 : 1, input: String(index), source: 'mcp' }));
     ctx.db.prepare('UPDATE write_jobs SET created_at = ?').run('2026-10-07T00:00:00.000Z');
     const first = jobs.list({ userId: 1, limit: 2 });
     const second = jobs.list({ userId: 1, before: first[1]!.id, limit: 2 });
