@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3';
 import type { Logger } from 'pino';
 import type { Config } from '../config.js';
 import { CONFIG, DB, LOGGER } from '../common/tokens.js';
+import { AclService, type AclUser } from '../acl/acl.service.js';
 
 interface NoteIdentity { path: string; title: string }
 interface Passage { anchor: string | null; excerpt: string }
@@ -67,11 +68,14 @@ export class ComparisonService {
     @Inject(CONFIG) private readonly config: Config,
     @Inject(DB) private readonly db: Database.Database,
     @Inject(LOGGER) _log: Logger,
+    private readonly acl: AclService,
   ) {}
 
-  async similar(path: string, limit = 20): Promise<SimilarNote[]> {
+  /** Omit user only for unrestricted internal system comparisons. */
+  async similar(path: string, limit = 20, user?: AclUser): Promise<SimilarNote[]> {
     validateLimit(limit);
-    const notes = this.vectorNotes(false);
+    if (user) this.acl.assertRead(user, path);
+    const notes = this.vectorNotes(false, user);
     const source = notes.get(path);
     if (!source) return [];
     const matches: SimilarNote[] = [];
@@ -82,10 +86,11 @@ export class ComparisonService {
     return matches.slice(0, limit);
   }
 
-  async duplicates(limit = 20): Promise<DuplicateNotes[]> {
+  async duplicates(limit = 20, user?: AclUser): Promise<DuplicateNotes[]> {
     validateLimit(limit);
+    const access = user ? this.acl.sql(user, 'c.path') : { sql: '1', params: [] };
     const notes = this.db.prepare(`SELECT path, MIN(title) AS title, MIN(normalized_hash) AS normalized_hash
-      FROM chunks GROUP BY path ORDER BY path`).all() as NoteRow[];
+      FROM chunks c WHERE ${access.sql} GROUP BY path ORDER BY path`).all(...access.params) as NoteRow[];
     const exactGroups = new Map<string, NoteRow[]>();
     for (const note of notes) {
       if (!note.normalized_hash) continue;
@@ -108,7 +113,7 @@ export class ComparisonService {
         for (let right = left + 1; right < group.length; right++) consider(group[left]!, group[right]!, 1, 'exact');
       }
     }
-    const vectorNotes = this.vectorNotes(true);
+    const vectorNotes = this.vectorNotes(true, user);
     const semanticNotes = [...vectorNotes.values()];
     for (let left = 0; left < semanticNotes.length; left++) {
       const a = semanticNotes[left]!;
@@ -133,7 +138,7 @@ export class ComparisonService {
     });
   }
 
-  private vectorNotes(includeChunks: boolean): Map<string, VectorNote> {
+  private vectorNotes(includeChunks: boolean, user?: AclUser): Map<string, VectorNote> {
     const notes = new Map<string, VectorNote>();
     const { embeddingModel: model, embeddingDimensions: dimensions } = this.config;
     if (!model || !Number.isInteger(dimensions) || dimensions < 1) return notes;
@@ -144,10 +149,11 @@ export class ComparisonService {
       || metadata.some((row) => row.key === 'vector_mismatch' && row.value === '1')
       || !this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'chunk_vectors'").get()) return notes;
 
+    const access = user ? this.acl.sql(user, 'c.path') : { sql: '1', params: [] };
     const rows = this.db.prepare(`SELECT c.path, c.title, c.normalized_hash, e.embedding
       ${includeChunks ? ', c.anchor, c.content' : ''}
       FROM chunks c JOIN embedding_cache e ON e.content_hash = c.content_hash AND e.model = ? AND e.dimensions = ?
-      WHERE c.vector_pending = 0 ORDER BY c.path, c.ordinal, c.id`).iterate(model, dimensions);
+      WHERE c.vector_pending = 0 AND (${access.sql}) ORDER BY c.path, c.ordinal, c.id`).iterate(model, dimensions, ...access.params);
     for (const row of rows as Iterable<NoteRow & { embedding: Buffer; anchor?: string | null; content?: string }>) {
       const bytes = row.embedding;
       if (bytes.length !== dimensions * Float32Array.BYTES_PER_ELEMENT) continue;

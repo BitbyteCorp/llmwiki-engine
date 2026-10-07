@@ -2,7 +2,6 @@ import 'reflect-metadata';
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import type { Request } from 'express';
-import { readFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import pino from 'pino';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -15,7 +14,11 @@ import { SessionsService } from '../auth/sessions.service.js';
 import type { User } from '../auth/users.types.js';
 import { HttpExceptionFilter } from '../common/filters/http-exception.filter.js';
 import { DB } from '../common/tokens.js';
-import { openDb, type Db } from '../db/index.js';
+import { openDb, runMigrations, type Db } from '../db/index.js';
+import { AclService } from '../acl/acl.service.js';
+import { AuditService } from '../audit/audit.service.js';
+import { UsersService } from '../auth/users.service.js';
+import { UsersRepository } from '../auth/users.repository.js';
 import { CatalogService } from './catalog.service.js';
 
 let db: Db;
@@ -36,9 +39,8 @@ function addLink(source: string, name: string, target: string | null): void {
 
 beforeEach(() => {
   db = openDb(':memory:');
-  db.exec(readFileSync(new URL('../db/migrations/006_rag.sql', import.meta.url), 'utf8'));
-  db.exec(readFileSync(new URL('../db/migrations/009_rag.sql', import.meta.url), 'utf8'));
-  catalog = new CatalogService(db);
+  runMigrations(db);
+  catalog = new CatalogService(db, new AclService(db, new UsersService(new UsersRepository(db)), new AuditService(db)));
 });
 
 afterEach(async () => {
@@ -157,6 +159,7 @@ describe('catalog REST routes', () => {
       controllers: [LinksController, GraphController, TagsController],
       providers: [
         CatalogService, SessionGuard, RolesGuard,
+        { provide: AclService, useValue: new AclService(db, new UsersService(new UsersRepository(db)), new AuditService(db)) },
         { provide: DB, useValue: db },
         { provide: ApiTokensService, useValue: {} },
         { provide: SessionsService, useValue: {

@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -7,7 +7,11 @@ import { Test } from '@nestjs/testing';
 import pino from 'pino';
 import { afterEach, describe, expect, it } from 'vitest';
 import { loadConfig } from '../../src/config.js';
-import { openDb } from '../../src/db/index.js';
+import { openDb, runMigrations } from '../../src/db/index.js';
+import { AclService } from '../../src/acl/acl.service.js';
+import { AuditService } from '../../src/audit/audit.service.js';
+import { UsersService } from '../../src/auth/users.service.js';
+import { UsersRepository } from '../../src/auth/users.repository.js';
 import { CONFIG, DB, LOGGER } from '../../src/common/tokens.js';
 import { KnowledgeRepo, type FileChange } from '../../src/knowledge/repo.js';
 import { IndexerService } from '../../src/rag/indexer.service.js';
@@ -67,8 +71,7 @@ async function fixture(key = false) {
   await repo.git('config', 'user.name', 'Test');
   const db = openDb(':memory:');
   cleanup.push(() => db.close());
-  db.exec(await readFile(new URL('../../src/db/migrations/006_rag.sql', import.meta.url), 'utf8'));
-  db.exec(await readFile(new URL('../../src/db/migrations/009_rag.sql', import.meta.url), 'utf8'));
+  runMigrations(db);
   const fake = key ? await startFakeOpenAI() : null;
   if (fake) cleanup.push(() => fake.close());
   const config = loadConfig({ NODE_ENV: 'test', EMBEDDING_DIMENSIONS: '8',
@@ -77,6 +80,7 @@ async function fixture(key = false) {
   const app = await Test.createTestingModule({
     providers: [
       IndexerService, SearchService,
+      { provide: AclService, useValue: new AclService(db, new UsersService(new UsersRepository(db)), new AuditService(db)) },
       { provide: CONFIG, useValue: config },
       { provide: DB, useValue: db },
       { provide: LOGGER, useValue: log },

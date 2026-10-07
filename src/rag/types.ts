@@ -1,3 +1,5 @@
+import type { User } from '../auth/users.types.js';
+
 export interface SearchHit {
   path: string;
   title: string;
@@ -25,6 +27,8 @@ export interface SearchFilters {
 export interface SearchOptions extends SearchFilters {
   limit?: number;
   cursor?: string;
+  /** Omit only for explicitly unrestricted internal system retrieval. */
+  user?: Pick<User, 'id' | 'role'>;
 }
 
 export type DegradedReason = 'no_api_key' | 'embedding_error' | 'vector_mismatch' | 'index_stale';

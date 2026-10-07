@@ -6,6 +6,7 @@ import OpenAI from 'openai';
 import type { Config } from '../config.js';
 import { CONFIG, DB, LOGGER } from '../common/tokens.js';
 import { KnowledgeRepo } from '../knowledge/repo.js';
+import { AclService } from '../acl/acl.service.js';
 import { embedTexts } from './embeddings.js';
 import { normalizeTag } from './chunking.js';
 import type { DegradedReason, SearchHit, SearchOptions, SearchResult } from './types.js';
@@ -50,6 +51,7 @@ export class SearchService {
     @Inject(CONFIG) private readonly config: Config,
     @Inject(DB) private readonly db: Database.Database,
     @Inject(LOGGER) private readonly log: Logger,
+    private readonly acl: AclService,
     @Optional() private readonly repo?: KnowledgeRepo,
   ) {}
 
@@ -62,7 +64,8 @@ export class SearchService {
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new RangeError('Search limit must be an integer between 1 and 100');
     const query = q.trim();
     const fingerprint = createHash('sha256').update(JSON.stringify([query, opts.kinds, opts.folder,
-      opts.tags?.map(normalizeTag).sort(), opts.from, opts.to, opts.author])).digest('hex');
+      opts.tags?.map(normalizeTag).sort(), opts.from, opts.to, opts.author,
+      opts.user ? this.acl.policyKey(opts.user) : 'internal-system'])).digest('hex');
     this.prune(this.snapshots);
     if (opts.cursor) {
       const [id, rawOffset, extra] = opts.cursor.split('.');
@@ -90,6 +93,11 @@ export class SearchService {
   private filter(opts: SearchOptions): { sql: string; params: Array<string | number> } {
     const conditions: string[] = [];
     const params: Array<string | number> = [];
+    if (opts.user) {
+      const access = this.acl.sql(opts.user, 'c.path');
+      conditions.push(access.sql);
+      params.push(...access.params);
+    }
     if (opts.kinds) {
       conditions.push(opts.kinds.length ? `c.kind IN (${opts.kinds.map(() => '?').join(',')})` : '0');
       params.push(...opts.kinds);
@@ -150,7 +158,7 @@ export class SearchService {
     let hybrid = false;
     if (!this.config.openaiApiKey) reason = 'no_api_key';
     else if (!this.vectorsMatchConfig()) reason = 'vector_mismatch';
-    else if (this.db.prepare('SELECT 1 FROM chunks WHERE vector_pending=1 LIMIT 1').get()) reason = 'index_stale';
+    else if (this.db.prepare(`SELECT 1 FROM chunks c WHERE c.vector_pending=1${filter.sql} LIMIT 1`).get(...filter.params)) reason = 'index_stale';
     if (!reason && this.repo && await this.repo.headSha().catch(() => null) !== this.meta('indexed_sha')) reason = 'index_stale';
     if (query && opts.kinds?.length !== 0) {
       const expanded = await this.expand(query);
@@ -204,7 +212,10 @@ export class SearchService {
     hits = await this.rerank(query, hits);
     const related = this.db.prepare(`SELECT target_path AS path FROM links WHERE source_path=? AND target_path IS NOT NULL
       UNION SELECT source_path AS path FROM links WHERE target_path=?`);
-    for (const hit of hits) hit.related = (related.all(hit.path, hit.path) as Array<{ path: string }>).map((row) => row.path).filter((path) => path !== hit.path).sort();
+    for (const hit of hits) {
+      const paths = (related.all(hit.path, hit.path) as Array<{ path: string }>).map((row) => row.path);
+      hit.related = (opts.user ? this.acl.filterPaths(opts.user, paths) : paths).filter((path) => path !== hit.path).sort();
+    }
     return { mode: hybrid ? 'hybrid' : 'keyword', degraded: reason ? { reason } : null, hits, nextCursor: null };
   }
 

@@ -1,5 +1,4 @@
 import 'reflect-metadata';
-import { readFileSync } from 'node:fs';
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import type { Request } from 'express';
@@ -9,7 +8,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { loadConfig } from '../config.js';
 import { CONFIG, DB, LOGGER } from '../common/tokens.js';
 import { HttpExceptionFilter } from '../common/filters/http-exception.filter.js';
-import { openDb, type Db } from '../db/index.js';
+import { openDb, runMigrations, type Db } from '../db/index.js';
+import { AclService } from '../acl/acl.service.js';
+import { AuditService } from '../audit/audit.service.js';
+import { UsersService } from '../auth/users.service.js';
+import { UsersRepository } from '../auth/users.repository.js';
 import { SessionsService } from '../auth/sessions.service.js';
 import { ApiTokensService } from '../auth/api-tokens.service.js';
 import { RolesGuard } from '../auth/guards/roles.guard.js';
@@ -27,7 +30,7 @@ describe('search workspace HTTP', () => {
   let db: Db;
   beforeEach(async () => {
     db = openDb(':memory:');
-    for (const migration of ['006_rag.sql', '009_rag.sql']) db.exec(readFileSync(new URL(`../db/migrations/${migration}`, import.meta.url), 'utf8'));
+    runMigrations(db);
     const put = db.prepare(`INSERT INTO chunks(path,title,heading,content,embedding_text,content_hash,kind,ordinal,tags,tags_json,anchor,updated_at,author,normalized_hash)
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
     put.run(paths[0], 'Alpha 저장', '검색', '저장 데이터 검색', 'alpha', 'a', 'wiki', 0, 'search', '["search"]', '검색', '2026-10-01T00:00:00.000Z', 'Ada <ada@example.com>', 'same');
@@ -39,6 +42,7 @@ describe('search workspace HTTP', () => {
     const module = await Test.createTestingModule({
       controllers: [SearchController, LinksController, GraphController, TagsController],
       providers: [SearchService, CatalogService, ComparisonService, SessionGuard, RolesGuard,
+        { provide: AclService, useValue: new AclService(db, new UsersService(new UsersRepository(db)), new AuditService(db)) },
         { provide: CONFIG, useValue: loadConfig({ NODE_ENV: 'test', EMBEDDING_DIMENSIONS: '2' }) },
         { provide: DB, useValue: db }, { provide: LOGGER, useValue: log },
         { provide: ApiTokensService, useValue: { authenticate: () => { throw new Error('No bearer fixture'); } } },

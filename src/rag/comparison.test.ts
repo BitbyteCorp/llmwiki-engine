@@ -1,8 +1,11 @@
-import { readFileSync } from 'node:fs';
 import pino from 'pino';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { loadConfig, type Config } from '../config.js';
-import { openDb, type Db } from '../db/index.js';
+import { openDb, runMigrations, type Db } from '../db/index.js';
+import { AclService } from '../acl/acl.service.js';
+import { AuditService } from '../audit/audit.service.js';
+import { UsersService } from '../auth/users.service.js';
+import { UsersRepository } from '../auth/users.repository.js';
 import { ComparisonService } from './comparison.service.js';
 
 let db: Db;
@@ -11,11 +14,10 @@ let comparison: ComparisonService;
 
 beforeEach(() => {
   db = openDb(':memory:');
-  for (const migration of ['006_rag.sql', '009_rag.sql']) {
-    db.exec(readFileSync(new URL(`../db/migrations/${migration}`, import.meta.url), 'utf8'));
-  }
+  runMigrations(db);
   config = loadConfig({ NODE_ENV: 'test', EMBEDDING_MODEL: 'fixture-model', EMBEDDING_DIMENSIONS: '2' });
-  comparison = new ComparisonService(config, db, pino({ level: 'silent' }));
+  comparison = new ComparisonService(config, db, pino({ level: 'silent' }),
+    new AclService(db, new UsersService(new UsersRepository(db)), new AuditService(db)));
 });
 
 afterEach(() => db?.close());

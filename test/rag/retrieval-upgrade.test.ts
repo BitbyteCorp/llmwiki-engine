@@ -13,6 +13,10 @@ import { evaluationNotes, evaluationQueries, retrievalMetrics, type EvaluationNo
 import { IndexerService } from '../../src/rag/indexer.service.js';
 import { SearchService } from '../../src/rag/search.service.js';
 import type { SearchOptions } from '../../src/rag/types.js';
+import { AclService } from '../../src/acl/acl.service.js';
+import { AuditService } from '../../src/audit/audit.service.js';
+import { UsersService } from '../../src/auth/users.service.js';
+import { UsersRepository } from '../../src/auth/users.repository.js';
 
 const exec = promisify(execFile);
 const cleanup: Array<() => unknown | Promise<unknown>> = [];
@@ -57,7 +61,8 @@ async function fixture(notes: readonly EvaluationNote[], options: { embeddings?:
   const indexer = new IndexerService(config, db, logger, repo);
   indexer.init();
   await indexer.syncToHead();
-  const search = new SearchService(config, db, logger, repo);
+  const acl = new AclService(db, new UsersService(new UsersRepository(db)), new AuditService(db));
+  const search = new SearchService(config, db, logger, acl, repo);
   return { config, repo, indexer, search, fake, commit };
 }
 

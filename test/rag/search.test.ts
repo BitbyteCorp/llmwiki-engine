@@ -1,9 +1,12 @@
-import { readFileSync } from 'node:fs';
 import { Test } from '@nestjs/testing';
 import pino from 'pino';
 import { afterEach, describe, expect, it } from 'vitest';
 import { loadConfig, type Config } from '../../src/config.js';
-import { openDb } from '../../src/db/index.js';
+import { openDb, runMigrations } from '../../src/db/index.js';
+import { AclService } from '../../src/acl/acl.service.js';
+import { AuditService } from '../../src/audit/audit.service.js';
+import { UsersService } from '../../src/auth/users.service.js';
+import { UsersRepository } from '../../src/auth/users.repository.js';
 import { CONFIG, DB, LOGGER } from '../../src/common/tokens.js';
 import { embedTexts } from '../../src/rag/embeddings.js';
 import { SearchService } from '../../src/rag/search.service.js';
@@ -18,13 +21,13 @@ afterEach(async () => {
 async function fixture(overrides: Partial<Config> = {}) {
   const db = openDb(':memory:');
   cleanup.push(() => { db.close(); });
-  db.exec(readFileSync(new URL('../../src/db/migrations/006_rag.sql', import.meta.url), 'utf8'));
-  db.exec(readFileSync(new URL('../../src/db/migrations/009_rag.sql', import.meta.url), 'utf8'));
+  runMigrations(db);
   const config = { ...loadConfig({ NODE_ENV: 'test', EMBEDDING_DIMENSIONS: '2' }), ...overrides };
   const log = pino({ enabled: false });
   const app = await Test.createTestingModule({
     providers: [
       SearchService,
+      { provide: AclService, useValue: new AclService(db, new UsersService(new UsersRepository(db)), new AuditService(db)) },
       { provide: CONFIG, useValue: config },
       { provide: DB, useValue: db },
       { provide: LOGGER, useValue: log },
