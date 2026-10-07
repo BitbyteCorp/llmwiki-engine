@@ -29,6 +29,7 @@ Node.js 기반으로 LLM Wiki를 관리하는 도구다.
 - [아키텍처](docs/architecture.md) — 컨테이너 하나, Node 프로세스 하나에 웹·MCP·OAuth·작업 큐·스케줄러·인덱서를 함께 띄우는 구성이다.
 - [Luna](docs/luna.md) — 엔진이 쓰는 LLM과 그 도구, 임베딩을 별도 모델로 두는 이유다.
 - [지식 저장소](docs/knowledge-repository.md) — `main`이 진실 원천이고 GitHub는 하루 한 번 push되는 백업이며, LLM Wiki 표준을 따른 레이아웃을 쓴다.
+- [개발 환경](docs/development.md) — 기술 스택, 디렉터리와 모듈 소유, 스크립트, 환경변수, 로컬 실행과 Docker 실행, 첫 관리자 등록 방법이다.
 
 ### 흐름
 
