@@ -4,7 +4,6 @@ import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Share2, Trash2, X } from 'lucide-react'
 import { api, request } from '@/lib/api'
-import { onLiveEvent } from '@/lib/events'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { ErrorNotice, Loading } from '@/components/common'
@@ -14,10 +13,6 @@ export interface ConversationMember { userId: number; email: string; name: strin
 const roleLabels = { owner: '소유자', editor: '편집자', viewer: '조회자' }
 
 export function useConversationMembers(id: string, enabled = true) {
-  const client = useQueryClient()
-  useEffect(() => onLiveEvent('conversation.updated', event => {
-    if (event.conversationId === id) void client.invalidateQueries({ queryKey: ['conversation-members', id] })
-  }), [client, id])
   return useQuery({ queryKey: ['conversation-members', id], queryFn: ({ signal }) => request<{ members: ConversationMember[] }>(`/api/conversations/${encodeURIComponent(id)}/members`, { signal }), enabled })
 }
 

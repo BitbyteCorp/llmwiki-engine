@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Label } from '@/components/ui/label'
+import { notify } from '@/components/notifications'
 
 export interface NoteProposal { path: string; baseSha: string; original: string | null; proposed: string }
 
@@ -40,6 +41,7 @@ export function ChatProposal({ conversationId, messageId, mode, onClose }: {
     },
     onSuccess: result => {
       setSaved({ ...result, path: path.trim() })
+      notify({ title: '노트가 저장되었습니다.', description: path.trim(), tone: 'success', action: {label: '노트 열기', href: noteHref(path.trim())} })
       void queryClient.invalidateQueries({ queryKey: ['notes/content', path.trim()] })
       void queryClient.invalidateQueries({ queryKey: ['notes/tree'] })
       void queryClient.invalidateQueries({ queryKey: ['history'] })
@@ -78,8 +80,8 @@ export function ChatProposal({ conversationId, messageId, mode, onClose }: {
         <div className="space-y-2"><Label htmlFor={`${prefix}-content`}>제안 내용 · 편집 가능</Label><Textarea id={`${prefix}-content`} value={content} onChange={event => { setContent(event.target.value); if (!stale) save.reset() }} disabled={busy || Boolean(saved)} className="min-h-64 font-mono text-xs"/><p className="text-xs text-muted-foreground">기준 버전 {proposal.baseSha.slice(0, 8)} · {proposal.original === null ? '새 파일' : '기존 파일 수정'}</p></div>
         <section aria-label="노트 변경 미리보기" className="min-w-0 space-y-2"><h3 className="text-sm font-medium">변경 미리보기</h3><DiffView before={proposal.original ?? ''} after={content} mode="split"/></section>
         <ErrorNotice error={save.error}/>
-        {stale && <div role="alert" className="space-y-2 rounded border border-amber-500/30 bg-amber-500/5 p-3 text-sm"><p>대상 노트가 변경되었거나 같은 경로가 생겼습니다. 현재 초안은 유지됩니다. 최신 원문으로 다시 제안받은 뒤 차이를 확인하세요.</p><Button variant="outline" size="sm" onClick={propose} disabled={busy}>최신 버전으로 다시 제안</Button></div>}
-        {saved ? <div role="status" className="rounded border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm"><p className="mb-2 font-medium">노트가 저장되었습니다.</p><div className="flex flex-wrap gap-4"><Link className="underline" href={noteHref(saved.path)} onClick={onClose}>노트 열기</Link><Link className="underline" href={`/jobs/${encodeURIComponent(saved.jobId)}`} onClick={onClose}>쓰기 작업 확인</Link><Link className="underline" href={`/history/commits/${encodeURIComponent(saved.mergeSha)}`} onClick={onClose}>변경 이력</Link></div></div> : <div className="flex flex-wrap justify-end gap-2"><Button variant="outline" disabled={busy} onClick={onClose}>취소</Button><Button disabled={busy || !path.trim() || stale || (mode === 'edit' && content === proposal.original)} onClick={() => save.mutate()}>{save.isPending ? '저장 중…' : mode === 'new' ? '새 노트 저장' : '변경 적용'}</Button></div>}
+        {stale && <div role="alert" className="space-y-2 rounded-md border border-warning/30 bg-warning/10 p-3 text-sm"><p>대상 노트가 변경되었거나 같은 경로가 생겼습니다. 현재 초안은 유지됩니다. 최신 원문으로 다시 제안받은 뒤 차이를 확인하세요.</p><Button variant="outline" size="sm" onClick={propose} disabled={busy}>최신 버전으로 다시 제안</Button></div>}
+        {saved ? <div role="status" className="rounded-md border border-success/30 bg-success/10 p-3 text-sm"><p className="mb-2 font-medium">노트가 저장되었습니다.</p><div className="flex flex-wrap gap-3"><Link className="underline" href={noteHref(saved.path)} onClick={onClose}>노트 열기</Link><Link className="underline" href={`/jobs/${encodeURIComponent(saved.jobId)}`} onClick={onClose}>쓰기 작업 확인</Link><Link className="underline" href={`/history/commits/${encodeURIComponent(saved.mergeSha)}`} onClick={onClose}>변경 이력</Link></div></div> : <div className="flex flex-wrap justify-end gap-2"><Button variant="outline" disabled={busy} onClick={onClose}>취소</Button><Button disabled={busy || !path.trim() || stale || (mode === 'edit' && content === proposal.original)} onClick={() => save.mutate()}>{save.isPending ? '저장 중…' : mode === 'new' ? '새 노트 저장' : '변경 적용'}</Button></div>}
       </>}
     </div>
   </dialog>

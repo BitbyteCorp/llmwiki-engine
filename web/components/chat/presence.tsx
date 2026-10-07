@@ -12,6 +12,7 @@ export function ConversationPresence({ id, typing }: { id: string; typing?: bool
   const [users, setUsers] = useState<PresenceUser[]>([])
   const [error, setError] = useState<unknown>(null)
   const me = useQuery({ queryKey: ['me'], queryFn: api.me })
+  const surface = useRef<HTMLDivElement>(null)
   const typingRef = useRef(typing ?? false)
   const heartbeat = useRef<() => void>(() => {})
   const explicitTyping = useRef(typing !== undefined)
@@ -27,7 +28,7 @@ export function ConversationPresence({ id, typing }: { id: string; typing?: bool
     let requestController: AbortController | null = null
     let typingTimer: number | undefined
     let disposed = false
-    const focused = () => document.visibilityState === 'visible' && document.hasFocus()
+    const focused = () => document.visibilityState === 'visible' && document.hasFocus() && Boolean(surface.current?.getClientRects().length)
     const send = () => {
       if (disposed || !focused() || requestController) return
       const controller = new AbortController()
@@ -50,7 +51,7 @@ export function ConversationPresence({ id, typing }: { id: string; typing?: bool
     }
     const visibility = () => { if (focused()) send(); else stop() }
     const input = (event: Event) => {
-      if (explicitTyping.current || !(event.target instanceof HTMLElement) || !event.target.closest('[data-chat-composer]')) return
+      if (explicitTyping.current || !(event.target instanceof HTMLElement) || !event.target.closest('[data-chat-composer]') || event.target.closest('[data-chat-pane]') !== surface.current?.closest('[data-chat-pane]')) return
       const target = event.target
       typingRef.current = (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) && target.value.length > 0
       clearTimeout(typingTimer)
@@ -84,7 +85,7 @@ export function ConversationPresence({ id, typing }: { id: string; typing?: bool
   }, [id])
   const others = users.filter(user => user.id !== me.data?.user.id)
   const typists = others.filter(user => user.typing)
-  return <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" aria-label="대화 접속 상태">
+  return <div ref={surface} className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" aria-label="대화 접속 상태">
     {others.length > 0 && <><div className="flex -space-x-1">{others.slice(0, 5).map(user => <span key={user.id} title={`${user.name} · ${user.typing ? '입력 중' : '보는 중'}`} aria-label={`${user.name} · ${user.typing ? '입력 중' : '보는 중'}`} className="flex size-7 items-center justify-center rounded-full border-2 border-background bg-secondary font-semibold text-secondary-foreground">{Array.from(user.name.trim())[0] || '?'}</span>)}</div><span>{others.length}명 보는 중</span></>}
     <span role="status" aria-live="polite">{typists.length > 0 ? `${typists.map(user => user.name).join(', ')} 입력 중…` : ''}</span>
     {Boolean(error) && <span className="flex items-center gap-1 text-destructive">접속 상태를 갱신하지 못했습니다.<Button size="xs" variant="ghost" onClick={() => heartbeat.current()}>다시 시도</Button></span>}

@@ -1,12 +1,19 @@
 'use client';
 
 export interface ChatNoteContext { notePath: string; ref?: string; selection?: string }
+/** Request for the Luna chat surface. The workspace shell routes it to the right-side panel or the `/chat` page. */
+export interface ChatOpenRequest { conversationId?: string; newThread?: boolean; focusSearch?: boolean }
+export const CHAT_OPEN_EVENT = 'llmwiki:chat-open';
 const key = 'llmwiki.luna.pending-context';
 
-/** Keep the note pin when navigating from a reader to a new Luna thread. */
+export function openChat(request: ChatOpenRequest = {}): void {
+  window.dispatchEvent(new CustomEvent<ChatOpenRequest>(CHAT_OPEN_EVENT, { detail: request }));
+}
+
+/** Keep the note pin until the chat surface starts a new Luna thread. */
 export function askLuna(ctx: ChatNoteContext): void {
   sessionStorage.setItem(key, JSON.stringify(ctx));
-  window.location.assign('/chat?new=1');
+  openChat({ newThread: true });
 }
 
 export function consumeChatContext(): ChatNoteContext | null {

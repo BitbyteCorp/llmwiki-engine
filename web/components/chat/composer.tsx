@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent } from 'react'
 import Link from 'next/link'
 import { useQuery } from '@tanstack/react-query'
 import { Paperclip, Send, Square, X, Pin, CircleHelp } from 'lucide-react'
@@ -22,6 +22,8 @@ export interface ChatComposerProps {
   onCancelEdit?: () => void
   onEditLast?: () => void
   onSaveLast: () => void
+  files?: { key: number; files: File[] }
+  prompt?: { key: number; content: string; context?: ChatNoteContext }
 }
 interface ModelOptions { models: string[]; defaultModel: string; efforts: Array<'low' | 'medium' | 'high'>; defaultEffort: string }
 const commands = [
@@ -32,10 +34,12 @@ const commands = [
 ]
 const contextKey = 'llmwiki.chat.pinned.'
 
-export function ChatComposer({ conversationId, disabled, streaming, onSubmit, onStop, edit, onCancelEdit, onEditLast, onSaveLast }: ChatComposerProps) {
+export function ChatComposer({ conversationId, disabled, streaming, onSubmit, onStop, edit, onCancelEdit, onEditLast, onSaveLast, files, prompt }: ChatComposerProps) {
   const textarea = useRef<HTMLTextAreaElement>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const previousEdit = useRef<string | null>(null)
+  const receivedFiles = useRef<number | null>(null)
+  const receivedPrompt = useRef<number | null>(null)
   const [content, setContent] = useState('')
   const [caret, setCaret] = useState(0)
   const [context, setContext] = useState<ChatNoteContext | null>(null)
@@ -54,7 +58,6 @@ export function ChatComposer({ conversationId, disabled, streaming, onSubmit, on
   const [help, setHelp] = useState(false)
   const [error, setError] = useState('')
   const [pinning, setPinning] = useState(false)
-  const [dragging, setDragging] = useState(false)
   const [modelOptions, setModelOptions] = useState<ModelOptions | null>(null)
   const [model, setModel] = useState('')
   const [effort, setEffort] = useState<'' | 'low' | 'medium' | 'high'>('')
@@ -122,19 +125,48 @@ export function ChatComposer({ conversationId, disabled, streaming, onSubmit, on
     const timer = window.setTimeout(() => {
       void request<CatalogNote[]>(`/api/search/suggest?q=${encodeURIComponent(lookup)}`, { signal: controller.signal }).then(notes => {
         if (!controller.signal.aborted) { setSuggestions(notes); setActive(0) }
-      }).catch(cause => { if (!controller.signal.aborted) setSuggestionError(cause instanceof Error ? cause.message : '노트 제안을 불러오지 못했다.') }).finally(() => { if (!controller.signal.aborted) setLoadingSuggestions(false) })
+      }).catch(cause => { if (!controller.signal.aborted) setSuggestionError(cause instanceof Error ? cause.message : '노트 제안을 불러오지 못했습니다.') }).finally(() => { if (!controller.signal.aborted) setLoadingSuggestions(false) })
     }, 150)
     return () => { window.clearTimeout(timer); controller.abort() }
   }, [lookup, dismissed, disabled])
   useEffect(() => {
-    const receive = (event: Event) => {
-      if (disabled || streaming || submissionRef.current || edit) return
-      const detail = (event as CustomEvent<File[] | FileList>).detail
-      if (detail) attachments.addFiles(Array.from(detail))
-    }
-    window.addEventListener('chat-files', receive)
-    return () => window.removeEventListener('chat-files', receive)
-  }, [disabled, streaming, edit, attachments.addFiles])
+    if (!files || receivedFiles.current === files.key) return
+    if (disabled || streaming || submissionRef.current || edit) { receivedFiles.current = files.key; return }
+    let cancelled = false
+    // Defer uploads until mount effects settle, so Strict Mode cleanup cannot abort a consumed batch.
+    queueMicrotask(() => {
+      if (cancelled || receivedFiles.current === files.key) return
+      receivedFiles.current = files.key
+      attachments.addFiles(files.files)
+    })
+    return () => { cancelled = true }
+  }, [files, disabled, streaming, edit, attachments.addFiles])
+  useEffect(() => {
+    if (!prompt || receivedPrompt.current === prompt.key) return
+    receivedPrompt.current = prompt.key
+    setContent(prompt.content); setCaret(prompt.content.length); setDismissed(true); setError('')
+    if (prompt.context) pin(prompt.context)
+    textarea.current?.focus()
+  }, [prompt, pin])
+  const resizeTextarea = useCallback(() => {
+    const field = textarea.current
+    if (!field) return
+    field.style.height = '0px'
+    field.style.height = `${Math.min(240, Math.max(80, field.scrollHeight))}px`
+  }, [])
+  useLayoutEffect(resizeTextarea, [content, resizeTextarea])
+  useEffect(() => {
+    const field = textarea.current
+    if (!field) return
+    let width = field.clientWidth
+    const observer = new ResizeObserver(() => {
+      if (field.clientWidth === width) return
+      width = field.clientWidth
+      resizeTextarea()
+    })
+    observer.observe(field)
+    return () => observer.disconnect()
+  }, [resizeTextarea])
 
   async function pinPath(path: string) {
     setPinning(true); setError('')
@@ -142,7 +174,7 @@ export function ChatComposer({ conversationId, disabled, streaming, onSubmit, on
       const note = await request<{ path: string }>(`/api/notes/content?path=${encodeURIComponent(path)}`)
       pin({ notePath: note.path })
       return true
-    } catch (cause) { setError(cause instanceof Error ? cause.message : '노트를 고정하지 못했다.'); return false }
+    } catch (cause) { setError(cause instanceof Error ? cause.message : '노트를 고정하지 못했습니다.'); return false }
     finally { setPinning(false) }
   }
   function choose(index: number) {
@@ -166,16 +198,16 @@ export function ChatComposer({ conversationId, disabled, streaming, onSubmit, on
       if (command[1] === 'help') setHelp(true)
       else if (command[1] === 'save') onSaveLast()
       else if (command[1] === 'search') {
-        if (!command[2]?.trim()) { setError('/search 뒤에 검색어를 입력한다.'); return }
+        if (!command[2]?.trim()) { setError('/search 뒤에 검색어를 입력하세요.'); return }
         setSearchQuery(command[2].trim())
       } else {
-        if (!command[2]?.trim()) { setError('/note 뒤에 노트 경로를 입력한다.'); return }
+        if (!command[2]?.trim()) { setError('/note 뒤에 노트 경로를 입력하세요.'); return }
         if (!await pinPath(command[2].trim())) return
       }
       setContent(''); setCaret(0); setDismissed(true); setError(''); return
     }
     if (context?.selection && context.selection.length > 32000) {
-      setError('선택한 문맥은 32,000자 이하로 보내야 한다. 다시 선택하거나 제거하세요.')
+      setError('선택한 문맥은 32,000자 이하로 보내야 합니다. 다시 선택하거나 제거하세요.')
       return
     }
     const identity = Symbol()
@@ -191,7 +223,7 @@ export function ChatComposer({ conversationId, disabled, streaming, onSubmit, on
       if (draftRef.current === draft) { setContent(''); setCaret(0); setDismissed(true) }
       for (const key of submittedKeys) attachments.remove(key)
     } catch (cause) {
-      if (submissionRef.current === identity && conversationRef.current === conversation) setError(cause instanceof Error ? cause.message : '메시지를 보내지 못했다.')
+      if (submissionRef.current === identity && conversationRef.current === conversation) setError(cause instanceof Error ? cause.message : '메시지를 보내지 못했습니다.')
     } finally {
       if (submissionRef.current === identity) { submissionRef.current = null; setSubmitting(false) }
     }
@@ -214,23 +246,17 @@ export function ChatComposer({ conversationId, disabled, streaming, onSubmit, on
     } else if (event.key === 'ArrowUp' && !content && !edit && !streaming && !disabled) { event.preventDefault(); onEditLast?.() }
   }
   const blocked = disabled || streaming || submitting || pinning || attachments.pending || attachments.failed || !content.trim()
-  return <section data-chat-composer className={`relative space-y-3 rounded-xl border bg-background p-3 ${dragging ? 'ring-2 ring-primary' : ''}`} aria-label="Luna 메시지 작성" onDragOver={event => {
-    if (!disabled && !streaming && !submissionRef.current && !edit && event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.stopPropagation(); setDragging(true) }
-  }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false) }} onDrop={event => {
-    if (!event.dataTransfer.files.length) return
-    event.preventDefault(); event.stopPropagation(); setDragging(false)
-    if (!disabled && !streaming && !submissionRef.current && !edit) attachments.addFiles(Array.from(event.dataTransfer.files))
-  }}>
-    {edit && <div className="flex items-center justify-between gap-2 text-sm"><span>질문 수정 · 이후 대화는 다시 생성된다.</span><Button type="button" variant="ghost" size="xs" onClick={onCancelEdit}>수정 취소</Button></div>}
-    {context && <div className="flex items-start gap-2 rounded-md bg-muted px-2 py-1.5 text-xs"><Pin className="mt-0.5 size-3 shrink-0" /><div className="min-w-0 flex-1"><p className="break-all">고정 문맥 · {context.notePath}{context.ref ? ` @ ${context.ref.slice(0, 10)}` : ''}</p>{context.selection && <p className="mt-1 line-clamp-3 whitespace-pre-wrap text-muted-foreground">선택: {context.selection}</p>}</div><Button type="button" variant="ghost" size="icon-xs" aria-label="고정 문맥 제거" onClick={() => pin(null)}><X /></Button></div>}
+  return <section data-chat-composer className="relative min-w-0 space-y-2 rounded-xl border bg-background p-2.5 shadow-sm focus-within:border-ring/50" aria-label="Luna 메시지 작성">
+    {edit && <div className="flex items-center justify-between gap-2 text-xs"><span>질문 수정 · 이후 대화를 다시 생성합니다.</span><Button type="button" variant="ghost" size="xs" onClick={onCancelEdit}>수정 취소</Button></div>}
+    {context && <div className="flex items-start gap-2 rounded-lg border bg-muted/50 px-2 py-1.5 text-xs"><Pin className="mt-0.5 size-3 shrink-0 text-muted-foreground" /><div className="min-w-0 flex-1"><p className="truncate" title={context.notePath}>고정 문맥 · {context.notePath}{context.ref ? ` @ ${context.ref.slice(0, 10)}` : ''}</p>{context.selection && <p className="mt-1 line-clamp-2 whitespace-pre-wrap break-words text-muted-foreground">선택: {context.selection}</p>}</div><Button type="button" variant="ghost" size="icon-xs" aria-label="고정 문맥 제거" onClick={() => pin(null)}><X /></Button></div>}
     <fieldset disabled={submitting} className="min-w-0"><DraftAttachments items={attachments.items} onRemove={key => { if (!submissionRef.current) attachments.remove(key) }} /></fieldset>
     {(error || attachments.error) && <p role="alert" className="text-sm text-destructive">{error || attachments.error}</p>}
     <div className="relative">
       {showOptions && <div id={listId} role="listbox" aria-label={lookup !== null ? '노트 제안' : '명령 제안'} className="absolute bottom-full z-20 mb-2 max-h-56 w-full overflow-auto rounded-lg border bg-popover p-1 text-popover-foreground shadow-md">
         {options.map((option, index) => <button id={`${listId}-${index}`} key={option.description} type="button" role="option" aria-selected={index === active} className={`flex w-full flex-col rounded px-2 py-1.5 text-left text-sm ${index === active ? 'bg-accent text-accent-foreground' : 'hover:bg-accent'}`} onMouseDown={event => event.preventDefault()} onClick={() => choose(index)}><span>{option.label}</span><span className="break-all text-xs text-muted-foreground">{option.description}</span></button>)}
-        {lookup !== null && !options.length && <p className="px-2 py-1 text-xs text-muted-foreground">{loadingSuggestions ? '노트 찾는 중…' : suggestionError || '일치하는 노트가 없다.'}</p>}
+        {lookup !== null && !options.length && <p className="px-2 py-1 text-xs text-muted-foreground">{loadingSuggestions ? '노트를 찾는 중…' : suggestionError || '일치하는 노트가 없습니다.'}</p>}
       </div>}
-      <Textarea ref={textarea} value={content} disabled={disabled} rows={3} maxLength={100000} placeholder={disabled ? '조회 권한으로는 메시지를 보낼 수 없다.' : 'Luna에게 질문 · @ 노트 · / 명령'} aria-label="메시지" aria-controls={showOptions ? listId : undefined} aria-expanded={showOptions} aria-activedescendant={showOptions && options.length ? `${listId}-${Math.min(active, options.length - 1)}` : undefined} className="max-h-64 min-h-24 resize-y border-0 shadow-none focus-visible:ring-0" onChange={event => { setContent(event.target.value); setCaret(event.target.selectionStart); setDismissed(false); setActive(0); setError('') }} onSelect={event => setCaret(event.currentTarget.selectionStart)} onKeyDown={keyDown} onPaste={event => {
+      <Textarea ref={textarea} value={content} disabled={disabled} rows={2} maxLength={100000} placeholder={disabled ? '조회 권한으로는 메시지를 보낼 수 없습니다.' : 'Luna에게 질문하세요. @ 노트 · / 명령'} aria-label="메시지" aria-controls={showOptions ? listId : undefined} aria-expanded={showOptions} aria-activedescendant={showOptions && options.length ? `${listId}-${Math.min(active, options.length - 1)}` : undefined} className="field-sizing-fixed max-h-60 min-h-20 resize-none overflow-y-auto rounded-none border-0 bg-transparent px-1 py-2 shadow-none focus-visible:ring-0 dark:bg-transparent" onChange={event => { setContent(event.target.value); setCaret(event.target.selectionStart); setDismissed(false); setActive(0); setError('') }} onSelect={event => setCaret(event.currentTarget.selectionStart)} onKeyDown={keyDown} onPaste={event => {
         if (disabled || streaming || submissionRef.current || edit) return
         const files = Array.from(event.clipboardData.items).filter(item => item.kind === 'file').flatMap(item => { const file = item.getAsFile(); return file ? [file] : [] })
         if (files.length) { event.preventDefault(); attachments.addFiles(files) }
@@ -240,23 +266,25 @@ export function ChatComposer({ conversationId, disabled, streaming, onSubmit, on
       <div className="flex items-center gap-2 text-sm"><h3 className="min-w-0 flex-1 truncate font-medium">검색 · {searchQuery}</h3><Link href={`/search?q=${encodeURIComponent(searchQuery)}`} className="shrink-0 text-xs underline">전체 검색</Link><Button type="button" variant="ghost" size="icon-xs" aria-label="검색 결과 닫기" onClick={() => setSearchQuery('')}><X /></Button></div>
       {search.isPending && <p role="status" className="text-xs text-muted-foreground">검색 중…</p>}
       {search.isError && <div><p role="alert" className="text-xs text-destructive">{search.error.message}</p><Button type="button" variant="ghost" size="xs" onClick={() => void search.refetch()}>다시 시도</Button></div>}
-      {search.data?.degraded && <p className="text-xs text-muted-foreground">벡터 검색을 사용할 수 없어 키워드 검색으로 표시한다.</p>}
-      {search.data && !search.data.hits.length && <p className="text-xs text-muted-foreground">검색 결과가 없다.</p>}
+      {search.data?.degraded && <p className="text-xs text-muted-foreground">벡터 검색을 사용할 수 없어 키워드 검색으로 표시합니다.</p>}
+      {search.data && !search.data.hits.length && <p className="text-xs text-muted-foreground">검색 결과가 없습니다.</p>}
       {search.data?.hits.map(hit => <article key={`${hit.path}:${hit.anchor || hit.heading}`} className="space-y-1 border-t pt-2 text-xs">
         <Link href={noteHref(hit.path) + (hit.anchor ? `#${encodeURIComponent(hit.anchor)}` : '')} className="font-medium underline">{hit.title || hit.path}{hit.heading ? ` · ${hit.heading}` : ''}</Link>
         <p className="break-all text-muted-foreground">{hit.path}</p><p className="line-clamp-3 whitespace-pre-wrap">{hit.excerpt || hit.snippet}</p>
         <Button type="button" variant="ghost" size="xs" disabled={disabled || streaming || !!edit} onClick={() => pin({ notePath: hit.path })}><Pin /> 문맥 고정</Button>
       </article>)}
     </section>}
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="flex flex-wrap items-center gap-x-1 gap-y-2 border-t pt-2">
       <input ref={fileInput} type="file" multiple hidden accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain,text/markdown,.md" onChange={event => { if (!disabled && !streaming && !submissionRef.current && !edit && event.target.files) attachments.addFiles(Array.from(event.target.files)); event.target.value = '' }} />
       <Button type="button" variant="ghost" size="icon-sm" aria-label="파일 첨부" title="파일 첨부 · 최대 10개, 각 20 MB" disabled={disabled || streaming || submitting || !!edit || attachments.items.length >= 10} onClick={() => fileInput.current?.click()}><Paperclip /></Button>
-      <label className="sr-only" htmlFor={`${listId}-model`}>모델</label><select id={`${listId}-model`} value={model} onChange={event => setModel(event.target.value)} disabled={disabled || streaming || !!edit} className="h-7 max-w-44 rounded-md border bg-background px-1 text-xs"><option value="">{modelOptions ? `기본 · ${modelOptions.defaultModel}` : '서버 기본 모델'}</option>{modelOptions?.models.map(value => <option key={value} value={value}>{value}</option>)}</select>
-      <label className="sr-only" htmlFor={`${listId}-effort`}>추론 강도</label><select id={`${listId}-effort`} value={effort} onChange={event => setEffort(event.target.value as typeof effort)} disabled={disabled || streaming || !!edit} className="h-7 rounded-md border bg-background px-1 text-xs"><option value="">기본 추론 강도{modelOptions ? ` · ${modelOptions.defaultEffort}` : ''}</option>{(modelOptions?.efforts || ['low', 'medium', 'high']).map(value => <option key={value} value={value}>{value === 'low' ? '낮음' : value === 'medium' ? '보통' : '높음'}</option>)}</select>
-      <Button type="button" variant="ghost" size="icon-sm" aria-label="입력 도움말" aria-expanded={help} onClick={() => setHelp(value => !value)}><CircleHelp /></Button>
-      <div className="ml-auto">{streaming ? <Button type="button" variant="outline" onClick={onStop}><Square /> 중지</Button> : <Button type="button" disabled={blocked} onClick={() => void submit()}><Send /> {edit ? '수정 후 다시 생성' : '보내기'}</Button>}</div>
+      <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
+        <label className="sr-only" htmlFor={`${listId}-model`}>모델</label><select id={`${listId}-model`} value={model} onChange={event => setModel(event.target.value)} disabled={disabled || streaming || submitting || !!edit} title={model || modelOptions?.defaultModel || '서버 기본 모델'} className="h-7 min-w-0 max-w-44 flex-1 truncate rounded-md border border-transparent bg-muted/50 px-1.5 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><option value="">{modelOptions ? `기본 · ${modelOptions.defaultModel}` : '기본 모델'}</option>{modelOptions?.models.map(value => <option key={value} value={value}>{value}</option>)}</select>
+        <label className="sr-only" htmlFor={`${listId}-effort`}>추론 강도</label><select id={`${listId}-effort`} value={effort} onChange={event => setEffort(event.target.value as typeof effort)} disabled={disabled || streaming || submitting || !!edit} title={`추론 강도 · ${effort || modelOptions?.defaultEffort || '서버 기본값'}`} className="h-7 w-20 min-w-0 shrink rounded-md border border-transparent bg-muted/50 px-1 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><option value="">기본 강도</option>{modelOptions?.efforts.map(value => <option key={value} value={value}>{value === 'low' ? '낮음' : value === 'medium' ? '보통' : '높음'}</option>)}</select>
+      </div>
+      <Button type="button" variant="ghost" size="icon-sm" aria-label="입력 도움말" title="입력 도움말" aria-expanded={help} onClick={() => setHelp(value => !value)}><CircleHelp /></Button>
+      {streaming ? <Button type="button" variant="outline" size="icon-sm" aria-label="생성 중지" title="생성 중지 · Esc" onClick={onStop}><Square className="size-3.5 fill-current" /></Button> : <Button type="button" size="icon-sm" aria-label={edit ? '수정 후 다시 생성' : '메시지 보내기'} title={edit ? '수정 후 다시 생성' : '메시지 보내기 · Enter'} disabled={blocked} onClick={() => void submit()}><Send /></Button>}
     </div>
-    <p className="text-xs text-muted-foreground">Enter 전송 · Shift+Enter 줄바꿈 · ↑ 마지막 질문 수정 · Esc 중지</p>
-    {help && <div className="space-y-1 rounded-md bg-muted p-3 text-xs"><p>@노트와 /note 경로로 문맥을 고정하며 후속 질문에도 유지한다. 칩의 ×로 제거한다.</p><p>/search 검색어: 대화 안에서 검색 · /save: 마지막 답변의 위키 초안 · /help: 이 도움말</p><p>제안에서 ↑↓ 선택, Enter 적용, Esc 닫기. 파일 드롭·이미지 붙여넣기를 지원한다. 업로드 오류 파일은 제거 후 다시 첨부한다.</p></div>}
+    <p className="flex flex-wrap gap-x-2 text-[10px] leading-relaxed text-muted-foreground"><span>Enter 전송 · Shift+Enter 줄바꿈</span><span>↑ 질문 수정 · Esc 중지</span></p>
+    {help && <div className="space-y-1 rounded-md bg-muted p-3 text-xs"><p>@노트와 /note 경로로 문맥을 고정하며 후속 질문에도 유지합니다. 칩의 ×로 제거하세요.</p><p>/search 검색어: 대화 안에서 검색 · /save: 마지막 답변의 위키 초안 · /help: 이 도움말</p><p>제안에서 ↑↓ 선택, Enter 적용, Esc 닫기. 파일 드롭·이미지 붙여넣기를 지원합니다. 업로드 오류 파일은 제거 후 다시 첨부하세요.</p></div>}
   </section>
 }
