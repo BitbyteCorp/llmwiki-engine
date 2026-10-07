@@ -9,9 +9,9 @@
 엔진이 관리하는 지식 저장소는 하나로 고정한다. 텍스트·파일·URL·PDF와 Obsidian·Notion 내보내기를 [수집](ingestion.md)할 수 있다. 원본은 내용 해시별 `raw/<sha256>/original/<filename>`에 불변으로 저장한다. ZIP에서 추출한 노트와 첨부는 `raw/<sha256>/extracted/<kind>/files/<vault-path>`에, 추출 본문이나 볼트 노트 목록과 출처는 `raw/<sha256>/imports/<importId>.md`에 저장한다. 같은 원본 경로는 덮어쓰지 않으며, 반복 수집은 git blob ID로 바이트가 같은 원본을 재사용한다. 일반 웹·채팅의 바이너리 첨부는 `assets/`에 저장하고, 원본 수집의 바이너리만 import 작업이 `raw/`에 기록한다.
 
 ### main과 GitHub 백업
-지식 저장소의 기본 브랜치는 `main`이며, main이 진실 원천이다. GitHub는 사실상 백업으로 사용하고, push는 dreaming 후 하루 한 번 수행한다. 서버 디스크를 잃으면 최대 하루치 변경이 사라질 수 있으며, 사용자는 이 손실 범위를 수용했다.
+지식 저장소의 기본 브랜치는 `main`이며, main이 진실 원천이다. GitHub는 사실상 백업으로 사용하고, push는 꿈꾸기 후 하루 한 번 수행한다. 서버 디스크를 잃으면 최대 하루치 변경이 사라질 수 있으며, 사용자는 이 손실 범위를 수용했다.
 
-예를 들어 당일의 변경이 main에 들어갔더라도 다음 백업 push 전에는 GitHub에 없을 수 있다. GitHub의 상태가 곧 최신 지식이라고 가정하지 않는다. 변경이 main에 반영되는 절차는 [쓰기 흐름](write-flow.md)에, 백업 실행 절차는 [dreaming](dreaming.md)에 기록한다.
+예를 들어 당일의 변경이 main에 들어갔더라도 다음 백업 push 전에는 GitHub에 없을 수 있다. GitHub의 상태가 곧 최신 지식이라고 가정하지 않는다. 변경이 main에 반영되는 절차는 [쓰기 흐름](write-flow.md)에, 백업 실행 절차는 [꿈꾸기](dreaming.md)에 기록한다.
 
 ### 엔진의 로컬 저장소 초기화
 `KnowledgeModule`은 설정과 로그를 주입받는 비동기 제공자로 `KnowledgeRepo.open`을 한 번 호출하고 저장소 객체를 다른 Nest 모듈에 내보낸다. git 데이터 접근은 `src/knowledge/repo.ts`의 `KnowledgeRepo`가 담당하며, 격리 편집을 위한 `Worktree`는 Nest 제공자가 아닌 일반 객체로 유지한다.
@@ -71,14 +71,14 @@ main과 과거 커밋의 읽기는 작업 디스크 파일을 직접 읽지 않�
 - `raw/<sha256>/`는 불변 원문 파일과 추출 마크다운을 담는다. 원문 수집 경로와 해시 규칙은 [수집](ingestion.md)을 따른다.
 - `wiki/`는 Luna가 유지하는 노트를 담으며, frontmatter, 태그, 위키링크를 사용해 Obsidian 볼트로 열 수 있다.
 - `index.md`는 큐레이션된 진입점 색인이며, Obsidian 규칙의 index note 역할도 한다.
-- `journal/YYYY-MM-DD.md`는 dreaming이 날짜별로 쓰는 일기다. LLM Wiki 표준의 `log.md`를 대신하며, 세부 변경 이력은 git 커밋 이력이 담는다.
+- `journal/YYYY-MM-DD.md`는 꿈꾸기가 날짜별로 쓰는 일기다. LLM Wiki 표준의 `log.md`를 대신하며, 세부 변경 이력은 git 커밋 이력이 담는다.
 - `MEMORY.md`는 [메모리 파일의 문맥 제공 규칙](#메모리-파일의-문맥-제공-규칙)을 따르는 파일이다.
 - 지식 저장소 안의 `AGENTS.md`는 Luna의 [작성 규칙](writing-rules.md)을 담는 schema 파일이다. 엔진 저장소의 작업 규칙 파일과 구분한다.
 
 Obsidian 규칙의 LiveSync는 사용하지 않으며, git 동기화로 대체한다. 예를 들어 위키의 진입점은 `index.md`에서 찾고, 날짜별 정리 내용은 `journal/YYYY-MM-DD.md`에서 읽으며, 개별 변경은 git 커밋 이력으로 확인한다.
 
 ### 메모리 파일의 문맥 제공 규칙
-`MEMORY.md`는 즉시 필요한 자주 바뀌는 정보를 담는 Luna 전용 문맥이며, 전체 공용 파일 하나를 유지한다. 쓰기, dreaming, 웹 질의응답으로 Luna를 실행할 때마다 이 파일을 항상 문맥에 넣는다.
+`MEMORY.md`는 즉시 필요한 자주 바뀌는 정보를 담는 Luna 전용 문맥이며, 전체 공용 파일 하나를 유지한다. 쓰기, 꿈꾸기, 웹 질의응답으로 Luna를 실행할 때마다 이 파일을 항상 문맥에 넣는다.
 
 ### LLM Wiki 표준과의 대응
 다음 표는 표준의 각 구성 요소를 이 레이아웃에서 어디에 두는지 설명한다.
@@ -94,7 +94,7 @@ Obsidian 규칙의 LiveSync는 사용하지 않으며, git 동기화로 대체�
 ## 관련 문서
 - [엔진 아키텍처](architecture.md)는 지식 저장소 클론과 작업 워크트리의 영속 위치를 설명한다.
 - [작성 규칙](writing-rules.md)은 지식 저장소 안의 문서 작성 기준을 설명한다.
-- [쓰기 흐름](write-flow.md)과 [dreaming](dreaming.md)은 지식 변경과 정리 절차를 설명한다.
+- [쓰기 흐름](write-flow.md)과 [꿈꾸기](dreaming.md)는 지식 변경과 정리 절차를 설명한다.
 - [MCP](mcp.md)는 지식의 읽기·쓰기·검색 인터페이스를 설명한다.
 - [RAG](rag.md)는 지식 저장소에서 검색 인덱스를 만드는 방식을 설명한다.
 - [백업·복구](backup.md)는 원격 push와 전체 데이터 복구 절차를 설명한다.

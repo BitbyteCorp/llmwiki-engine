@@ -3,7 +3,7 @@
 
 ## 배경
 
-검색은 Luna의 답변 근거, 기존 노트에 대한 지식 반영, dreaming의 중복 후보 탐색과 웹의 빠른 탐색에 쓰인다. 지식 저장소의 main이 진실 원천이며 SQLite 인덱스는 언제든 재구축할 수 있는 파생물이다. 작업 워크트리의 미머지 변경과 `MEMORY.md`는 검색 대상이 아니다.
+검색은 Luna의 답변 근거, 기존 노트에 대한 지식 반영, 꿈꾸기의 중복 후보 탐색과 웹의 빠른 탐색에 쓰인다. 지식 저장소의 main이 진실 원천이며 SQLite 인덱스는 언제든 재구축할 수 있는 파생물이다. 작업 워크트리의 미머지 변경과 `MEMORY.md`는 검색 대상이 아니다.
 
 ## 내용
 
@@ -44,7 +44,7 @@ frontmatter를 분리하고 H1~H6 제목을 기준으로 청크를 만든다. �
 
 ### 검색 결과와 필터
 
-`SearchService.search(query,opts)`는 Luna·MCP·dreaming을 위해 `SearchHit[]`를 계속 반환한다. `SearchService.query(query,opts)`는 `{ mode,degraded,hits,nextCursor }`를 반환한다. 기본 limit은 내부 서비스·HTTP·MCP 모두 **20**이며 1~100의 정수다. 빈 내부 질의는 빈 배열이며 HTTP의 빈 `q`는 400이다.
+`SearchService.search(query,opts)`는 Luna·MCP·꿈꾸기를 위해 `SearchHit[]`를 계속 반환한다. `SearchService.query(query,opts)`는 `{ mode,degraded,hits,nextCursor }`를 반환한다. 기본 limit은 내부 서비스·HTTP·MCP 모두 **20**이며 1~100의 정수다. 빈 내부 질의는 빈 배열이며 HTTP의 빈 `q`는 400이다.
 
 hit의 필드는 `path`, `title`, `kind`, `score`, `heading`, `anchor`, `excerpt`, `highlights`, `tags`, `updatedAt`, `snippet`, `related`다. `excerpt`는 첫 매칭 주변의 약 260자 본문이며 잘린 양끝은 `…`로 표시한다. `highlights`의 `[start,end]`는 excerpt의 UTF-16 반열린 범위다. `snippet`은 기존 내부 호출자의 호환을 위해 가장 좋은 청크 본문 전체를 유지한다. `heading`은 섹션 경로이며 `anchor`는 웹의 heading id다. `updatedAt`과 작성자 필터는 frontmatter 날짜가 아니라 마지막으로 해당 노트를 수정한 git 커밋에서 인덱싱한다. 시간이 없는 경우 `updatedAt:null`이다.
 
@@ -54,7 +54,7 @@ cursor는 처음 검색의 정렬된 결과 스냅샷과 오프셋을 가리킨�
 
 인증된 읽기는 [폴더별 접근 제어](access-control.md)의 SQL 읽기 조건도 후보 LIMIT와 벡터 top-k 전에 적용한다. 숨겨진 결과를 페이지 생성 뒤 제거하지 않으므로 제한된 폴더의 높은 순위가 읽을 수 있는 결과를 굶기지 않는다. 자동 완성·유사도·중복·관련 노트는 같은 사용자 정책을 따르고 그래프 노드·간선과 태그 count에는 숨겨진 노트를 포함하지 않는다.
 
-사용자 검색 커서는 사용자 ID·현재 역할·ACL 정책 버전에 결합한다. 다른 사용자에게 넘긴 커서나 규칙 변경 뒤의 커서는 유효하지 않으며 처음부터 다시 검색한다. dreaming처럼 명시적인 시스템 호출만 사용자 정책 없이 검색한다.
+사용자 검색 커서는 사용자 ID·현재 역할·ACL 정책 버전에 결합한다. 다른 사용자에게 넘긴 커서나 규칙 변경 뒤의 커서는 유효하지 않으며 처음부터 다시 검색한다. 꿈꾸기처럼 명시적인 시스템 호출만 사용자 정책 없이 검색한다.
 
 확장·임베딩·재정렬을 기다리는 중 정책 버전이 바뀌면 이전에 허용된 발췌를 새 정책으로 재분류하지 않는다. 재정렬 공급자에게 발췌를 보내기 전과 응답·스냅샷을 확정하기 전에 정책을 확인하고 변경되었으면 `400 invalid_search`로 결과를 폐기한다. 호출자는 새 검색을 제출한다.
 
@@ -126,5 +126,5 @@ OpenAI 호스티드 file_search는 지식 복제와 별도 동기화가 필요�
 - [지식 저장소](knowledge-repository.md)는 검색 원문과 main의 역할을 설명한다.
 - [Luna](luna.md)는 검색 결과를 쓰는 모델과 임베딩의 역할을 설명한다.
 - [MCP](mcp.md)와 [웹 버전](web.md)은 사용자 검색 인터페이스를 설명한다.
-- [쓰기 흐름](write-flow.md)과 [dreaming](dreaming.md)은 main 머지와 지식 정리 절차를 설명한다.
+- [쓰기 흐름](write-flow.md)과 [꿈꾸기](dreaming.md)는 main 머지와 지식 정리 절차를 설명한다.
 - [읽기 성능과 캐시 경계](performance.md)는 SQLite 읽기 인덱스, git·HTTP 캐시와 렌더링 비용을 설명한다.

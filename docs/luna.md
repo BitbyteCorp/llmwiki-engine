@@ -1,5 +1,5 @@
 # Luna
-Luna는 엔진에서 지식 쓰기, 충돌 해결, dreaming, 웹 질의응답을 수행하는 OpenAI의 GPT-6 Luna 모델이다.
+Luna는 엔진에서 지식 쓰기, 충돌 해결, 꿈꾸기, 웹 질의응답을 수행하는 OpenAI의 GPT-6 Luna 모델이다.
 
 ## 배경
 엔진은 사용자가 보낸 지식을 문서에 반영하고, 기존 지식과의 관계를 정리하며, 지식을 근거로 질문에 답해야 한다. 이 작업을 맡는 LLM을 Luna라고 부른다. Luna가 파일을 편집하는 경계는 엔진이 통제해야 하며, 검색에 필요한 임베딩은 Luna의 지원 API와 구분해야 한다.
@@ -13,7 +13,7 @@ Luna는 엔진에서 지식 쓰기, 충돌 해결, dreaming, 웹 질의응답을
 ### 모델과 호출 방식
 Luna의 모델 ID는 `gpt-6-luna`다. 엔진은 OpenAI Responses API의 함수 호출(function calling)을 사용해 Luna를 호출한다.
 
-`LUNA_MODEL`과 `LUNA_REASONING_EFFORT`로 기본 모델과 추론 강도를 설정한다. 웹 답변의 요청별 `model`은 쉼표로 구분한 `LUNA_MODELS` 허용 목록에 있어야 하며, 목록을 설정하지 않으면 `LUNA_MODEL`만 허용한다. 대화 서비스는 사용자 메시지를 저장하기 전에 `LunaService.validateModel()`과 `validateEffort()`를 호출하며 `answer()`도 모델 호출 전에 검증한다. 웹 API의 요청별 추론 강도는 `low`, `medium`, `high`만 받는다. Luna 서비스의 기본 설정은 `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`를 허용하므로 웹에서 기본값을 선택할 때는 `effort`를 생략한다. 쓰기·충돌 해결·dreaming은 기본 설정을 사용한다. `OPENAI_BASE_URL`을 설정하면 Responses 호출도 그 주소를 사용한다. `OPENAI_API_KEY`가 없어도 엔진은 시작할 수 있지만 Luna 호출은 설정이 필요하다는 오류로 실패한다.
+`LUNA_MODEL`과 `LUNA_REASONING_EFFORT`로 기본 모델과 추론 강도를 설정한다. 웹 답변의 요청별 `model`은 쉼표로 구분한 `LUNA_MODELS` 허용 목록에 있어야 하며, 목록을 설정하지 않으면 `LUNA_MODEL`만 허용한다. 대화 서비스는 사용자 메시지를 저장하기 전에 `LunaService.validateModel()`과 `validateEffort()`를 호출하며 `answer()`도 모델 호출 전에 검증한다. 웹 API의 요청별 추론 강도는 `low`, `medium`, `high`만 받는다. Luna 서비스의 기본 설정은 `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`를 허용하므로 웹에서 기본값을 선택할 때는 `effort`를 생략한다. 쓰기·충돌 해결·꿈꾸기는 기본 설정을 사용한다. `OPENAI_BASE_URL`을 설정하면 Responses 호출도 그 주소를 사용한다. `OPENAI_API_KEY`가 없어도 엔진은 시작할 수 있지만 Luna 호출은 설정이 필요하다는 오류로 실패한다.
 
 함수 호출 결과를 다음 Responses 입력으로 돌려주는 루프를 사용한다. 도구 실행이나 인자 해석 실패는 오류를 담은 도구 출력으로 모델에 전달하므로 Luna가 수정하거나 설명할 수 있다. 기본 호출 상한은 32턴이며 상한 안에 작업을 끝내지 못하면 실패한다. 웹 답변은 텍스트 델타를 즉시 전달하고, 취소 신호가 오면 추가 모델·도구 호출을 중단한다.
 
@@ -22,7 +22,7 @@ Luna의 모델 ID는 `gpt-6-luna`다. 엔진은 OpenAI Responses API의 함수 �
 ### 사용처
 - 지식 쓰기에서는 [쓰기 흐름](write-flow.md)의 문서 반영 판단과 편집을 맡는다.
 - 머지 충돌 해결에서는 [쓰기 흐름](write-flow.md)의 작업 워크트리에서 충돌을 해결한다.
-- [dreaming](dreaming.md)에서는 변경된 지식과 기존 지식을 검토하고 정리한다.
+- [꿈꾸기](dreaming.md)에서는 변경된 지식과 기존 지식을 검토하고 정리한다.
 - [웹 질의응답](web.md)에서는 [RAG](rag.md)를 활용해 지식을 근거로 답한다.
 
 실행 문맥의 메모리 파일 규칙은 [지식 저장소](knowledge-repository.md#메모리-파일의-문맥-제공-규칙)에 기록한다.
@@ -58,6 +58,6 @@ editor 이상의 `POST /api/uploads/:id/save { path, baseSha }`는 소유자의 
 
 ## 관련 문서
 - [엔진 아키텍처](architecture.md)는 Luna를 사용하는 구성 요소와 외부 의존을 설명한다.
-- [쓰기 흐름](write-flow.md)과 [dreaming](dreaming.md)은 Luna가 지식을 변경하는 절차를 설명한다.
+- [쓰기 흐름](write-flow.md)과 [꿈꾸기](dreaming.md)는 Luna가 지식을 변경하는 절차를 설명한다.
 - [작성 규칙](writing-rules.md)은 Luna가 지식 저장소에 글을 쓸 때 따르는 규칙을 설명한다.
 - [웹 버전](web.md)과 [RAG](rag.md)는 지식을 근거로 답변하는 방식을 설명한다.

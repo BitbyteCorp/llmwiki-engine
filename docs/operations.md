@@ -26,13 +26,13 @@
 | `llmwiki_http_request_duration_seconds{method,route,status}` | 응답 종료까지 걸린 초 단위 히스토그램이다. SSE는 연결 전체 수명이므로 일반 API 지연과 구분해서 해석한다. |
 | `llmwiki_write_queue_depth{status}` | DB에 기록된 `queued`, `running`, `merging` 작업 수다. |
 | `llmwiki_write_jobs_total{result}` | DB에 보존된 `succeeded`, `failed` 작업 수다. |
-| `llmwiki_dream_runs_total{result}` | DB에 보존된 `succeeded`, `failed` dreaming 실행 수다. |
-| `llmwiki_dream_duration_seconds{result}` | 완료된 dreaming의 시작부터 종료까지 걸린 초 단위 히스토그램이다. |
+| `llmwiki_dream_runs_total{result}` | DB에 보존된 `succeeded`, `failed` 꿈꾸기 실행 수다. |
+| `llmwiki_dream_duration_seconds{result}` | 완료된 꿈꾸기의 시작부터 종료까지 걸린 초 단위 히스토그램이다. |
 | `llmwiki_index_stale` | 인덱싱된 SHA가 없거나 현재 HEAD와 다르면 1, 같으면 0이다. |
 | `llmwiki_index_lag_seconds` | SHA가 다를 때 마지막 동기화 완료 후 경과한 초다. 동기화 완료 이력이 없으면 -1이고 HEAD와 같으면 0이다. 커밋 개수나 정확한 변경 대기 시간은 아니다. |
 | `llmwiki_index_pending_vectors` | 임베딩을 기다리는 청크 수다. |
 
-작업·dreaming 지표는 수집 시 DB에서 읽으므로 재시작 후에도 보존된 실행을 포함하고 반복 수집으로 중복 증가하지 않는다. 기록 삭제·DB 복원으로 값이 줄 수 있다. HTTP 지표는 프로세스 재시작 시 초기화된다. 인덱스 지표는 수집 시 비동기 `IndexerService.status()`를 기다린다.
+작업·꿈꾸기 지표는 수집 시 DB에서 읽으므로 재시작 후에도 보존된 실행을 포함하고 반복 수집으로 중복 증가하지 않는다. 기록 삭제·DB 복원으로 값이 줄 수 있다. HTTP 지표는 프로세스 재시작 시 초기화된다. 인덱스 지표는 수집 시 비동기 `IndexerService.status()`를 기다린다.
 
 레이블에는 HTTP 메서드, 등록된 라우트 템플릿, 상태 코드와 고정된 결과만 쓴다. 요청 ID, 사용자 ID, SHA, 노트 경로, 작업 ID, 원문 입력은 지표 레이블로 쓰지 않는다. 등록되지 않은 서버 경로는 `unmatched_backend`, Next 자산은 `next_asset`, Next 화면은 `next_page`로 묶는다.
 
@@ -52,7 +52,7 @@ Next로 전달되기 전에 요청 로깅 미들웨어를 실행한다. `x-reque
 | API | 응답과 페이지 구분 |
 |---|---|
 | `GET /api/dreams?before=<runId>&limit=` | `{ runs, nextCursor }`다. 다음 요청의 `before`에는 반환된 실행 ID 커서를 그대로 넣는다. |
-| `GET /api/dreams/:id` | dreaming 실행의 상세다. 요약, 변경 경로, 일기 경로와 push 상태를 포함한다. |
+| `GET /api/dreams/:id` | 꿈꾸기 실행의 상세다. 요약, 변경 경로, 일기 경로와 push 상태를 포함한다. |
 | `GET /api/backup/status` | `{ lastAttempt, lastSuccess }`다. 해당 기록이 없으면 각 값은 `null`이다. |
 | `GET /api/journal` | `{ date, path, dreamRunId }` 배열이다. |
 | `GET /api/activity?before=&limit=&path=&source=&type=` | `{ items, nextCursor }`다. `type`은 `commit`, `job`, `dream`, `backup`이다. |
@@ -61,26 +61,26 @@ Next로 전달되기 전에 요청 로깅 미들웨어를 실행한다. `x-reque
 
 목록의 `limit` 기본값은 50이며 1~100을 허용한다. 활동의 `source` 필터는 `git`, `mcp`, `web`, `chat`, `dreaming`, `import`, `revert` 중 하나다. `path`는 저장소 상대 파일 경로이며 마크다운뿐 아니라 `assets/` 파일도 허용한다. 절대 경로, 상위 디렉터리 이동, `.git` 내부 경로는 허용하지 않는다.
 
-관리자는 `GET /api/admin/ops`에서 큐·실패 작업·인덱스·dreaming·원격 git push 상태를 함께 조회한다. `POST /api/admin/dreams/run`, `POST /api/admin/jobs/:id/retry`, `POST /api/admin/jobs/:id/cancel`, `POST /api/admin/index/reindex`는 수동 실행, 재시도, 대기 작업 취소와 인덱싱을 수행하며 성공·실패 결과를 감사 기록으로 남긴다. 인덱싱 본문의 `{ "full": true }`는 전체 재구축을 요청하고, `false` 또는 생략은 증분 재색인을 요청한다.
+관리자는 `GET /api/admin/ops`에서 큐·실패 작업·인덱스·꿈꾸기·원격 git push 상태를 함께 조회한다. `POST /api/admin/dreams/run`, `POST /api/admin/jobs/:id/retry`, `POST /api/admin/jobs/:id/cancel`, `POST /api/admin/index/reindex`는 수동 실행, 재시도, 대기 작업 취소와 인덱싱을 수행하며 성공·실패 결과를 감사 기록으로 남긴다. 인덱싱 본문의 `{ "full": true }`는 전체 재구축을 요청하고, `false` 또는 생략은 증분 재색인을 요청한다.
 
-dreaming 수동 실행의 HTTP `201`은 요청이 정상 처리되었다는 뜻이지 실행 성공을 보장하지 않는다. 서버는 실행 완료를 기다린 뒤 실행 객체를 반환하며, 실행 중 발생한 오류가 기록되면 HTTP `201`이어도 본문의 `status`는 `failed`다. 응답의 `status`·`error`와 실행 상세를 확인해야 한다. 이미 dreaming이 실행 중이면 서버는 `409`로 거부한다.
+꿈꾸기 수동 실행의 HTTP `201`은 요청이 정상 처리되었다는 뜻이지 실행 성공을 보장하지 않는다. 서버는 실행 완료를 기다린 뒤 실행 객체를 반환하며, 실행 중 발생한 오류가 기록되면 HTTP `201`이어도 본문의 `status`는 `failed`다. 응답의 `status`·`error`와 실행 상세를 확인해야 한다. 이미 꿈꾸기가 실행 중이면 서버는 `409`로 거부한다.
 
 ### 웹 운영 화면과 지금 실행
 운영 API는 [운영 이력과 관리자 조작](#운영-이력과-관리자-조작)에 정의하며, 웹은 다음 접점에서 같은 조작을 제공한다. 운영 사이드바와 설정 운영 탭은 관리자 전용이다.
 
-- **운영 사이드바**는 36px 높이 헤더와 독립적으로 스크롤하는 본문을 사용한다. 대기·실행 및 병합 작업 수, 색인 동기화·오류·main 반영 대기 상태, 임베딩 대기 청크 수, 현재·최근 dreaming과 최근 원격 push 시도·성공을 보여 준다. `dreaming 지금 실행`, `색인 갱신`, `전체 색인 재구축`, `원문 가져오기`를 바로 실행하며 `전체 운영 설정`은 `/settings?tab=ops`로 이동한다.
-- **설정 운영 탭** `/settings?tab=ops`는 준비 상태, 큐와 가장 오래된 대기 시간, 실행·대기 작업, 최근 실패 작업 최대 20개, 색인 SHA·임베딩 준비 상태·최근 오류, dreaming과 push 상세를 보여 준다. 대기 시간은 마지막 조회 시점을 기준으로 표시한다. 실패 작업의 재시도와 대기 작업의 취소를 제공하며, 실행·병합 중인 작업에는 취소 버튼을 제공하지 않는다. 설정 탭의 권한·URL·이동 규칙은 [웹의 설정 화면](web.md#로그인과-관리-화면)을 따른다.
+- **운영 사이드바**는 36px 높이 헤더와 독립적으로 스크롤하는 본문을 사용한다. 대기·실행 및 병합 작업 수, 색인 동기화·오류·main 반영 대기 상태, 임베딩 대기 청크 수, 현재·최근 꿈꾸기와 최근 원격 push 시도·성공을 보여 준다. `꿈꾸기 지금 실행`, `색인 갱신`, `전체 색인 재구축`, `원문 가져오기`를 바로 실행하며 `전체 운영 설정`은 `/settings?tab=ops`로 이동한다.
+- **설정 운영 탭** `/settings?tab=ops`는 준비 상태, 큐와 가장 오래된 대기 시간, 실행·대기 작업, 최근 실패 작업 최대 20개, 색인 SHA·임베딩 준비 상태·최근 오류, 꿈꾸기와 push 상세를 보여 준다. 대기 시간은 마지막 조회 시점을 기준으로 표시한다. 실패 작업의 재시도와 대기 작업의 취소를 제공하며, 실행·병합 중인 작업에는 취소 버튼을 제공하지 않는다. 설정 탭의 권한·URL·이동 규칙은 [웹의 설정 화면](web.md#로그인과-관리-화면)을 따른다.
 - **명령 팔레트**의 운영 명령은 관리자에게만 노출한다. 한국어 표시명과 별도로 다음 영어 검색어를 제공한다. 일반 `가져오기 열기` 탐색 명령과 아래 관리자 빠른 실행 명령은 구분한다.
 
 | 운영 명령 | 영어 검색어 |
 |---|---|
 | 운영 설정 열기 | `Operations Queue Index Dream Settings` |
-| 지금 dreaming 실행 | `Dream Now Luna Journal` |
+| 지금 꿈꾸기 실행 | `Dream Now Luna Journal` |
 | 증분 재색인 | `Incremental Reindex Search` |
 | 전체 재색인 | `Full Rebuild Reindex Search` |
 | 원문 가져오기 시작 | `Import URL Text File Obsidian Notion` |
 
-운영 상태를 아직 받지 못했거나 공통 실행이 진행 중이면 dreaming·재색인을 비활성화한다. 서버가 dreaming 실행 중 또는 색인 동기화 중이라고 보고한 경우에도 해당 실행을 비활성화한다. 가져오기는 공통 실행 중에 비활성화한다.
+운영 상태를 아직 받지 못했거나 공통 실행이 진행 중이면 꿈꾸기·재색인을 비활성화한다. 서버가 꿈꾸기 실행 중 또는 색인 동기화 중이라고 보고한 경우에도 해당 실행을 비활성화한다. 가져오기는 공통 실행 중에 비활성화한다.
 
 사이드바의 가져오기는 현재 화면에 `ImportDialog`를 직접 연다. 팔레트의 `원문 가져오기 시작`은 편집 중인 변경의 이탈 확인을 거쳐 `/imports?new=1`로 이동한다. 이 쿼리의 자동 열기·소비·닫기 규칙과 수집 UI는 [웹의 원문 가져오기](web.md#원문-가져오기와-내보내기)에 기록한다.
 
@@ -91,21 +91,21 @@ dreaming 수동 실행의 HTTP `201`은 요청이 정상 처리되었다는 뜻�
 |---|---|
 | 색인 갱신·증분 재색인 | 별도 확인 창 없이 즉시 `full: false`로 요청한다. |
 | 전체 색인 재구축·전체 재색인 | 모든 노트의 검색 색인과 임베딩 재생성에 시간·모델 비용이 들 수 있고 저장된 노트는 변경하지 않는다는 설명을 확인한다. |
-| dreaming 수동 실행 | 변경과 미학습 대화 정리, 일기 작성, 설정된 원격으로 git push하며 지식 저장소에 실제 변경이 생길 수 있다는 설명을 확인한다. |
+| 꿈꾸기 수동 실행 | 변경과 미학습 대화 정리, 일기 작성, 설정된 원격으로 git push하며 지식 저장소에 실제 변경이 생길 수 있다는 설명을 확인한다. |
 | 실패 작업 재시도 | 기존 작업을 새 작업으로 다시 큐에 넣는다는 설명을 확인한다. |
 | 대기 작업 취소 | 대기 중인 작업만 취소할 수 있다는 설명을 확인한다. |
 
-실행 결과와 요청 오류는 전역 `notify` 알림으로 제공한다. 반환된 dreaming의 `status: failed`는 HTTP 요청이 성공했더라도 오류 알림과 실행 오류를 표시한다. dreaming 결과는 `/dreams/<id>`, 재시도·취소 결과는 반환된 작업의 `/jobs/<id>`로 연결한다. 결과 객체가 없는 재색인은 `/settings?tab=ops`로 연결하고, 요청 자체가 실패하면 dreaming 기록·원래 작업·운영 상태 중 해당 조작의 확인 화면으로 연결한다. 사이드바에서 가져오기를 등록하면 통합 작업 링크를 알리고, 실패하면 가져오기 창에서 오류를 확인하도록 안내한다.
+실행 결과와 요청 오류는 전역 `notify` 알림으로 제공한다. 반환된 꿈꾸기의 `status: failed`는 HTTP 요청이 성공했더라도 오류 알림과 실행 오류를 표시한다. 꿈꾸기 결과는 `/dreams/<id>`, 재시도·취소 결과는 반환된 작업의 `/jobs/<id>`로 연결한다. 결과 객체가 없는 재색인은 `/settings?tab=ops`로 연결하고, 요청 자체가 실패하면 꿈꾸기 기록·원래 작업·운영 상태 중 해당 조작의 확인 화면으로 연결한다. 사이드바에서 가져오기를 등록하면 통합 작업 링크를 알리고, 실패하면 가져오기 창에서 오류를 확인하도록 안내한다.
 
-mutation이 성공하거나 실패해 종료되면 운영 상태·준비 상태·작업·감사·dreaming·push·활동·검색 조회를 즉시 무효화한다. 화면별 SSE 무효화 구독을 따로 두지 않으며, 이벤트에 의한 중앙 배치 갱신과 재연결 계약은 [실시간 이벤트](events.md)에 기록한다.
+mutation이 성공하거나 실패해 종료되면 운영 상태·준비 상태·작업·감사·꿈꾸기·push·활동·검색 조회를 즉시 무효화한다. 화면별 SSE 무효화 구독을 따로 두지 않으며, 이벤트에 의한 중앙 배치 갱신과 재연결 계약은 [실시간 이벤트](events.md)에 기록한다.
 
-운영 화면의 원격 push는 dreaming이 수행한 지식 저장소 git push의 결과다. SQLite·업로드·로컬 git bundle을 함께 보존하는 전체 백업의 성공 여부를 뜻하지 않는다. push 결과의 계약은 [dreaming](dreaming.md), 전체 백업 생성·검증·복원은 [백업](backup.md)을 따른다.
+운영 화면의 원격 push는 꿈꾸기가 수행한 지식 저장소 git push의 결과다. SQLite·업로드·로컬 git bundle을 함께 보존하는 전체 백업의 성공 여부를 뜻하지 않는다. push 결과의 계약은 [꿈꾸기](dreaming.md), 전체 백업 생성·검증·복원은 [백업](backup.md)을 따른다.
 
 ### Slack 완료 알림
-`SLACK_WEBHOOK_URL`을 설정하면 dreaming의 최종 결과를 DB에 저장한 뒤 성공·실패 알림을 보낸다. 알림은 실행 상태, 실행 시간, 머지 SHA와 push 결과만 담으며 노트·일기 본문이나 사용자 입력을 보내지 않는다. 전송 실패는 경고 로그를 남길 뿐 저장된 실행 결과를 바꾸지 않는다. 전송 시간 제한과 민감한 필드 제외 정책은 [dreaming의 Slack 완료 알림](dreaming.md#slack-완료-알림)에 기록한다.
+`SLACK_WEBHOOK_URL`을 설정하면 꿈꾸기의 최종 결과를 DB에 저장한 뒤 성공·실패 알림을 보낸다. 알림은 실행 상태, 실행 시간, 머지 SHA와 push 결과만 담으며 노트·일기 본문이나 사용자 입력을 보내지 않는다. 전송 실패는 경고 로그를 남길 뿐 저장된 실행 결과를 바꾸지 않는다. 전송 시간 제한과 민감한 필드 제외 정책은 [꿈꾸기의 Slack 완료 알림](dreaming.md#slack-완료-알림)에 기록한다.
 
 ## 관련 문서
-- [dreaming](dreaming.md)은 실행 상태와 push 백업의 계약을 설명한다.
+- [꿈꾸기](dreaming.md)는 실행 상태와 push 백업의 계약을 설명한다.
 - [RAG](rag.md)는 인덱스 상태와 재구축을 설명한다.
 - [인증](auth.md)은 웹 세션과 관리자 권한을 설명한다.
 - [실시간 이벤트](events.md)는 SSE 전달과 재연결을 설명한다.

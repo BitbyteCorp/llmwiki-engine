@@ -40,7 +40,7 @@ Next의 CommonJS 진입점은 호출 가능한 함수를 내보내지만 `NodeNe
 
 기능별 Nest 모듈은 컨트롤러·서비스·저장소 제공자를 등록하고 필요한 제공자를 명시적으로 내보낸다. 전역 `CommonModule`은 설정·Pino 로그·마이그레이션을 적용한 SQLite 연결을 `CONFIG`, `LOGGER`, `DB` 토큰으로 제공한다. 비클래스 의존성은 토큰으로 주입하며 서비스 클래스는 타입으로 주입한다. SQL 마이그레이션은 파일명 숫자 순서로 적용하며 원문 수집 이력은 `012_ingest`에 기록한다. 벡터 테이블은 임베딩 차원 설정에 맞춰 RAG 모듈이 런타임에 생성한다.
 
-HTTP 진입점은 Nest 애플리케이션을 만들고 Next를 준비한 뒤 같은 프로세스에서 초기 검색 인덱스 동기화를 백그라운드로 시작하고 쓰기 워커와 dreaming을 명시적으로 시작한다. CLI는 필요할 때 Nest 애플리케이션 컨텍스트를 만들고 모듈별 관리 명령에서 서비스를 조회하며 HTTP 서버·쓰기 워커·dreaming 스케줄러를 시작하지 않는다. Nest 종료 훅은 `SIGINT`와 `SIGTERM`에서 서비스와 서버를 정리하고 DB 연결을 닫도록 한다. 요청 분기와 MVC 경계는 [엔진 아키텍처](architecture.md#nestjs와-nextjs의-mvc-경계)에 기록한다.
+HTTP 진입점은 Nest 애플리케이션을 만들고 Next를 준비한 뒤 같은 프로세스에서 초기 검색 인덱스 동기화를 백그라운드로 시작하고 쓰기 워커와 꿈꾸기를 명시적으로 시작한다. CLI는 필요할 때 Nest 애플리케이션 컨텍스트를 만들고 모듈별 관리 명령에서 서비스를 조회하며 HTTP 서버·쓰기 워커·꿈꾸기 스케줄러를 시작하지 않는다. Nest 종료 훅은 `SIGINT`와 `SIGTERM`에서 서비스와 서버를 정리하고 DB 연결을 닫도록 한다. 요청 분기와 MVC 경계는 [엔진 아키텍처](architecture.md#nestjs와-nextjs의-mvc-경계)에 기록한다.
 종료 전에는 초기 인덱스 동기화가 끝나기를 기다린다. Nest의 역방향 모듈 종료 순서에서 전역 `CommonModule`이 마지막에 DB를 닫으므로, 기능 서비스의 종료 훅은 작업 중단을 끝까지 기다려야 한다. `AppModule.beforeApplicationShutdown`은 Nest가 HTTP 서버를 닫기 전에 Next 핸들러를 닫고 추적한 업그레이드 소켓을 정리한다. Next 16의 custom server `close()`는 개발 락을 해제하지만 HMR WebSocket을 닫지 않으며, Node HTTP 서버의 `close()`는 열린 업그레이드 소켓이 있으면 완료되지 않는다. 따라서 Next를 HTTP 서버 종료 이후 훅에서 닫으면 HMR이 연결된 개발 서버의 `SIGINT`·`SIGTERM` 종료가 멈춘다. 업그레이드 소켓만 명시적으로 종료하며 일반 HTTP 요청의 정상 종료 대기는 Nest에 남긴다. CLI 애플리케이션 컨텍스트에는 HTTP 어댑터가 없으므로 소켓 추적을 생략한다.
 
 공용 `ZodValidationPipe`는 검증과 Zod 변환 결과를 컨트롤러에 전달한다. 전역 `HttpExceptionFilter`는 HTTP 예외·Zod 검증 오류·도메인의 `status`와 `code` 오류를 `{ error: { code, message } }`로 반환한다. 예상하지 못한 오류는 500과 `internal_error`로 처리하고 내부 메시지를 노출하지 않는다. `/healthz`는 `{ ok: true }`를 반환한다.
@@ -106,9 +106,9 @@ fixture의 범위를 검증하는 명령은 `pnpm vitest run test/fake-openai.te
 | `KNOWLEDGE_REPO_URL` | 미설정 | 지식 저장소의 git 원격 주소다. 없으면 로컬 `main` 저장소를 생성하고 일일 push를 건너뛰며 로그로 남긴다. |
 | `GIT_SSH_KEY_PATH` | 미설정 | git의 `GIT_SSH_COMMAND`에서 사용하는 SSH 배포 키 경로다. |
 | `GIT_BOT_NAME`, `GIT_BOT_EMAIL` | `Luna`, `luna@llmwiki.local` | git 커미터 정보다. |
-| `DREAM_CRON` | `0 3 * * *` | dreaming 실행 일정이다. |
-| `TZ_DREAM` | `Asia/Seoul` | dreaming 일정의 시간대다. |
-| `SLACK_WEBHOOK_URL` | 미설정 | dreaming의 영속 실행 기록이 저장된 뒤 결과·소요 시간·머지 SHA·push 결과만 알리는 선택적 Slack webhook이다. 원문 노트나 작업 입력은 보내지 않는다. |
+| `DREAM_CRON` | `0 3 * * *` | 꿈꾸기 실행 일정이다. |
+| `TZ_DREAM` | `Asia/Seoul` | 꿈꾸기 일정의 시간대다. |
+| `SLACK_WEBHOOK_URL` | 미설정 | 꿈꾸기의 영속 실행 기록이 저장된 뒤 결과·소요 시간·머지 SHA·push 결과만 알리는 선택적 Slack webhook이다. 원문 노트나 작업 입력은 보내지 않는다. |
 | `METRICS_TOKEN` | 미설정 | `/metrics` 수집용 Bearer 비밀값이다. 미설정이면 관리자 인증으로만 접근한다. |
 | `DEV_LOGIN_EMAIL` | 미설정 | 개발 모드에서만 기존 사용자로 `/auth/dev-login` 로그인을 허용한다. 상용 모드에서 설정하면 시작을 거부한다. |
 
