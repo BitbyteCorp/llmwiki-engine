@@ -16,7 +16,7 @@ export interface ChatComposerProps {
   conversationId?: string
   disabled: boolean
   streaming: boolean
-  onSubmit: (input: ChatComposerInput) => void
+  onSubmit: (input: ChatComposerInput) => Promise<boolean>
   onStop: () => void
   edit?: { id: string; content: string } | null
   onCancelEdit?: () => void
@@ -42,6 +42,15 @@ export function ChatComposer({ conversationId, disabled, streaming, onSubmit, on
   const pinnedRef = useRef<ChatNoteContext | null>(null)
   const previousConversation = useRef<string | null>(null)
   const currentKey = conversationId || 'new'
+  const conversationRef = useRef(currentKey)
+  const submissionRef = useRef<symbol | null>(null)
+  const draftRef = useRef(content)
+  draftRef.current = content
+  if (conversationRef.current !== currentKey) {
+    conversationRef.current = currentKey
+    submissionRef.current = null
+  }
+  const [submitting, setSubmitting] = useState(false)
   const [help, setHelp] = useState(false)
   const [error, setError] = useState('')
   const [pinning, setPinning] = useState(false)
@@ -70,6 +79,10 @@ export function ChatComposer({ conversationId, disabled, streaming, onSubmit, on
     pinnedRef.current = value
     setContext(value)
     try { if (value) sessionStorage.setItem(contextKey + currentKey, JSON.stringify(value)); else sessionStorage.removeItem(contextKey + currentKey) } catch { /* The in-memory pin survives follow-up messages. */ }
+  }, [currentKey])
+  useEffect(() => {
+    setSubmitting(false)
+    return () => { submissionRef.current = null }
   }, [currentKey])
   useEffect(() => {
     let restored: ChatNoteContext | null = null
@@ -115,7 +128,7 @@ export function ChatComposer({ conversationId, disabled, streaming, onSubmit, on
   }, [lookup, dismissed, disabled])
   useEffect(() => {
     const receive = (event: Event) => {
-      if (disabled || streaming || edit) return
+      if (disabled || streaming || submissionRef.current || edit) return
       const detail = (event as CustomEvent<File[] | FileList>).detail
       if (detail) attachments.addFiles(Array.from(detail))
     }
@@ -146,7 +159,7 @@ export function ChatComposer({ conversationId, disabled, streaming, onSubmit, on
     textarea.current?.focus()
   }
   async function submit() {
-    if (disabled || streaming || pinning || attachments.pending || attachments.failed || !content.trim()) return
+    if (disabled || streaming || submissionRef.current || pinning || attachments.pending || attachments.failed || !content.trim()) return
     const trimmed = content.trim()
     const command = trimmed.match(/^\/(search|note|save|help)(?:\s+([\s\S]*))?$/)
     if (command && !edit) {
@@ -161,11 +174,30 @@ export function ChatComposer({ conversationId, disabled, streaming, onSubmit, on
       }
       setContent(''); setCaret(0); setDismissed(true); setError(''); return
     }
-    onSubmit({ content: trimmed, attachments: attachments.ids, ...(context ? { context } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}) })
-    setContent(''); setCaret(0); attachments.clear(); setError(''); setDismissed(true)
+    if (context?.selection && context.selection.length > 32000) {
+      setError('선택한 문맥은 32,000자 이하로 보내야 한다. 다시 선택하거나 제거하세요.')
+      return
+    }
+    const identity = Symbol()
+    const conversation = currentKey
+    const draft = content
+    const submittedKeys = attachments.items.map(item => item.key)
+    submissionRef.current = identity
+    setSubmitting(true)
+    setError('')
+    try {
+      const accepted = await onSubmit({ content: trimmed, attachments: attachments.ids, ...(context ? { context } : {}), ...(model ? { model } : {}), ...(effort ? { effort } : {}) })
+      if (!accepted || submissionRef.current !== identity || conversationRef.current !== conversation) return
+      if (draftRef.current === draft) { setContent(''); setCaret(0); setDismissed(true) }
+      for (const key of submittedKeys) attachments.remove(key)
+    } catch (cause) {
+      if (submissionRef.current === identity && conversationRef.current === conversation) setError(cause instanceof Error ? cause.message : '메시지를 보내지 못했다.')
+    } finally {
+      if (submissionRef.current === identity) { submissionRef.current = null; setSubmitting(false) }
+    }
   }
   function keyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.nativeEvent.isComposing || event.keyCode === 229) return
+    if (event.defaultPrevented || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229 || event.keyCode === 229) return
     if (event.key === 'Escape') {
       if (showOptions) { event.preventDefault(); event.stopPropagation(); setDismissed(true) }
       else if (streaming) { event.preventDefault(); event.stopPropagation(); onStop() }
@@ -181,17 +213,17 @@ export function ChatComposer({ conversationId, disabled, streaming, onSubmit, on
       else void submit()
     } else if (event.key === 'ArrowUp' && !content && !edit && !streaming && !disabled) { event.preventDefault(); onEditLast?.() }
   }
-  const blocked = disabled || streaming || pinning || attachments.pending || attachments.failed || !content.trim()
+  const blocked = disabled || streaming || submitting || pinning || attachments.pending || attachments.failed || !content.trim()
   return <section data-chat-composer className={`relative space-y-3 rounded-xl border bg-background p-3 ${dragging ? 'ring-2 ring-primary' : ''}`} aria-label="Luna 메시지 작성" onDragOver={event => {
-    if (!disabled && !streaming && !edit && event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.stopPropagation(); setDragging(true) }
+    if (!disabled && !streaming && !submissionRef.current && !edit && event.dataTransfer.types.includes('Files')) { event.preventDefault(); event.stopPropagation(); setDragging(true) }
   }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false) }} onDrop={event => {
     if (!event.dataTransfer.files.length) return
     event.preventDefault(); event.stopPropagation(); setDragging(false)
-    if (!disabled && !streaming && !edit) attachments.addFiles(Array.from(event.dataTransfer.files))
+    if (!disabled && !streaming && !submissionRef.current && !edit) attachments.addFiles(Array.from(event.dataTransfer.files))
   }}>
     {edit && <div className="flex items-center justify-between gap-2 text-sm"><span>질문 수정 · 이후 대화는 다시 생성된다.</span><Button type="button" variant="ghost" size="xs" onClick={onCancelEdit}>수정 취소</Button></div>}
     {context && <div className="flex items-start gap-2 rounded-md bg-muted px-2 py-1.5 text-xs"><Pin className="mt-0.5 size-3 shrink-0" /><div className="min-w-0 flex-1"><p className="break-all">고정 문맥 · {context.notePath}{context.ref ? ` @ ${context.ref.slice(0, 10)}` : ''}</p>{context.selection && <p className="mt-1 line-clamp-3 whitespace-pre-wrap text-muted-foreground">선택: {context.selection}</p>}</div><Button type="button" variant="ghost" size="icon-xs" aria-label="고정 문맥 제거" onClick={() => pin(null)}><X /></Button></div>}
-    <DraftAttachments items={attachments.items} onRemove={attachments.remove} />
+    <fieldset disabled={submitting} className="min-w-0"><DraftAttachments items={attachments.items} onRemove={key => { if (!submissionRef.current) attachments.remove(key) }} /></fieldset>
     {(error || attachments.error) && <p role="alert" className="text-sm text-destructive">{error || attachments.error}</p>}
     <div className="relative">
       {showOptions && <div id={listId} role="listbox" aria-label={lookup !== null ? '노트 제안' : '명령 제안'} className="absolute bottom-full z-20 mb-2 max-h-56 w-full overflow-auto rounded-lg border bg-popover p-1 text-popover-foreground shadow-md">
@@ -199,7 +231,7 @@ export function ChatComposer({ conversationId, disabled, streaming, onSubmit, on
         {lookup !== null && !options.length && <p className="px-2 py-1 text-xs text-muted-foreground">{loadingSuggestions ? '노트 찾는 중…' : suggestionError || '일치하는 노트가 없다.'}</p>}
       </div>}
       <Textarea ref={textarea} value={content} disabled={disabled} rows={3} maxLength={100000} placeholder={disabled ? '조회 권한으로는 메시지를 보낼 수 없다.' : 'Luna에게 질문 · @ 노트 · / 명령'} aria-label="메시지" aria-controls={showOptions ? listId : undefined} aria-expanded={showOptions} aria-activedescendant={showOptions && options.length ? `${listId}-${Math.min(active, options.length - 1)}` : undefined} className="max-h-64 min-h-24 resize-y border-0 shadow-none focus-visible:ring-0" onChange={event => { setContent(event.target.value); setCaret(event.target.selectionStart); setDismissed(false); setActive(0); setError('') }} onSelect={event => setCaret(event.currentTarget.selectionStart)} onKeyDown={keyDown} onPaste={event => {
-        if (disabled || streaming || edit) return
+        if (disabled || streaming || submissionRef.current || edit) return
         const files = Array.from(event.clipboardData.items).filter(item => item.kind === 'file').flatMap(item => { const file = item.getAsFile(); return file ? [file] : [] })
         if (files.length) { event.preventDefault(); attachments.addFiles(files) }
       }} />
@@ -217,8 +249,8 @@ export function ChatComposer({ conversationId, disabled, streaming, onSubmit, on
       </article>)}
     </section>}
     <div className="flex flex-wrap items-center gap-2">
-      <input ref={fileInput} type="file" multiple hidden accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain,text/markdown,.md" onChange={event => { if (event.target.files) attachments.addFiles(Array.from(event.target.files)); event.target.value = '' }} />
-      <Button type="button" variant="ghost" size="icon-sm" aria-label="파일 첨부" title="파일 첨부 · 최대 10개, 각 20 MB" disabled={disabled || streaming || !!edit || attachments.items.length >= 10} onClick={() => fileInput.current?.click()}><Paperclip /></Button>
+      <input ref={fileInput} type="file" multiple hidden accept="image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain,text/markdown,.md" onChange={event => { if (!disabled && !streaming && !submissionRef.current && !edit && event.target.files) attachments.addFiles(Array.from(event.target.files)); event.target.value = '' }} />
+      <Button type="button" variant="ghost" size="icon-sm" aria-label="파일 첨부" title="파일 첨부 · 최대 10개, 각 20 MB" disabled={disabled || streaming || submitting || !!edit || attachments.items.length >= 10} onClick={() => fileInput.current?.click()}><Paperclip /></Button>
       <label className="sr-only" htmlFor={`${listId}-model`}>모델</label><select id={`${listId}-model`} value={model} onChange={event => setModel(event.target.value)} disabled={disabled || streaming || !!edit} className="h-7 max-w-44 rounded-md border bg-background px-1 text-xs"><option value="">{modelOptions ? `기본 · ${modelOptions.defaultModel}` : '서버 기본 모델'}</option>{modelOptions?.models.map(value => <option key={value} value={value}>{value}</option>)}</select>
       <label className="sr-only" htmlFor={`${listId}-effort`}>추론 강도</label><select id={`${listId}-effort`} value={effort} onChange={event => setEffort(event.target.value as typeof effort)} disabled={disabled || streaming || !!edit} className="h-7 rounded-md border bg-background px-1 text-xs"><option value="">기본 추론 강도{modelOptions ? ` · ${modelOptions.defaultEffort}` : ''}</option>{(modelOptions?.efforts || ['low', 'medium', 'high']).map(value => <option key={value} value={value}>{value === 'low' ? '낮음' : value === 'medium' ? '보통' : '높음'}</option>)}</select>
       <Button type="button" variant="ghost" size="icon-sm" aria-label="입력 도움말" aria-expanded={help} onClick={() => setHelp(value => !value)}><CircleHelp /></Button>
