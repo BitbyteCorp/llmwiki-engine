@@ -21,7 +21,8 @@ export class ExportController {
   async download(@Query(new ZodValidationPipe(exportQuerySchema)) query: z.infer<typeof exportQuerySchema>, @Req() req: Request, @Res() res: Response): Promise<void> {
     let download: ExportDownload | undefined;
     try {
-      download = await this.exports.prepare(query);
+      download = await this.exports.prepare(query, req.user!);
+      download.assertAuthorized();
       res.setHeader('Content-Type', download.contentType);
       res.setHeader('Content-Disposition', `attachment; filename="${download.filename}"`);
       res.setHeader('X-Export-Head', download.manifest.headSha);

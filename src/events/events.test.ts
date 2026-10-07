@@ -1,8 +1,13 @@
 import 'reflect-metadata';
 import { EventEmitter } from 'node:events';
 import type { Response } from 'express';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { User } from '../auth/users.types.js';
+import { AclService } from '../acl/acl.service.js';
+import { AuditService } from '../audit/audit.service.js';
+import { UsersRepository } from '../auth/users.repository.js';
+import { UsersService } from '../auth/users.service.js';
+import { openDb, runMigrations, type Db } from '../db/index.js';
 import { EventsController } from './events.controller.js';
 import { EventsService } from './events.service.js';
 
@@ -16,11 +21,21 @@ function connection(controller: EventsController, viewer: User) {
   return { response, frames };
 }
 
-afterEach(() => vi.useRealTimers());
+let db: Db;
+let users: UsersService;
+let acl: AclService;
+beforeEach(() => {
+  db = openDb(':memory:');
+  runMigrations(db);
+  users = new UsersService(new UsersRepository(db));
+  for (const id of [1, 2, 3]) users.create({ email: user(id).email, role: id === 3 ? 'admin' : 'viewer' });
+  acl = new AclService(db, users, new AuditService(db));
+});
+afterEach(() => { vi.useRealTimers(); db.close(); });
 describe('live event audience and transport', () => {
   it('hides private jobs from other viewers and delivers to owner/admin', () => {
     const bus = new EventsService();
-    const controller = new EventsController(bus);
+    const controller = new EventsController(bus, acl, users);
     const owner = connection(controller, user(1));
     const other = connection(controller, user(2));
     const admin = connection(controller, user(3, 'admin'));
@@ -36,7 +51,7 @@ describe('live event audience and transport', () => {
   it('sends 25-second heartbeats, continues sequence after reconnect and cleans listeners', () => {
     vi.useFakeTimers();
     const bus = new EventsService();
-    const controller = new EventsController(bus);
+    const controller = new EventsController(bus, acl, users);
     const first = connection(controller, user(1));
     vi.advanceTimersByTime(25_000);
     expect(first.frames.at(-1)).toBe(': ping\n\n');
@@ -54,7 +69,7 @@ describe('live event audience and transport', () => {
   it('closes live streams and stops their heartbeat when the application shuts down', () => {
     vi.useFakeTimers();
     const bus = new EventsService();
-    const controller = new EventsController(bus);
+    const controller = new EventsController(bus, acl, users);
     const client = connection(controller, user(1));
     const closed = vi.fn();
     client.response.once('close', closed);

@@ -1,6 +1,9 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { AclService } from '../acl/acl.service.js';
 import { ApiError, notFound } from '../api/api-error.js';
+import { redactCommit } from '../api/acl-history.js';
 import type { User } from '../auth/users.types.js';
+import { UsersService } from '../auth/users.service.js';
 import { DB } from '../common/tokens.js';
 import type { Db } from '../db/index.js';
 import type { DreamRun } from '../dreaming/dream-run.types.js';
@@ -36,11 +39,11 @@ function compare(a: Cursor, b: Cursor): number {
   return a.id === b.id ? 0 : a.id < b.id ? 1 : -1;
 }
 
-export function decodeActivityCursor(value: string): Cursor {
+export function decodeActivityCursor(value: string, policyKey: string): Cursor {
   try {
     if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new Error();
     const decoded: unknown = JSON.parse(Buffer.from(value, 'base64url').toString('utf8'));
-    if (!Array.isArray(decoded) || decoded.length !== 3) throw new Error();
+    if (!Array.isArray(decoded) || decoded.length !== 4 || decoded[3] !== policyKey) throw new Error();
     const [at, type, id] = decoded as unknown[];
     if (typeof at !== 'string' || !Number.isFinite(Date.parse(at)) || typeof type !== 'string' || !kinds.includes(type as ActivityKind) || typeof id !== 'string' || !id) throw new Error();
     return { at: new Date(at).toISOString(), type: type as ActivityKind, id };
@@ -55,18 +58,43 @@ export class ActivityService {
     @Inject(DB) private readonly db: Db,
     private readonly repo: KnowledgeRepo,
     private readonly dreams: DreamRunsRepository,
+    private readonly acl: AclService,
+    private readonly users: UsersService,
   ) {}
 
-  listDreams(query: { before?: string; limit: number }) {
+  private assertSnapshot(user: User, policyKey: string): void {
+    const current = this.users.getById(user.id);
+    if (!current || current.email !== user.email || current.createdAt !== user.createdAt ||
+      this.acl.policyKey(current) !== policyKey) {
+      throw new ApiError(403, 'forbidden', 'Permissions changed during the request');
+    }
+  }
+
+  listDreams(query: { before?: string; limit: number }, user: User) {
     if (query.before && !this.dreams.get(query.before)) notFound('Dream run cursor not found');
     const runs = this.dreams.list({ ...query, limit: query.limit + 1 });
     const hasMore = runs.length > query.limit;
     if (hasMore) runs.pop();
-    return { runs, nextCursor: hasMore ? runs.at(-1)!.id : null };
+    return { runs: runs.map((run) => this.projectDream(run, user)), nextCursor: hasMore ? runs.at(-1)!.id : null };
   }
 
-  getDream(id: string): DreamRun {
-    return this.dreams.get(id) ?? notFound('Dream run not found');
+  getDream(id: string, user: User): DreamRun {
+    return this.projectDream(this.dreams.get(id) ?? notFound('Dream run not found'), user);
+  }
+
+  projectDream(run: DreamRun, user: User): DreamRun {
+    const changedPaths = this.acl.filterPaths(user, run.changedPaths);
+    const journalPath = run.journalPath && this.acl.canRead(user, run.journalPath) ? run.journalPath : null;
+    const redacted = changedPaths.length !== run.changedPaths.length || journalPath !== run.journalPath;
+    return { ...run, changedPaths, journalPath,
+      summary: redacted ? null : run.summary, error: redacted ? null : run.error,
+      push: { ...run.push, reason: redacted ? null : run.push.reason } };
+  }
+
+  backupStatus(user: User) {
+    const status = this.dreams.backupStatus();
+    return { lastAttempt: status.lastAttempt ? this.projectDream(status.lastAttempt, user) : null,
+      lastSuccess: status.lastSuccess ? this.projectDream(status.lastSuccess, user) : null };
   }
 
   private allDreams(): DreamRun[] {
@@ -80,7 +108,8 @@ export class ActivityService {
     }
   }
 
-  async journal() {
+  async journal(user: User) {
+    const policyKey = this.acl.policyKey(user);
     const runs = this.allDreams();
     const links = new Map<string, string>();
     // Repository order is newest run first; repeated manual runs keep the newest association.
@@ -89,14 +118,18 @@ export class ActivityService {
         links.set(run.journalPath, run.id);
       }
     }
-    return (await this.repo.listFiles('journal/'))
-      .filter((path) => /^journal\/\d{4}-\d{2}-\d{2}\.md$/.test(path))
+    const files = await this.repo.listFiles('journal/');
+    this.assertSnapshot(user, policyKey);
+    return files
+      .filter((path) => /^journal\/\d{4}-\d{2}-\d{2}\.md$/.test(path) && this.acl.canRead(user, path))
       .sort().reverse()
       .map((path) => ({ date: path.slice(8, 18), path, dreamRunId: links.get(path) ?? null }));
   }
 
   async list(query: ActivityQuery, user: User): Promise<{ items: ActivityItem[]; nextCursor: string | null }> {
-    const cursor = query.before ? decodeActivityCursor(query.before) : null;
+    if (query.path) this.acl.assertRead(user, query.path);
+    const policyKey = this.acl.policyKey(user);
+    const cursor = query.before ? decodeActivityCursor(query.before, policyKey) : null;
     const items: ActivityItem[] = [];
     const accept = (item: ActivityItem) => {
       if (query.type && item.type !== query.type) return;
@@ -116,19 +149,36 @@ export class ActivityService {
     };
     // Git dates need not be monotonic in ancestry order (and ties cross sources).
     // An uncapped log is necessary to avoid silently losing older or merge-side history.
-    const commits = (!query.type || query.type === 'commit' || (query.type === 'job' && query.path))
-      ? await this.repo.log(query.path, { limit: null }) : [];
+    const commits = (!query.type || query.type === 'commit' || query.type === 'job')
+      ? await this.repo.log(undefined, { limit: null }) : [];
+    const commitPaths = new Map<string, string[]>();
+    const jobPaths = new Map<string, Set<string>>();
     const pathCommits = new Set<string>();
     const pathJobIds = new Set<string>();
     for (const commit of commits) {
-      if (query.path) {
+      const changes = await this.repo.diffNames(commit.parents[0] ?? null, commit.sha);
+      const paths = [...new Set(changes.flatMap((change) => change.oldPath ? [change.path, change.oldPath] : [change.path]))];
+      commitPaths.set(commit.sha, paths);
+      const linkedJob = commit.trailers['Wiki-Job'];
+      if (linkedJob) {
+        const linkedPaths = jobPaths.get(linkedJob) ?? new Set<string>();
+        for (const path of paths) linkedPaths.add(path);
+        jobPaths.set(linkedJob, linkedPaths);
+      }
+      if (query.path && paths.includes(query.path)) {
         pathCommits.add(commit.sha);
         const jobId = commit.trailers['Wiki-Job'];
         if (jobId) pathJobIds.add(jobId);
       }
+      const readable = this.acl.filterPaths(user, paths);
+      if (paths.length && !readable.length) continue;
       if (!query.type || query.type === 'commit') {
+        const redacted = readable.length !== paths.length;
+        const projected = redacted ? { ...redactCommit(commit),
+          path: commit.path && this.acl.canRead(user, commit.path) ? commit.path : undefined,
+          oldPath: commit.oldPath && this.acl.canRead(user, commit.oldPath) ? commit.oldPath : undefined } : commit;
         accept({ id: commit.sha, type: 'commit', at: new Date(commit.committedAt).toISOString(),
-          source: commit.trailers['Wiki-Source'] ?? 'git', paths: query.path ? [query.path] : [], summary: commit.subject, commit });
+          source: commit.trailers['Wiki-Source'] ?? 'git', paths: readable, summary: redacted ? null : commit.subject, commit: projected });
       }
     }
     if (!query.type || query.type === 'job') {
@@ -149,20 +199,30 @@ export class ActivityService {
         CASE WHEN user_id = ? OR ? = 1 THEN input ELSE NULL END AS input,
         CASE WHEN user_id = ? OR ? = 1 THEN error ELSE NULL END AS error
         FROM write_jobs ${clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''}
-        ORDER BY created_at DESC, id DESC LIMIT ?`).all(...values, query.limit + 1) as JobRow[];
+        ORDER BY created_at DESC, id DESC`).all(...values) as JobRow[];
       for (const row of rows) {
         const privileged = row.user_id === user.id || user.role === 'admin';
+        const commitIds = JSON.parse(row.commits) as string[];
+        const conflicts = JSON.parse(row.conflicts) as string[];
+        const paths = [...new Set([...(jobPaths.get(row.id) ?? []),
+          ...[...commitIds, ...(row.merge_sha ? [row.merge_sha] : [])].flatMap((sha) => commitPaths.get(sha) ?? []), ...conflicts])];
+        const readable = this.acl.filterPaths(user, paths);
+        if (paths.length && !readable.length) continue;
+        const redacted = readable.length !== paths.length ||
+          (!paths.length && user.role !== 'admin' && this.acl.list().length > 0);
         const job: ActivityItem['job'] = { id: row.id, userId: row.user_id, kind: row.kind, source: row.source,
-          client: row.client, status: row.status, summary: row.summary, commits: JSON.parse(row.commits) as string[],
-          conflicts: JSON.parse(row.conflicts) as string[], mergeSha: row.merge_sha, createdAt: row.created_at,
+          client: row.client, status: row.status, summary: redacted ? null : row.summary,
+          commits: commitIds.filter((sha) => (commitPaths.get(sha) ?? []).every((path) => this.acl.canRead(user, path))),
+          conflicts: this.acl.filterPaths(user, conflicts), mergeSha: redacted ? null : row.merge_sha, createdAt: row.created_at,
           startedAt: row.started_at, finishedAt: row.finished_at,
-          ...(privileged ? { input: row.input!, error: row.error } : {}) };
+          ...(privileged && !redacted ? { input: row.input!, error: row.error } : {}) };
         accept({ id: row.id, type: 'job', at: row.created_at, source: row.source,
-          paths: query.path ? [query.path] : [], summary: row.summary, job });
+          paths: readable, summary: redacted ? null : row.summary, job });
       }
     }
     if (!query.type || query.type === 'dream' || query.type === 'backup') {
-      for (const dream of this.allDreams()) {
+      for (const original of this.allDreams()) {
+        const dream = this.projectDream(original, user);
         accept({ id: dream.id, type: 'dream', at: dream.startedAt, source: 'dreaming', paths: dream.changedPaths, summary: dream.summary, dream });
         if (dream.push.status !== 'pending') accept({ id: dream.id, type: 'backup', at: dream.push.at ?? dream.finishedAt ?? dream.startedAt,
           source: 'dreaming', paths: dream.changedPaths, summary: dream.push.reason, push: dream.push });
@@ -171,7 +231,8 @@ export class ActivityService {
     const hasMore = items.length > query.limit;
     if (hasMore) items.pop();
     const last = items.at(-1);
-    const nextCursor = hasMore && last ? Buffer.from(JSON.stringify([last.at, last.type, last.id])).toString('base64url') : null;
+    const nextCursor = hasMore && last ? Buffer.from(JSON.stringify([last.at, last.type, last.id, policyKey])).toString('base64url') : null;
+    this.assertSnapshot(user, policyKey);
     return { items, nextCursor };
   }
 

@@ -90,6 +90,17 @@ describe('repository path access policy', () => {
     expect(acl.filterPaths(editor, ['notes/two.md', 'notes/one.md', 'notes-other/two.md'])).toEqual(['notes/two.md']);
   });
 
+  it('treats root as less specific than a one-character exact file in service and SQL', () => {
+    const rootGrant = acl.create({ prefix: '/', subjectType: 'user', subject: editor.id, access: 'write' }, admin);
+    const exactDenial = acl.create({ prefix: 'a', subjectType: 'everyone', access: 'none' }, admin);
+    expect(acl.access(editor, 'a')).toBe('none');
+    expect(acl.explain(editor, 'a').rule).toEqual(exactDenial);
+    expect(acl.explain(editor, 'b').rule).toEqual(rootGrant);
+    const predicate = acl.sql(editor, 'p.path');
+    expect(database.prepare(`SELECT p.path FROM (SELECT 'a' AS path UNION ALL SELECT 'b') p WHERE ${predicate.sql} ORDER BY p.path`)
+      .all(...predicate.params)).toEqual([{ path: 'b' }]);
+  });
+
   it('hides unreadable paths while rejecting writes to readable-only paths', () => {
     acl.create({ prefix: 'private/', subjectType: 'everyone', subject: '', access: 'none' }, admin);
     acl.create({ prefix: 'readonly/', subjectType: 'everyone', subject: '', access: 'read' }, admin);

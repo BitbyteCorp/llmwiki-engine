@@ -1,15 +1,17 @@
 import { Controller, Get, Res, UseGuards, type OnModuleDestroy } from '@nestjs/common';
 import type { Response } from 'express';
+import { AclService } from '../acl/acl.service.js';
 import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
 import { SessionGuard } from '../auth/guards/session.guard.js';
 import type { User } from '../auth/users.types.js';
+import { UsersService } from '../auth/users.service.js';
 import { EventsService } from './events.service.js';
 
 @Controller('api/events')
 @UseGuards(SessionGuard)
 export class EventsController implements OnModuleDestroy {
   private readonly connections = new Set<Response>();
-  constructor(private readonly events: EventsService) {}
+  constructor(private readonly events: EventsService, private readonly acl: AclService, private readonly users: UsersService) {}
 
   onModuleDestroy(): void {
     for (const response of this.connections) response.end();
@@ -26,8 +28,16 @@ export class EventsController implements OnModuleDestroy {
     response.write(': connected\n\n');
     this.connections.add(response);
     const unsubscribe = this.events.subscribe((event, audience) => {
-      if (audience !== 'all' && !audience.userIds.includes(user.id) && !(audience.admins && user.role === 'admin')) return;
-      response.write(`id: ${this.events.sequence}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+      const currentUser = this.users.getById(user.id);
+      if (!currentUser || currentUser.email !== user.email) { response.end(); return; }
+      if (audience !== 'all' && !audience.userIds.includes(currentUser.id) && !(audience.admins && currentUser.role === 'admin')) return;
+      let projected = event;
+      if (event.type === 'main.updated') {
+        const paths = this.acl.filterPaths(currentUser, event.paths);
+        if (!paths.length) return;
+        projected = { ...event, paths };
+      }
+      response.write(`id: ${this.events.sequence}\nevent: ${projected.type}\ndata: ${JSON.stringify(projected)}\n\n`);
     });
     const heartbeat = setInterval(() => response.write(': ping\n\n'), 25_000);
     heartbeat.unref();

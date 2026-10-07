@@ -5,11 +5,14 @@ import type { Request, Response, NextFunction } from 'express';
 import pino from 'pino';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AclService } from '../acl/acl.service.js';
 import { ApiError } from '../api/api-error.js';
 import { AuditService } from '../audit/audit.service.js';
 import { RolesGuard } from '../auth/guards/roles.guard.js';
 import { SessionGuard } from '../auth/guards/session.guard.js';
 import type { User } from '../auth/users.types.js';
+import { UsersRepository } from '../auth/users.repository.js';
+import { UsersService } from '../auth/users.service.js';
 import { HttpExceptionFilter } from '../common/filters/http-exception.filter.js';
 import { DB } from '../common/tokens.js';
 import { openDb, runMigrations, type Db } from '../db/index.js';
@@ -25,7 +28,7 @@ import { OpsController } from './ops.controller.js';
 
 const stamp = '2026-01-02T00:00:00.000Z';
 const viewer: User = { id: 1, email: 'viewer@example.test', name: 'Viewer', role: 'viewer', createdAt: stamp, lastLoginAt: null };
-const admin: User = { ...viewer, id: 3, role: 'admin' };
+const admin: User = { ...viewer, id: 3, email: 'admin@example.test', role: 'admin' };
 function commit(sha: string, at = stamp, source = 'web', jobId?: string): CommitInfo {
   return { sha, parents: [], authorName: 'Writer', authorEmail: 'writer@example.test', date: at,
     committedAt: at, committerName: 'Luna', committerEmail: 'luna@example.test', subject: 'Updated note', body: '',
@@ -51,6 +54,10 @@ describe('operations activity and REST', () => {
   beforeEach(() => {
     db = openDb(':memory:');
     runMigrations(db);
+    for (const user of [viewer, { ...viewer, id: 2, email: 'other@example.test' }, admin]) {
+      db.prepare('INSERT INTO users(id,email,role,created_at) VALUES(?,?,?,?)').run(user.id, user.email, user.role, stamp);
+    }
+    const users = new UsersService(new UsersRepository(db));
     dreams = new DreamRunsRepository(db);
     jobRows = new WriteJobsRepository(db);
     commits = [];
@@ -59,9 +66,11 @@ describe('operations activity and REST', () => {
         const matching = commits.filter((row) => !path || row.files?.includes(path));
         return options.limit === null ? matching : matching.slice(0, options.limit ?? 50);
       },
+      diffNames: async (_from: string | null, sha: string) =>
+        (commits.find((row) => row.sha === sha)?.files ?? ['wiki/route.md']).map((path) => ({ status: 'M' as const, path })),
       listFiles: async () => ['journal/2026-01-01.md', 'journal/2026-01-02.md', 'journal/not-a-date.md', 'journal/sub/2026-01-03.md'],
     } as unknown as KnowledgeRepo;
-    activity = new ActivityService(db, repo, dreams);
+    activity = new ActivityService(db, repo, dreams, new AclService(db, users, new AuditService(db)), users);
     manual = vi.fn(async () => dream('manual-run'));
     index = { status: vi.fn(async () => ({ indexedSha: 'main', syncing: false })), reindex: vi.fn(async () => {}) };
     jobs = {
@@ -199,7 +208,7 @@ describe('operations activity and REST', () => {
     saveDream(dream('published'));
     saveDream({ ...dream('failed-later', '2026-01-03T00:00:00.000Z'), status: 'failed', mergeSha: null, error: 'Journal validation failed' });
     saveDream({ ...dream('unchanged-later', '2026-01-04T00:00:00.000Z'), changedPaths: ['wiki/route.md'] });
-    expect(await activity.journal()).toEqual([
+    expect(await activity.journal(viewer)).toEqual([
       { date: '2026-01-02', path: 'journal/2026-01-02.md', dreamRunId: 'published' },
       { date: '2026-01-01', path: 'journal/2026-01-01.md', dreamRunId: null },
     ]);

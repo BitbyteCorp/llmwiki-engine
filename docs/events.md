@@ -8,13 +8,15 @@
 `EventsModule`은 전역 `EventsService`를 제공한다. `publish(event, audience)`와 `subscribe(listener)`를 사용하며 구독 해제 함수를 반드시 호출한다. 이벤트 종류는 다음과 같다.
 
 - `job.updated`는 `jobId`, `userId`, `status`, 선택적 `phase`를 전달한다. 작업 소유자와 관리자만 대상으로 한다.
-- `main.updated`는 `sha`, `paths`, 선택적 `jobId`를 전달한다. 인증된 모든 사용자에게 전달한다.
+- `main.updated`는 `sha`, `paths`, 선택적 `jobId`를 전달한다. 구독자별로 읽을 수 있는 경로만 남기며 남은 경로가 없으면 해당 이벤트를 보내지 않는다. 관리자는 모든 경로를 받는다.
 - `index.updated`는 `sha`와 `syncing`, `ready`, `error` 중 하나인 `status`를 전달한다.
 - `dream.updated`는 `runId`와 `status`를 전달한다.
 - `conversation.updated`는 `conversationId`와 선택적 `messageId`를 전달한다.
 - `conversation.presence`는 `conversationId`와 `{ id, name, typing }` 사용자 배열을 전달한다. 대화 이벤트의 대상은 대화 구성원이다.
 
 대상 `'all'`은 인증된 모든 세션을 뜻한다. `{ userIds, admins?: true }`는 지정 사용자에게만 전달하며 `admins: true`일 때 관리자도 전달받는다. 관리자가 모든 사적인 대화 이벤트를 자동으로 받는 규칙은 없다. 이벤트 페이로드에는 원문 노트나 작업 입력을 넣지 않는다.
+
+경로 필터는 [폴더별 접근 제어](access-control.md)를 따른다. 같은 발행 이벤트라도 구독자마다 `paths`가 다르므로 페이로드를 공통 캐시로 다시 공유하지 않는다. 인덱스·dreaming 상태 이벤트는 원문을 전달하지 않는 변경 신호이며 실제 조회 결과에서 다시 접근 정책을 적용한다.
 
 `GET /api/events`는 인증 후 `text/event-stream`으로 응답한다. 각 변경은 `id: <seq>`, `event: <type>`, `data: <JSON>` 세 줄과 빈 줄로 구분한다. 순번은 프로세스 전체에서 단조 증가한다. 대상 필터 때문에 한 연결에서 순번이 건너뛸 수 있다. 재연결 후에도 같은 프로세스의 순번은 계속되지만 프로세스 재시작 시 초기화한다. 이 연결은 과거 이벤트를 보관하거나 `Last-Event-ID`로 재생하지 않는다.
 

@@ -3,6 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
+import { AclService } from '../acl/acl.service.js';
+import { AuditService } from '../audit/audit.service.js';
+import { UsersRepository } from '../auth/users.repository.js';
+import { UsersService } from '../auth/users.service.js';
 import { loadConfig, type Config } from '../config.js';
 import { openDb, runMigrations, type Db } from '../db/index.js';
 import { ExportService } from '../export/export.service.js';
@@ -54,8 +58,9 @@ async function downloadBytes(service: ExportService, options: { format?: 'zip' |
 
 describe('committed knowledge export', () => {
   it('exports only selected main contents with a pinned manifest and short-SHA filename', async () => {
-    const { config, head } = await fixture();
-    const result = await downloadBytes(new ExportService(config), { prefix: 'wiki/' });
+    const { config, head, db } = await fixture();
+    const users = new UsersService(new UsersRepository(db));
+    const result = await downloadBytes(new ExportService(config, new AclService(db, users, new AuditService(db)), users), { prefix: 'wiki/' });
     const zip = unzipSync(result.bytes);
     expect(Object.keys(zip).sort()).toEqual(['manifest.json', 'wiki/', 'wiki/note.md']);
     expect(strFromU8(zip['wiki/note.md'])).toBe('# Durable note\n\nA committed fact.\n');
@@ -63,8 +68,9 @@ describe('committed knowledge export', () => {
     expect(result.filename).toBe(`llmwiki-${head.slice(0, 12)}.zip`);
   });
   it('exports a usable main-history bundle and refuses traversal or filtered bundles', async () => {
-    const { config, root, head } = await fixture();
-    const service = new ExportService(config);
+    const { config, root, head, db } = await fixture();
+    const users = new UsersService(new UsersRepository(db));
+    const service = new ExportService(config, new AclService(db, users, new AuditService(db)), users);
     const result = await downloadBytes(service, { format: 'bundle' });
     const bundle = join(root, 'export.bundle');
     await writeFile(bundle, result.bytes);

@@ -27,18 +27,18 @@ export class OpsController {
   ) {}
 
   @Get('dreams')
-  listDreams(@Query(new ZodValidationPipe(dreamsQuerySchema)) query: z.infer<typeof dreamsQuerySchema>) {
-    return this.activity.listDreams(query);
+  listDreams(@Query(new ZodValidationPipe(dreamsQuerySchema)) query: z.infer<typeof dreamsQuerySchema>, @CurrentUser() user: User) {
+    return this.activity.listDreams(query, user);
   }
 
   @Get('dreams/:id')
-  getDream(@Param('id', new ZodValidationPipe(idSchema)) id: string) {
-    return this.activity.getDream(id);
+  getDream(@Param('id', new ZodValidationPipe(idSchema)) id: string, @CurrentUser() user: User) {
+    return this.activity.getDream(id, user);
   }
 
   @Get('backup/status')
-  backupStatus() {
-    return this.dreams.backupStatus();
+  backupStatus(@CurrentUser() user: User) {
+    return this.activity.backupStatus(user);
   }
 
   @Get('activity')
@@ -50,8 +50,8 @@ export class OpsController {
   }
 
   @Get('journal')
-  journal() {
-    return this.activity.journal();
+  journal(@CurrentUser() user: User) {
+    return this.activity.journal(user);
   }
 
   @Get('admin/ops')
