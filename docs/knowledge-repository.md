@@ -6,7 +6,7 @@
 
 ## 내용
 ### 저장소 수와 원문 수집 범위
-엔진이 관리하는 지식 저장소는 하나로 고정한다. 텍스트·파일·URL·PDF와 Obsidian·Notion 내보내기를 [수집](ingestion.md)할 수 있다. 원본은 내용 해시별 `raw/<sha256>/` 아래에 불변으로 저장하고, 추출한 마크다운도 같은 디렉터리에 둔다. 같은 원본 경로는 덮어쓰지 않는다. 일반 웹·채팅의 바이너리 첨부는 `assets/`에 저장하고, 원본 수집의 바이너리만 import 작업이 `raw/`에 기록한다.
+엔진이 관리하는 지식 저장소는 하나로 고정한다. 텍스트·파일·URL·PDF와 Obsidian·Notion 내보내기를 [수집](ingestion.md)할 수 있다. 원본은 내용 해시별 `raw/<sha256>/original/<filename>`에 불변으로 저장한다. ZIP에서 추출한 노트와 첨부는 `raw/<sha256>/extracted/<kind>/files/<vault-path>`에, 추출 본문이나 볼트 노트 목록과 출처는 `raw/<sha256>/imports/<importId>.md`에 저장한다. 같은 원본 경로는 덮어쓰지 않으며, 반복 수집은 git blob ID로 바이트가 같은 원본을 재사용한다. 일반 웹·채팅의 바이너리 첨부는 `assets/`에 저장하고, 원본 수집의 바이너리만 import 작업이 `raw/`에 기록한다.
 
 ### main과 GitHub 백업
 지식 저장소의 기본 브랜치는 `main`이며, main이 진실 원천이다. GitHub는 사실상 백업으로 사용하고, push는 dreaming 후 하루 한 번 수행한다. 서버 디스크를 잃으면 최대 하루치 변경이 사라질 수 있으며, 사용자는 이 손실 범위를 수용했다.
@@ -55,7 +55,10 @@ main과 과거 커밋의 읽기는 작업 디스크 파일을 직접 읽지 않�
 ```text
 .
 ├── raw/
-│   └── <sha256>/     # 불변 원본 및 추출 마크다운
+│   └── <sha256>/
+│       ├── original/<filename>
+│       ├── extracted/<kind>/files/<vault-path>
+│       └── imports/<importId>.md
 ├── assets/          # 일반 첨부 바이너리
 ├── wiki/
 ├── index.md
