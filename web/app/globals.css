@@ -2,6 +2,8 @@
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
 
+@custom-variant dark (&:where(.dark, .dark *));
+
 @font-face { font-family: "LINE Seed Sans KR"; font-style: normal; font-weight: 400; font-display: swap; src: url("/fonts/LINESeedKR-Regular.woff2") format("woff2"); }
 @font-face { font-family: "LINE Seed Sans KR"; font-style: normal; font-weight: 700; font-display: swap; src: url("/fonts/LINESeedKR-Bold.woff2") format("woff2"); }
 @font-face { font-family: "Geist Mono"; font-style: normal; font-weight: 100 900; font-display: swap; src: url("/fonts/GeistMono-Variable.woff2") format("woff2"); }
@@ -16,17 +18,17 @@
   --color-popover: var(--card);
   --color-popover-foreground: var(--foreground);
   --color-primary: var(--primary);
-  --color-primary-foreground: #fff;
-  --color-secondary: #fafafa;
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
   --color-secondary-foreground: var(--foreground);
-  --color-muted: #f5f5f5;
-  --color-muted-foreground: #666;
-  --color-accent: rgb(0 0 0 / 0.05);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
   --color-accent-foreground: var(--foreground);
-  --color-destructive: #c52a31;
-  --color-border: rgb(0 0 0 / 0.08);
-  --color-input: rgb(0 0 0 / 0.15);
-  --color-ring: #0070f3;
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
   --radius-sm: .25rem;
   --radius-md: .375rem;
   --radius-lg: .5rem;
@@ -47,12 +49,14 @@
   --text-copy-14--line-height: 1.5rem;
 }
 
-:root { color-scheme: light; --background: #fff; --foreground: #171717; --card: #fff; --primary: #171717; --radius: .5rem; }
+:root { color-scheme: light; --background: #fff; --foreground: #171717; --card: #fff; --primary: #171717; --primary-foreground: #fff; --secondary: #fafafa; --muted: #f3f3f3; --muted-foreground: #5f5f5f; --accent: #eaeaea; --destructive: #ba202a; --border: #dedede; --input: #bdbdbd; --ring: #0069d9; --link: #0069d9; --code-background: #f5f5f5; --diff-added: #e7f5ec; --diff-added-foreground: #175b32; --diff-removed: #fce9e9; --diff-removed-foreground: #9f2424; --radius: .5rem; }
+.dark { color-scheme: dark; --background: #171717; --foreground: #f0f0f0; --card: #1e1e1e; --primary: #f0f0f0; --primary-foreground: #171717; --secondary: #1d1d1d; --muted: #282828; --muted-foreground: #b3b3b3; --accent: #303030; --destructive: #ff838a; --border: #3d3d3d; --input: #5a5a5a; --ring: #79b8ff; --link: #79b8ff; --code-background: #222; --diff-added: #173c28; --diff-added-foreground: #a4e8bd; --diff-removed: #492424; --diff-removed-foreground: #ffb0b0; }
 @layer base {
   * { @apply border-border outline-ring/50; }
   html { @apply bg-background font-sans antialiased; }
   body { @apply min-h-screen bg-background text-foreground; margin: 0; }
   button:not(:disabled), [role="button"]:not(:disabled) { cursor: pointer; }
+  :focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
   code, pre, kbd, samp { @apply font-mono; font-variant-ligatures: none; }
 }
 
@@ -61,14 +65,30 @@
 .markdown h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -.02em; }
 .markdown h2 { font-size: 1.25rem; font-weight: 700; margin-top: 2rem; }
 .markdown h3 { font-size: 1rem; font-weight: 700; margin-top: 1.5rem; }
-.markdown a { color: #0070f3; text-decoration: underline; text-underline-offset: 3px; }
+.markdown a { color: var(--link); text-decoration: underline; text-underline-offset: 3px; }
 .markdown ul { list-style: disc; padding-left: 1.5rem; }
 .markdown ol { list-style: decimal; padding-left: 1.5rem; }
-.markdown blockquote { border-left: 3px solid #ddd; padding-left: 1rem; color: #666; }
-.markdown pre { background: #fafafa; border: 1px solid rgb(0 0 0 / .08); border-radius: .5rem; padding: 1rem; overflow: auto; }
-.markdown :not(pre) > code { border-radius: .25rem; background: #f5f5f5; padding: .15rem .3rem; font-size: .8125rem; }
+.markdown blockquote { border-left: 3px solid var(--input); padding-left: 1rem; color: var(--muted-foreground); }
+.markdown pre { background: var(--code-background); color: var(--foreground); border: 1px solid var(--border); border-radius: .5rem; padding: 1rem; overflow: auto; }
+.markdown :not(pre) > code { border-radius: .25rem; background: var(--muted); padding: .15rem .3rem; font-size: .8125rem; }
 .markdown table { display: block; overflow-x: auto; border-collapse: collapse; }
-.markdown th, .markdown td { border: 1px solid #ddd; padding: .5rem .75rem; text-align: left; }
-.markdown th { background: #fafafa; }
+.markdown th, .markdown td { border: 1px solid var(--border); padding: .5rem .75rem; text-align: left; }
+.markdown th { background: var(--secondary); }
 .markdown hr { margin-block: 1.5rem; }
 .markdown img { max-width: 100%; border-radius: .5rem; }
+
+.explorer-row { display: flex; align-items: center; gap: .5rem; border-radius: .25rem; padding: .45rem .5rem; font-size: .8125rem; text-align: left; }
+.explorer-row:hover { background: var(--accent); }
+.workspace-dialog { margin: 12vh auto auto; }
+.workspace-dialog::backdrop, .workspace-drawer::backdrop { background: rgb(0 0 0 / .45); }
+.workspace-drawer:not([open]) { display: none; }
+[cmdk-item] { display: flex; align-items: center; gap: .75rem; padding: .625rem .75rem; border-radius: .25rem; font-size: .875rem; cursor: pointer; }
+[cmdk-item][data-selected="true"] { background: var(--accent); color: var(--foreground); }
+[cmdk-group-heading] { padding: .5rem .75rem; font-size: .75rem; color: var(--muted-foreground); }
+[cmdk-group][hidden] { display: none; }
+.diff-added, [data-diff="added"] { background: var(--diff-added); color: var(--diff-added-foreground); }
+.diff-removed, [data-diff="removed"] { background: var(--diff-removed); color: var(--diff-removed-foreground); }
+.dark .bg-emerald-50 { background-color: var(--diff-added); }
+.dark .text-emerald-800 { color: var(--diff-added-foreground); }
+.dark .bg-red-50 { background-color: var(--diff-removed); }
+.dark .text-red-800 { color: var(--diff-removed-foreground); }

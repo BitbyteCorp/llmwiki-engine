@@ -1,4 +1,4 @@
-import { noteHref } from '@/components/common'
+import { slug } from 'github-slugger'
 
 export const WIKILINK_PREFIX = '#llmwiki-note='
 
@@ -43,26 +43,45 @@ export function remarkWikilinks() {
   }
 }
 
-export function markdownNoteHref(href: string, currentPath?: string): string | null {
-  if (/^[a-z][a-z\d+.-]*:/i.test(href) || href.startsWith('//')) return null
-  const file = href.split(/[?#]/, 1)[0]
-  let decoded: string
-  try {
-    decoded = decodeURIComponent(file)
-  } catch {
-    return null
-  }
-  if (!/\.md$/i.test(decoded) || /[\\\u0000-\u001f]/.test(decoded) || /^[a-z][a-z\d+.-]*:/i.test(decoded) || decoded.startsWith('//')) return null
-  const segments = decoded.startsWith('/') ? [] : (currentPath?.split('/').slice(0, -1) ?? [])
-  for (const segment of decoded.split('/')) {
+export interface NoteTarget { path: string; fragment?: string }
+
+export function headingFragment(value: string): string {
+  try { return slug(decodeURIComponent(value)) } catch { return slug(value) }
+}
+
+function normalizePath(value: string, base: string[]): string | null {
+  if (/[\\\u0000-\u001f]/.test(value) || /^[a-z][a-z\d+.-]*:/i.test(value) || value.startsWith('//')) return null
+  const segments = [...base]
+  for (const segment of value.split('/')) {
     if (!segment || segment === '.') continue
     if (segment === '..') {
       if (!segments.length) return null
       segments.pop()
     } else {
-      if (segment === '.git') return null
+      if (segment.toLowerCase() === '.git') return null
       segments.push(segment)
     }
   }
-  return segments.length ? noteHref(segments.join('/')) : null
+  return segments.length ? segments.join('/') : null
+}
+
+export function wikiTarget(name: string, currentPath?: string): { name: string; fragment?: string; local: boolean } | null {
+  const separator = name.indexOf('#')
+  const file = (separator < 0 ? name : name.slice(0, separator)).trim()
+  const fragment = separator < 0 ? undefined : headingFragment(name.slice(separator + 1).trim())
+  if (!file) return currentPath ? { name: currentPath, fragment, local: true } : null
+  const relative = /^\.{1,2}\//.test(file)
+  const normalized = normalizePath(file, relative ? (currentPath?.split('/').slice(0, -1) ?? []) : [])
+  return normalized ? { name: normalized, fragment, local: false } : null
+}
+
+export function markdownNoteTarget(href: string, currentPath?: string): NoteTarget | null {
+  if (/^[a-z][a-z\d+.-]*:/i.test(href) || href.startsWith('//')) return null
+  const file = href.split(/[?#]/, 1)[0]
+  let decoded: string
+  try { decoded = decodeURIComponent(file) } catch { return null }
+  if (!/\.md$/i.test(decoded)) return null
+  const path = normalizePath(decoded, decoded.startsWith('/') ? [] : (currentPath?.split('/').slice(0, -1) ?? []))
+  const hash = href.indexOf('#')
+  return path ? { path, fragment: hash < 0 ? undefined : headingFragment(href.slice(hash + 1)) } : null
 }

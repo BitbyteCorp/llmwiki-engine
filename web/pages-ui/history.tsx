@@ -59,7 +59,7 @@ export function HistoryPage() {
     queryKey: ["jobs", mine],
     queryFn: ({ pageParam }) => api.jobs(mine, pageParam),
     initialPageParam: undefined as string | undefined,
-    getNextPageParam: (lastPage) => lastPage.jobs.length === 30 ? lastPage.jobs.at(-1)?.createdAt : undefined,
+    getNextPageParam: (lastPage) => lastPage.jobs.length === 30 ? lastPage.jobs.at(-1)?.id : undefined,
   })
   const commits = history.data?.pages.flatMap((page) => page.commits) ?? []
   const writeJobs = jobs.data?.pages.flatMap((page) => page.jobs) ?? []
@@ -117,10 +117,10 @@ export function HistoryPage() {
 }
 
 function patchLineClass(line: string) {
-  if (line.startsWith("@@")) return "bg-blue-50 text-blue-800"
+  if (line.startsWith("@@")) return "bg-blue-50 text-blue-800 dark:bg-blue-950/50 dark:text-blue-200"
   if (line.startsWith("+++") || line.startsWith("---") || line.startsWith("diff ") || line.startsWith("index ") || line.startsWith("\\ No newline")) return "bg-muted/40 text-muted-foreground"
-  if (line.startsWith("+")) return "bg-green-50 text-green-800"
-  if (line.startsWith("-")) return "bg-red-50 text-red-800"
+  if (line.startsWith("+")) return "bg-green-50 text-green-800 dark:bg-green-950/50 dark:text-green-200"
+  if (line.startsWith("-")) return "bg-red-50 text-red-800 dark:bg-red-950/50 dark:text-red-200"
   return "text-muted-foreground"
 }
 
