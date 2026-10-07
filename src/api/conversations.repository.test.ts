@@ -32,6 +32,27 @@ afterEach(() => {
 });
 
 describe('ConversationsRepository', () => {
+  it('exposes the running assistant generation to members after reopening without attaching unrelated turns', () => {
+    const conversation = store.create(1);
+    const question = store.addMessage(conversation.id, 1, 'user', 'Question')!;
+    const assistant = store.addMessage(conversation.id, 1, 'assistant', 'Partial', [], { status: 'running' })!;
+    const other = store.addMessage(conversation.id, 1, 'assistant', 'Legacy answer')!;
+    db.prepare(`INSERT INTO generations(id,conversation_id,user_message_id,assistant_message_id,user_id,status,created_at)
+      VALUES(?,?,?,?,?,'running',?)`).run('active-generation', conversation.id, question.id, assistant.id, 1, '2026-10-07T01:00:00.000Z');
+    db.close();
+    db = openDb(join(dir, 'chat.sqlite'));
+    store = new ConversationsRepository(db);
+
+    expect(store.messages(conversation.id, 1)).toEqual([
+      { ...question, generationId: null },
+      { ...assistant, generationId: 'active-generation' },
+      { ...other, generationId: null },
+    ]);
+    expect(store.message(conversation.id, assistant.id, 1)?.generationId).toBe('active-generation');
+    expect(store.messages(conversation.id, 2)).toEqual([]);
+    expect(store.message(conversation.id, assistant.id, 2)).toBeNull();
+  });
+
   it('persists citation objects across reopening, preserving insertion order for equal timestamps', () => {
     const conversation = store.create(1);
     const first = store.addMessage(conversation.id, 1, 'user', 'Question\nwith Unicode 🐈');

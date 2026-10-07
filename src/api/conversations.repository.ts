@@ -6,7 +6,8 @@ import type { Citation } from '../luna/luna.types.js';
 import type { Conversation, Message, MessageContext, Usage } from './conversations.types.js';
 
 type Row = Omit<Message, 'citations' | 'attachments' | 'context' | 'usage'> & { citations: string; attachments: string; context: string | null; usage: string | null };
-const columns = `m.id,m.role,m.content,m.citations,m.attachments,m.context,m.status,m.usage,m.model,m.effort,m.created_at AS createdAt`;
+const columns = `m.id,m.role,m.content,m.citations,m.attachments,m.context,m.status,m.usage,m.model,m.effort,m.created_at AS createdAt,
+  (SELECT g.id FROM generations g WHERE g.assistant_message_id=m.id AND g.conversation_id=m.conversation_id ORDER BY g.rowid DESC LIMIT 1) AS generationId`;
 const decode = (row: Row): Message => ({ ...row, citations: (JSON.parse(row.citations) as Array<Citation | string>).map(c => typeof c === 'string' ? { path: c } : c), attachments: JSON.parse(row.attachments), context: row.context ? JSON.parse(row.context) : null, usage: row.usage ? JSON.parse(row.usage) : null });
 
 @Injectable()

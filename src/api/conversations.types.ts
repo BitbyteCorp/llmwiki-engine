@@ -21,6 +21,7 @@ export interface Message {
   usage: Usage | null;
   model: string | null;
   effort: string | null;
+  generationId?: string | null;
   createdAt: string;
 }
 export interface SubmitMessage {
