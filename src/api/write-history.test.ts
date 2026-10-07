@@ -168,6 +168,37 @@ describe('write and history HTTP acceptance with real Git and SQLite', () => {
     expect(ownJobs.jobs).toHaveLength(2);
   });
 
+  it('lets editors cancel only their queued jobs and retry failed jobs under a new identity with retained provenance', async () => {
+    const queued = jobs.submit({ userId: editor.id, input: 'Cancel this request', source: 'web', client: 'web' });
+    await error(await request(`/jobs/${queued.id}/cancel`, { method: 'POST' }, other), 404, 'not_found');
+    const canceled = await json<{ job: WriteJob }>(await request(`/jobs/${queued.id}/cancel`, { method: 'POST' }), 201);
+    expect(canceled.job).toMatchObject({ id: queued.id, userId: editor.id, status: 'failed', error: 'canceled' });
+    expect((await json<JobDetail>(await request(`/jobs/${queued.id}`))).job).toEqual(canceled.job);
+    await error(await request(`/jobs/${queued.id}/cancel`, { method: 'POST' }), 409, 'job_not_cancelable');
+
+    const running = jobs.submit({ userId: editor.id, input: 'Already running', source: 'mcp' });
+    repository.markRunning(running.id, new Date().toISOString());
+    await error(await request(`/jobs/${running.id}/cancel`, { method: 'POST' }), 409, 'job_not_cancelable');
+    await error(await request(`/jobs/${running.id}/retry`, { method: 'POST' }), 409, 'job_not_retryable');
+
+    const failed = jobs.submit({ userId: editor.id, input: 'Retry the original source', source: 'chat', client: 'conversation-editor' });
+    repository.markFailed(failed.id, 'External model unavailable', new Date().toISOString());
+    await error(await request(`/jobs/${failed.id}/retry`, { method: 'POST' }, other), 404, 'not_found');
+    const retried = await json<{ job: WriteJob }>(await request(`/jobs/${failed.id}/retry`, { method: 'POST' }), 201);
+    expect(retried.job.id).not.toBe(failed.id);
+    expect(retried.job).toMatchObject({
+      userId: editor.id, input: 'Retry the original source', status: 'queued', kind: 'luna',
+      source: 'chat', client: 'conversation-editor', error: null,
+    });
+    const detail = await json<JobDetail>(await request(`/jobs/${retried.job.id}`));
+    expect(detail.events).toEqual([
+      { phase: 'queued', at: expect.any(String), detail: { retryOf: failed.id } },
+    ]);
+    expect((await json<JobDetail>(await request(`/jobs/${failed.id}`))).job).toMatchObject({
+      id: failed.id, status: 'failed', error: 'External model unavailable',
+    });
+  });
+
   it('creates and updates a note while preserving ref snapshots and rejecting stale edits and duplicate creation', async () => {
     const baseSha = (await note('index.md')).updatedSha;
     const created = await put('wiki/Navigation.md', original, baseSha, true);
