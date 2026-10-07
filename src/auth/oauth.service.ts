@@ -226,7 +226,9 @@ export class OAuthService {
     if (!row || row.revoked || row.expires_at <= new Date().toISOString()) throw new InvalidTokenError('Invalid or expired engine token');
     const user = this.users.getById(row.user_id);
     if (!user) throw new InvalidTokenError('User no longer exists');
+    const client = this.repository.getClient(row.client_id);
+    const clientName = client ? (JSON.parse(client.metadata) as ClientMetadata).client_name : undefined;
     return { token, clientId: row.client_id, scopes: ['mcp'], expiresAt: Date.parse(row.expires_at) / 1000,
-      resource: new URL(row.resource), extra: { userId: user.id } };
+      resource: new URL(row.resource), extra: { userId: user.id, clientName: clientName || row.client_id } };
   }
 }

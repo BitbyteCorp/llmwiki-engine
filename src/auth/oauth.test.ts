@@ -13,6 +13,7 @@ import { openDb, runMigrations } from '../db/index.js';
 import { CONFIG, DB, LOGGER } from '../common/tokens.js';
 import { configureApp } from '../common/http/configure-app.js';
 import { HttpExceptionFilter } from '../common/filters/http-exception.filter.js';
+import { AuditModule } from '../audit/audit.module.js';
 import { AuthModule } from './auth.module.js';
 import { UsersService } from './users.service.js';
 import { GOOGLE_ISSUER } from './google-oidc.service.js';
@@ -130,7 +131,7 @@ async function setup(options: { denyGoogle?: boolean; allowedDomains?: string[] 
   })
   class TestDependenciesModule {}
   const module = await Test.createTestingModule({
-    imports: [TestDependenciesModule, AuthModule],
+    imports: [TestDependenciesModule, AuthModule, AuditModule],
     controllers: [ProtectedController],
     providers: [HttpExceptionFilter],
   }).overrideProvider(GOOGLE_ISSUER).useValue(issuer).compile();

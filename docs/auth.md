@@ -87,6 +87,46 @@ sequenceDiagram
     C->>E: 엔진 토큰으로 MCP 접근
 ```
 
+### REST API 토큰
+
+REST 자동화는 `/api/tokens`에서 발급한 `lwk_` 접두사의 Bearer 토큰을 사용한다. 원문은 암호학적 난수이며 DB의 `api_tokens`에는 SHA-256 해시만 저장한다. 토큰은 발급 응답에서 한 번만 표시하며 목록에는 해시와 원문을 포함하지 않는다.
+
+| 경로 | 요청과 응답 | 권한 |
+| --- | --- | --- |
+| `GET /api/tokens` | `{ tokens: ApiToken[] }`을 반환한다. `?all=1`은 모든 소유자의 토큰을 반환한다. | 자기 목록은 로그인 사용자, 전체 목록은 관리자다. |
+| `POST /api/tokens` | `{ name, scopes: ['read' \| 'write'], expiresAt?: ISO시각 \| null }`을 받아 201과 토큰 메타데이터·일회용 `token`을 같은 객체로 반환한다. | 쿠키 세션만 허용한다. API 토큰으로 새 토큰을 발급할 수 없다. |
+| `DELETE /api/tokens/:id` | 해당 토큰을 폐기하고 204를 반환한다. | 소유자 또는 관리자다. |
+
+메타데이터는 `id`, `userId`, `name`, `scopes`, `createdAt`, `expiresAt`, `lastUsedAt`, `revokedAt`다. 만료를 지정하지 않으면 `expiresAt`은 `null`이다. 사용한 토큰은 `lastUsedAt`을 갱신한다. 현재 사용자 역할은 매 요청 다시 조회하며 토큰 발급 당시 역할을 고정하지 않는다.
+
+읽기 요청(GET·HEAD)은 `read`, 변경 요청은 `write` 범위를 요구한다. 범위는 역할을 대체하지 않는다. `viewer`의 `write` 범위 토큰도 편집자 전용 경로에 접근할 수 없다. 유효하지 않거나 만료·폐기된 토큰은 401이며 부족한 범위는 403이다. Bearer 헤더가 있으면 쿠키로 인증을 재시도하지 않는다. MCP OAuth 토큰은 `/mcp` 리소스 전용이며 REST 인증으로 수용하지 않는다. `lwk_` 토큰도 MCP OAuth 인증을 대신하지 않는다.
+
+### CSRF 경계
+
+쿠키로 인증한 POST·PUT·PATCH·DELETE는 `PUBLIC_URL`의 origin과 같은 `Origin` 헤더를 요구한다. `Origin`이 없는 경우에만 `Sec-Fetch-Site: same-origin`을 허용한다. 교차 origin, `null` origin, 출처 헤더가 없는 변경 요청은 403 `csrf_rejected`를 반환한다. Origin은 scheme·host·port를 비교하며 경로를 포함하지 않는다.
+
+이 검사는 관리 변경, 채팅, 로그아웃에도 적용한다. REST Bearer 인증은 브라우저 쿠키에 의존하지 않으므로 CSRF 검사를 면제하지만 Bearer의 유효성과 범위는 별도로 검사한다. 로그아웃은 쿠키를 변경하는 세션 전용 경로이므로 Bearer 헤더로 CSRF 검사를 면제하지 않는다. `/oauth/*`는 OAuth·PKCE·state 검증 규칙을 유지하고 이 세션 CSRF 규칙을 적용하지 않는다.
+
+### 요청 제한과 프록시
+
+`@nestjs/throttler` 저장소는 인증 경로의 IP 예산과 인증된 사용자의 검색·채팅 메시지·쓰기·가져오기 예산을 분리한다. 기본 집계 구간은 `RATE_LIMIT_WINDOW_MS=60000`이며 IP당 인증 요청은 `RATE_LIMIT_AUTH=30`, 사용자별 공유 예산은 `RATE_LIMIT_USER=60`이다. 한도를 초과하면 429 `rate_limited`와 다음 요청까지 기다릴 초 단위 `Retry-After`를 반환한다.
+
+IP 예산은 `/auth/google/login`, `/auth/google/callback`, `/auth/dev-login`, `/oauth/authorize`, `/oauth/register`, `/oauth/token`, `/oauth/revoke`가 공유한다. 사용자 예산은 검색 하위 경로, 채팅 메시지 작성·편집·재생성·재시도, 노트 변경·되돌리기·첨부 저장, 가져오기에 적용한다. MCP의 `search`, `similar_notes`, `write`, `ingest_source` 호출도 같은 사용자 예산을 사용하며 도구 목록·노트 읽기는 제외한다. 제한된 요청을 반복해도 대기 시간이 연장되지 않는다.
+
+기본 `TRUST_PROXY=false`는 전달 IP 헤더를 신뢰하지 않는다. 역방향 프록시에서 `true`를 설정하면 Express의 전달 IP 해석을 사용한다. 이 경우 외부 클라이언트가 서버에 직접 접속하지 못하게 하고 프록시가 전달 헤더를 덮어써야 한다. 각 프로세스의 메모리 제한이므로 여러 인스턴스를 배포하면 인스턴스별로 예산이 적용된다.
+
+### 만료 인증 정리
+
+`AuthCleanupService`는 시작 시와 `AUTH_CLEANUP_INTERVAL_MS=300000`마다 만료 세션, 진행 중 로그인, 일회용 코드, 만료·폐기 토큰을 정리한다. 서버 종료 시 타이머를 해제하며 만료 시각 인덱스를 사용한다. OAuth에서 회전된 리프레시 토큰의 발급 계열에 유효 토큰이 남아 있으면 폐기 기록을 유지한다. 이전 리프레시 토큰으로도 전체 발급 계열을 폐기하는 기존 동작을 보존하기 위한 경계다.
+
+### 감사 기록
+
+전역 `AuditService.record({ actorId, action, target, outcome, summary? })`는 `audit_events`에 변경 행위와 결과를 추가한다. 사용자·역할·설정 변경, API 토큰 생성·폐기와 각 기능의 관리·파괴 작업을 기록한다. 토큰 원문이나 요청 본문은 기록하지 않는다. 삭제된 사용자도 기존 행위자의 숫자 ID를 유지하며 외래 키로 감사 이력을 삭제하지 않는다.
+
+관리자 전용 `GET /api/admin/audit?before=&limit=&actor=&action=`은 `{ events, nextCursor }`를 반환한다. 행은 `{ id, actorId, action, target, outcome, summary, createdAt }`이며 최신 ID부터 정렬한다. `before`는 제외되는 행 ID 문자열, `limit`은 기본 50·최대 200, `actor`는 사용자 ID, `action`은 정확한 행위 문자열 필터다. `nextCursor`는 다음 페이지의 `before`에 전달하며 마지막 페이지는 `null`이다.
+
+HTTP 사용자 관리의 행위 이름은 `user.create`, `user.update`, `user.role`, `user.delete`, `settings.update`이며 결과는 `success` 또는 `failure`다. API 토큰은 `token.create`, `token.revoke`를 기록한다. CLI 사용자 추가·역할 변경은 같은 행위 이름과 `actorId: null`을 사용하고 실패 결과는 `error`다. 권한 가드·검증·서비스 단계에서 거절된 HTTP 관리 변경도 기록하며 한 요청을 중복 기록하지 않는다.
+
 ## 관련 문서
 
 - [MCP](mcp.md)는 인증 후 제공하는 지식 도구와 리소스를 설명한다.

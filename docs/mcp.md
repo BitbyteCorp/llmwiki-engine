@@ -13,43 +13,55 @@ MCP 엔드포인트는 `/mcp`이며, 전송 방식은 Streamable HTTP다. 클라
 
 서버는 **stateless** 방식을 사용한다. 인증을 통과한 POST마다 새 `McpServer`와 `StreamableHTTPServerTransport`를 만들고, `sessionIdGenerator: undefined`와 `enableJsonResponse: true`를 설정한다. 응답 연결이 닫히면 해당 서버와 전송을 정리한다. 응답에 `mcp-session-id`를 발급하지 않으며, 지속적인 MCP 세션이나 SSE 구독을 유지하지 않는다.
 
-각 요청은 `McpController`의 `McpAuthGuard`로 다시 인증하고, `@CurrentUser()`가 전달한 현재 사용자와 역할만 `McpService`의 도구 핸들러에 연결한다. 따라서 이전 요청의 사용자 신원이나 권한을 재사용하지 않으며, 쓰기 작업의 소유자도 현재 요청의 사용자로 기록한다. SDK의 stateless 전송도 클라이언트 간 메시지 ID 충돌을 막기 위해 요청마다 새 전송을 요구한다. 비동기 쓰기 상태는 MCP 세션이 아니라 작업 큐에 보관하므로, 이후 별도 POST에서 `jobId`로 조회한다.
+각 요청은 `McpController`의 `McpAuthGuard`로 다시 인증하고, `@CurrentUser()`가 전달한 현재 사용자·역할과 검증된 OAuth 토큰의 등록 클라이언트 이름을 `McpService`에 연결한다. 이전 요청의 신원이나 권한은 재사용하지 않는다. `write`는 현재 사용자를 소유자로, `source: "mcp"`와 인증된 클라이언트 이름을 작업에 기록한다. 클라이언트가 MCP 초기화 때 보낸 이름을 인증 정보로 신뢰하지 않는다. 비동기 쓰기 상태는 MCP 세션이 아니라 작업 큐에 보관하므로 이후 별도 POST에서 `jobId`로 조회한다.
 
 POST 요청은 `Content-Type: application/json`과 `Accept: application/json, text/event-stream`을 보낸다. JSON 응답을 선택한 서버라도 SDK가 두 미디어 타입을 모두 지원하는 `Accept` 헤더를 요구한다. 인증을 통과한 GET과 DELETE는 `Allow: POST` 헤더와 HTTP 405를 반환한다. GET으로 SSE를 구독하거나 DELETE로 세션을 종료하는 기능은 제공하지 않는다.
 
-`McpModule`은 인증·검색·지식 저장소·쓰기 작업 모듈을 명시적으로 가져온다. `McpService`는 `SearchService`, `KnowledgeRepo`, `WriteJobsService`를 DI로 받아 도구와 서버 지침을 구성하며, `McpController`는 전송의 연결·요청 처리·응답 종료 시 정리를 담당한다. Nest의 JSON 파서가 요청 본문을 먼저 읽으므로, 컨트롤러는 원래 Express 요청·응답과 이미 해석한 `req.body`를 함께 `transport.handleRequest`에 전달한다. SDK가 소비된 요청 스트림을 다시 읽게 하지 않는다.
+MCP와 REST 가져오기(`/api/imports`)의 JSON 요청 본문 상한은 21 MiB다. 수집 원문의 UTF-8 상한 20 MiB와 메타데이터를 수용하기 위한 전송 경계이며 JSON escaping 뒤 전체 본문도 이 상한을 지켜야 한다. OAuth 본문은 별도로 64 KiB를 유지한다.
+
+`McpModule`은 인증·검색·지식 저장소·쓰기 작업·수집 모듈을 명시적으로 가져온다. `McpService`는 공유 검색·링크·유사도 서비스, `KnowledgeRepo`, `WriteJobsService`, `IngestService`를 DI로 받아 REST와 같은 데이터와 쓰기 파이프라인을 사용한다. `McpController`는 전송의 연결·요청 처리·응답 종료 시 정리를 담당한다. Nest의 JSON 파서가 요청 본문을 먼저 읽으므로 원래 Express 요청·응답과 이미 해석한 `req.body`를 함께 `transport.handleRequest`에 전달한다.
 
 전송의 근거는 [공식 SDK의 stateless 예제](https://github.com/modelcontextprotocol/typescript-sdk/blob/v1.x/src/examples/server/simpleStatelessStreamableHttp.ts)와 [Streamable HTTP 명세](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#streamable-http)에 기록되어 있다.
 
 ### 도구 계약
 
-다섯 도구의 인자는 객체로 전달한다. 아래 반환값은 성공 결과의 데이터 객체다. 서버는 이 객체를 JSON 문자열로 직렬화한 `content: [{ type: "text", text: "..." }]`와 동일한 객체의 `structuredContent`를 함께 반환한다.
+열두 도구의 인자는 객체로 전달한다. 아래 반환값은 성공 결과의 데이터 객체다. 서버는 이 객체를 JSON 문자열로 직렬화한 `content: [{ type: "text", text: "..." }]`와 동일한 객체의 `structuredContent`를 함께 반환한다. `limit`은 1~100의 정수다.
 
 | 도구 | 인자 | 성공 반환값 | 권한과 동작 |
 | --- | --- | --- | --- |
-| `search` | `query: string`은 앞뒤 공백을 제거한 뒤 비어 있지 않아야 한다. 선택 인자 `limit: number`는 1~100의 정수이며, 생략하면 검색 서비스의 기본값 10을 사용한다. | `{ hits: SearchHit[] }` | `viewer`, `editor`, `admin`이 하이브리드 검색을 사용할 수 있다. |
-| `read_note` | `path: string`은 비어 있지 않은 저장소 상대 경로다. 검색이나 목록에서 얻은 경로를 사용한다. | `{ path: string, content: string }` | 모든 역할이 `main`의 노트 전체 마크다운을 읽을 수 있다. 노트가 없으면 도구 오류다. |
+| `search` | `query: string`, 선택 `limit`, `folder`, `tags: string[]`, `from`, `to`, `author`, `kinds: ("wiki"\|"journal"\|"raw"\|"other")[]` | `{ hits: SearchHit[] }` | 모든 역할이 공유 검색 필터를 사용할 수 있다. `query`는 trim 후 비어 있지 않아야 한다. 날짜는 ISO 날짜 또는 시간대가 있는 ISO datetime이며 `from`은 포함, 날짜형 `to`는 해당 UTC 날짜 전체를 포함한다. 작성자·수정 시각은 Git 기준이다. |
+| `read_note` | `path: string`, 선택 `ref: string` | `{ path, content, frontmatter, body, updatedSha, ref }` | 모든 역할이 노트를 읽는다. 생략한 `ref`는 현재 `main`이며, 내용과 두 SHA 필드는 한 커밋으로 고정한다. 과거 경로는 당시 경로를 사용한다. |
 | `list_notes` | 선택 인자 `prefix: string`으로 저장소 상대 경로 접두사를 지정한다. | 접두사를 생략하거나 `""`로 보내면 `{ files: string[], index: string \| null }`을 반환한다. 비어 있지 않은 접두사를 보내면 `{ files: string[] }`만 반환한다. | 모든 역할이 `main`에서 추적하는 마크다운 파일 목록을 볼 수 있다. `index`는 루트 `index.md`의 내용이며, 파일이 없으면 `null`이다. 별도 `index` 도구는 없다. |
+| `note_history` | `path`, 선택 `follow: boolean`, `limit`, `before: string` | `{ commits: CommitInfo[] }` | 모든 역할이 경로 변경 이력을 조회한다. 기본 `follow: true`는 이름 변경 전의 이력까지 따라간다. `before`는 커밋 페이지 커서다. |
+| `get_commit` | `sha`, 선택 `parent: number` | `{ commit, files, patch, truncated }` | 모든 역할이 커밋과 선택 부모 대비 변경을 읽는다. 부모는 1부터 시작하며 기본값은 1이다. 병합 커밋은 부모별 변경이 다를 수 있다. |
+| `compare` | `base`, `head`, 선택 `path` | `{ base, head, files, patch, truncated }` | 모든 역할이 두 커밋을 비교한다. 반환 `base`와 `head`는 해석된 SHA다. |
+| `blame` | `path`, 선택 `ref` | `{ ref, ranges }` | 모든 역할이 줄 범위별 원래 커밋, 작성자, 날짜, 요약과 `jobId`·`source` 출처를 조회한다. |
+| `note_links` | `path` | `{ outgoing, backlinks, unresolved }` | 모든 역할이 연결된 노트의 경로·제목과 해결되지 않은 링크를 조회한다. |
+| `similar_notes` | `path`, 선택 `limit` | `{ notes: [{ path, title, score }] }` | 모든 역할이 인덱스 임베딩 기반 이웃을 조회한다. 호환되는 벡터가 없으면 빈 배열이다. |
+| `ingest_source` | `kind: "url"\|"pdf"\|"text"\|"obsidian"\|"notion"\|"file"`, 선택 `url`, `uploadId`, `text`, `filename`, `instructions` | `{ importId, jobId }` | `editor`, `admin`만 공유 수집 파이프라인을 호출한다. 입력은 `url`, `uploadId`, `text` 중 하나다. `url` 종류는 URL, `text` 종류는 원문, 파일·vault 종류는 업로드 ID를 사용한다. PDF는 URL 또는 업로드 ID를 사용한다. 원본 저장 뒤 Luna 통합 작업이 대기열에 들어가므로 `get_write_status`로 완료를 확인한다. |
 | `write` | `content: string`은 공백만 있는 문자열을 허용하지 않는다. 자연어 편집 지시나 원문을 전달하며, 입력 원문은 그대로 작업에 제출한다. | `{ jobId: string, status: "queued" }` | `editor`, `admin`만 제출할 수 있다. 작업 큐에 등록한 뒤 즉시 반환하며, 저장 완료를 뜻하지 않는다. |
 | `get_write_status` | `jobId: string`은 비어 있지 않은 작업 식별자다. | `{ job: WriteJob }` | 모든 역할이 자기 작업만 조회할 수 있으며, `admin`은 모든 사용자의 작업을 조회할 수 있다. 존재하지 않거나 조회 권한이 없는 작업은 같은 도구 오류를 반환한다. |
 
 검색의 인덱스와 결과 구성은 [RAG](rag.md)에 기록한다.
 
-`SearchHit`에는 `path`, `title`, `heading`, `snippet`, `score`, `kind`, `related`가 들어 있다. `kind`는 `wiki`, `journal`, `raw`, `other` 중 하나이며, `related`는 관련 노트 경로 배열이다. 검색 스니펫만으로 판단하지 않고 `read_note`로 관련 노트 전체를 읽는다.
+`SearchHit`에는 `path`, `title`, `heading`, `anchor`, `excerpt`, `highlights`, `tags`, `updatedAt`, `snippet`, `score`, `kind`, `related`가 들어 있다. `anchor`는 제목의 GitHub 방식 slug이며 제목이 없으면 `null`이다. `highlights`는 `excerpt` 안의 강조 범위다. 검색 스니펫만으로 판단하지 않고 `read_note`로 관련 노트 전체를 읽는다. 검색·연결·유사도의 인덱스 의미는 [RAG](rag.md)를 따른다.
+
+`get_commit`과 `compare`의 `patch`는 최대 32,000자다. 초과하면 `truncated: true`를 반환하지만 커밋·변경 파일 메타데이터는 유지한다. 잘린 패치를 완전한 변경으로 해석하지 않는다. 큰 비교는 `path`로 좁히거나 두 버전의 `read_note`를 사용한다. 커밋 메타데이터와 줄 출처의 자세한 계약은 [지식 저장소](knowledge-repository.md)를 따른다.
 
 `WriteJob`은 다음 필드를 반환한다.
 
 | 필드 | 타입과 의미 |
 | --- | --- |
-| `id`, `userId`, `source`, `input` | 작업 ID 문자열, 제출자 ID 숫자, 제출 경로(`mcp` 또는 `dreaming`), 입력 원문 문자열이다. `write`로 제출한 작업의 `source`는 `mcp`다. |
+| `id`, `userId`, `kind`, `source`, `client`, `input` | 작업 ID, 제출자 ID, 작업 종류, 제출 경로, 인증된 클라이언트 이름(없으면 `null`), 입력 원문이다. `write`는 `kind: "luna"`, `source: "mcp"`다. 수집의 통합 작업은 `source: "import"`다. |
 | `status` | `queued`, `running`, `merging`, `succeeded`, `failed` 중 하나다. |
 | `summary`, `error` | 결과 요약과 실패 원인으로, 각각 문자열 또는 `null`이다. |
 | `commits`, `mergeSha` | 작업 커밋 SHA 문자열 배열과 `main` 반영 SHA 문자열 또는 `null`이다. |
+| `conflicts` | 충돌 경로 문자열 배열이다. |
 | `createdAt`, `startedAt`, `finishedAt` | ISO-8601 UTC 시각 문자열이다. 시작·종료 전에는 `startedAt`, `finishedAt`이 각각 `null`이다. |
 
 ### 도구 오류와 권한
 
-인증 실패 같은 HTTP 계층의 오류와 도구 실행 결과를 구별한다. 인증된 `viewer`가 `write`를 호출하면 HTTP 403이 아니라 MCP 도구 결과의 `isError: true`와 설명 텍스트를 받는다. 노트가 없거나 입력 스키마가 유효하지 않은 경우, 도구 실행 중 예외가 발생한 경우에도 `isError: true`를 반환한다. SDK는 입력 검증 실패와 도구 핸들러의 예외를 이 도구 오류 형식으로 변환한다. 오류 결과에는 성공 데이터의 `structuredContent`를 제공하지 않는다.
+인증 실패 같은 HTTP 계층의 오류와 도구 실행 결과를 구별한다. 인증된 `viewer`가 `write`나 `ingest_source`를 호출하면 HTTP 403이 아니라 MCP 도구 결과의 `isError: true`와 설명 텍스트를 받는다. 노트가 없거나 입력 스키마가 유효하지 않은 경우, 유효하지 않은 Git ref·부모 번호, 도구 실행 중 예외에도 `isError: true`를 반환한다. 오류 결과에는 성공 데이터의 `structuredContent`를 제공하지 않는다. 리소스나 프롬프트 요청 오류는 MCP 프로토콜 오류로 반환한다.
 
 `get_write_status`는 작업이 없는 경우와 다른 사용자의 작업이라 접근할 수 없는 경우 모두 같은 `Write job not found.` 오류를 반환한다. 비관리자에게 다른 사용자의 작업 존재 여부를 드러내지 않기 위한 동작이다. 이 소유자 제한은 상태 조회에 적용되며, 저장 완료된 위키 지식은 모든 위키 독자에게 공유된다.
 
@@ -58,6 +70,26 @@ POST 요청은 `Content-Type: application/json`과 `Accept: application/json, te
 클라이언트 LLM은 완성된 저장소 편집 결과가 아니라 자연어 지시나 원문을 `write`에 보낸다. Luna가 관련 지식을 찾고 기존 노트를 확장할지 새 노트를 만들지 결정한다. 예를 들어 기존 지식에 덧붙일 내용을 제출해도 클라이언트가 대상 노트와 편집 방식을 미리 확정할 필요는 없다. 작업 워크트리부터 반영 완료까지의 절차는 [쓰기 흐름](write-flow.md)을 따른다.
 
 `write` 응답의 `jobId`를 보관하고 `get_write_status`를 반복 호출해 완료를 확인한다. `queued`는 대기, `running`은 작성 중, `merging`은 `main` 반영 중이며, `succeeded`와 `failed`가 종료 상태다. `succeeded`를 확인하기 전에는 저장되었다고 말하지 않는다. `failed`이면 반환된 `error`를 확인한다. 이 과정은 SSE 알림이나 세션 유지 없이 별도 상태 조회로 이루어진다.
+
+### 리소스와 프롬프트
+
+리소스는 읽기 전용이며 현재 `main`의 상태를 읽는다. `resources/list`는 고정 리소스와 실제 노트 URI를 함께 제공한다.
+
+| 이름 | URI | 내용 |
+| --- | --- | --- |
+| `index` | `llmwiki://index` | `{ files: string[] }`, `application/json`이다. REST 트리처럼 추적된 마크다운 경로를 반환한다. |
+| `note` | `llmwiki://notes/{+path}` | 노트 전체 마크다운이다. `/`는 폴더 구분자로 유지하고 각 경로 조각의 공백·`%`·`#`·한글 등은 percent-encoding한다. 목록에서 받은 URI를 그대로 사용하는 것이 안전하다. 경로는 한 번 디코딩한 뒤 저장소의 경로 격리 검증을 거친다. |
+
+`resources/templates/list`는 `llmwiki://notes/{+path}` 템플릿을 제공한다. 루트 `index.md` 원문은 `llmwiki://notes/index.md` 또는 `read_note`로 읽는다. 과거 버전은 리소스 대신 `read_note`의 `ref`를 사용한다.
+
+`prompts/list`와 `prompts/get`은 다음 사용 흐름을 제공한다. 프롬프트는 지침일 뿐 도구를 자동 실행하거나 역할을 승격하지 않는다.
+
+| 프롬프트 | 필수 문자열 인자 | 흐름 |
+| --- | --- | --- |
+| `research_topic` | `topic` | 검색·전체 노트·링크·유사 노트로 조사하고 경로와 제목 anchor를 인용하며 지식과 추론을 구분한다. |
+| `capture_knowledge` | `content` | 기존 지식을 확인하고 민감·일시 정보를 제외한 뒤 `write` 또는 `ingest_source`로 제출하고 완료 상태를 확인한다. |
+| `review_note_history` | `path` | 이름 변경 추적 이력, 부모별 커밋, 비교, blame, 과거 노트로 변경과 출처를 검토하며 잘린 패치의 한계를 명시한다. |
+
 
 ### 서버 지침과 개인정보 경계
 

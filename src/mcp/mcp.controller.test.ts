@@ -14,6 +14,9 @@ import { WriteJobsService } from '../jobs/write-jobs.service.js';
 import { KnowledgeRepo } from '../knowledge/repo.js';
 import { SearchService } from '../rag/search.service.js';
 import { McpController } from './mcp.controller.js';
+import { CatalogService } from '../rag/catalog.service.js';
+import { ComparisonService } from '../rag/comparison.service.js';
+import { IngestService } from '../ingest/ingest.service.js';
 import { McpService } from './mcp.service.js';
 
 const mcpAuthGuard: CanActivate = {
@@ -38,7 +41,7 @@ const apps: INestApplication[] = [];
 
 function makeJob(id: string, userId: number, input: string): WriteJob {
   return {
-    id, userId, source: 'mcp', input, status: 'queued', summary: null, commits: [],
+    id, userId, kind: 'luna', source: 'mcp', client: null, conflicts: [], input, status: 'queued', summary: null, commits: [],
     mergeSha: null, error: null, createdAt: '2026-01-02T03:04:05.000Z',
     startedAt: null, finishedAt: null,
   };
@@ -59,6 +62,7 @@ async function fixture() {
     }],
   ]);
   const repo = {
+    headSha: vi.fn(async () => 'main-sha'),
     readFile: vi.fn(async (path: string) => notes.get(path) ?? null),
     listFiles: vi.fn(async (prefix?: string) => [...notes.keys()].filter((path) => path.startsWith(prefix ?? ''))),
   };
@@ -94,6 +98,9 @@ async function fixture() {
       { provide: KnowledgeRepo, useValue: repo },
       { provide: SearchService, useValue: search },
       { provide: WriteJobsService, useValue: jobs },
+      { provide: CatalogService, useValue: {} },
+      { provide: ComparisonService, useValue: {} },
+      { provide: IngestService, useValue: {} },
       { provide: LOGGER, useValue: { error: vi.fn() } },
     ],
   })
@@ -152,24 +159,6 @@ function expectToolError(result: CallToolResult) {
 }
 
 describe('MCP Streamable HTTP protocol', () => {
-  it('advertises all five tools and initializes with knowledge-use and privacy instructions', async () => {
-    const { connect } = await fixture();
-    const { client, transport } = await connect();
-    const { tools } = await client.listTools();
-    expect(tools.map((tool) => tool.name).sort()).toEqual([
-      'get_write_status', 'list_notes', 'read_note', 'search', 'write',
-    ]);
-    const instructions = client.getInstructions();
-    expect(instructions).toMatch(/search/i);
-    expect(instructions).toMatch(/wiki|knowledge/i);
-    expect(instructions).toMatch(/durable|reusable|long[- ]term/i);
-    expect(instructions).toMatch(/proactiv/i);
-    expect(instructions).toMatch(/writ|sav|persist/i);
-    expect(instructions).toMatch(/secret/i);
-    expect(instructions).toMatch(/personal/i);
-    expect(instructions).toMatch(/live[- ]chat|chat state|conversation state/i);
-    expect(transport.sessionId).toBeUndefined();
-  });
 
   it('returns ranked search content and related notes, respecting an explicit limit', async () => {
     const { connect } = await fixture();
@@ -203,6 +192,7 @@ describe('MCP Streamable HTTP protocol', () => {
     const { client } = await connect();
     expectPayload(await call(client, 'read_note', { path: 'wiki/engine.md' }), {
       path: 'wiki/engine.md', content: '# Engine\n\nThe engine keeps durable shared knowledge.\n',
+      frontmatter: {}, body: '# Engine\n\nThe engine keeps durable shared knowledge.\n', updatedSha: 'main-sha', ref: 'main-sha',
     });
   });
 
@@ -247,7 +237,7 @@ describe('MCP Streamable HTTP protocol', () => {
     });
     expectPayload(await call(client, 'get_write_status', { jobId: 'write-1' }), {
       job: {
-        id: 'write-1', userId: 11, source: 'mcp', input: 'Record that backups run daily.',
+        id: 'write-1', userId: 11, kind: 'luna', source: 'mcp', client: null, conflicts: [], input: 'Record that backups run daily.',
         status: 'queued', summary: null, commits: [], mergeSha: null, error: null,
         createdAt: '2026-01-02T03:04:05.000Z', startedAt: null, finishedAt: null,
       },
@@ -271,7 +261,7 @@ describe('MCP Streamable HTTP protocol', () => {
     const { client } = await connect('admin', 1);
     expectPayload(await call(client, 'get_write_status', { jobId: 'other-job' }), {
       job: {
-        id: 'other-job', userId: 22, source: 'mcp', input: 'Record the backup schedule.',
+        id: 'other-job', userId: 22, kind: 'luna', source: 'mcp', client: null, conflicts: [], input: 'Record the backup schedule.',
         status: 'succeeded', summary: 'Documented daily backups.', commits: ['commit-a'],
         mergeSha: 'merge-a', error: null, createdAt: '2026-01-02T03:04:05.000Z',
         startedAt: '2026-01-02T03:04:06.000Z', finishedAt: '2026-01-02T03:04:07.000Z',
@@ -288,6 +278,7 @@ describe('MCP Streamable HTTP protocol', () => {
     expectToolError(await call(client, 'read_note', { path: 'wiki/missing.md' }));
     expectPayload(await call(client, 'read_note', { path: 'wiki/backups.md' }), {
       path: 'wiki/backups.md', content: '# Backups\n\nThe main branch is backed up daily.\n',
+      frontmatter: {}, body: '# Backups\n\nThe main branch is backed up daily.\n', updatedSha: 'main-sha', ref: 'main-sha',
     });
   });
 

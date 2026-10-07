@@ -1,5 +1,6 @@
 import type { INestApplicationContext } from '@nestjs/common';
 import type { Command } from 'commander';
+import { AuditService } from '../audit/audit.service.js';
 import { UsersService } from './users.service.js';
 import { UserServiceError, type Role } from './users.types.js';
 
@@ -14,16 +15,32 @@ export function registerAuthCommands(
     .option('--name <name>', 'Display name')
     .action(async (email: string, options: { role: Role; name?: string }) => {
       const app = await getApp();
-      console.log(JSON.stringify(app.get(UsersService).create({ email, role: options.role, name: options.name }), null, 2));
+      const audit = app.get(AuditService);
+      try {
+        const user = app.get(UsersService).create({ email, role: options.role, name: options.name });
+        audit.record({ actorId: null, action: 'user.create', target: email, outcome: 'success', summary: options.role });
+        console.log(JSON.stringify(user, null, 2));
+      } catch (error) {
+        audit.record({ actorId: null, action: 'user.create', target: email, outcome: 'error' });
+        throw error;
+      }
     });
   users.command('role <email> <role>')
     .description('Change a user role')
     .action(async (email: string, role: Role) => {
       const app = await getApp();
       const service = app.get(UsersService);
-      const user = service.getByEmail(email);
-      if (!user) throw new UserServiceError(404, 'not_found', 'User not found');
-      console.log(JSON.stringify(service.update(user.id, { role }), null, 2));
+      const audit = app.get(AuditService);
+      try {
+        const user = service.getByEmail(email);
+        if (!user) throw new UserServiceError(404, 'not_found', 'User not found');
+        const updated = service.update(user.id, { role });
+        audit.record({ actorId: null, action: 'user.role', target: email, outcome: 'success', summary: role });
+        console.log(JSON.stringify(updated, null, 2));
+      } catch (error) {
+        audit.record({ actorId: null, action: 'user.role', target: email, outcome: 'error' });
+        throw error;
+      }
     });
   users.command('list')
     .description('List registered users')

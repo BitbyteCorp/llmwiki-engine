@@ -6,6 +6,7 @@ import type { Config } from '../config.js';
 import type { Db } from '../db/index.js';
 import { UsersService } from './users.service.js';
 import type { User } from './users.types.js';
+import { assertSameOrigin } from './csrf.js';
 
 const SESSION_COOKIE = 'llmwiki_session';
 const SESSION_TTL = 30 * 24 * 60 * 60 * 1000;
@@ -19,6 +20,10 @@ export class SessionsService {
     @Inject(DB) private readonly db: Db,
     private readonly users: UsersService,
   ) {}
+
+  assertSameOrigin(req: Request): void {
+    assertSameOrigin(req, this.config.publicUrl);
+  }
 
   create(res: Response, user: User): void {
     const id = randomBytes(32).toString('base64url');

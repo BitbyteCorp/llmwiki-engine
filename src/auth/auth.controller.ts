@@ -45,6 +45,8 @@ export class AuthController {
 
   @Post('logout')
   logout(@Req() req: Request, @Res() res: Response): void {
+    // Logout bypasses SessionGuard, but still mutates the ambient cookie session.
+    this.sessions.assertSameOrigin(req);
     this.sessions.destroy(req, res);
     res.status(204).end();
   }
