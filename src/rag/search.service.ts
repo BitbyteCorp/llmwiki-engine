@@ -63,9 +63,10 @@ export class SearchService {
     const limit = opts.limit ?? DEFAULT_LIMIT;
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new RangeError('Search limit must be an integer between 1 and 100');
     const query = q.trim();
+    const policyKey = opts.user ? this.acl.policyKey(opts.user) : 'internal-system';
     const fingerprint = createHash('sha256').update(JSON.stringify([query, opts.kinds, opts.folder,
       opts.tags?.map(normalizeTag).sort(), opts.from, opts.to, opts.author,
-      opts.user ? this.acl.policyKey(opts.user) : 'internal-system'])).digest('hex');
+      policyKey])).digest('hex');
     this.prune(this.snapshots);
     if (opts.cursor) {
       const [id, rawOffset, extra] = opts.cursor.split('.');
@@ -77,12 +78,19 @@ export class SearchService {
       }
       return this.page(snapshot.result, id!, offset, limit);
     }
-    const result = await this.retrieve(query, opts);
+    const result = await this.retrieve(query, opts, policyKey);
+    this.assertPolicy(opts, policyKey);
     if (result.hits.length <= limit) return result;
     const id = randomUUID();
     this.snapshots.set(id, { fingerprint, expires: Date.now() + 300_000, result });
     while (this.snapshots.size > 200) this.snapshots.delete(this.snapshots.keys().next().value!);
     return this.page(result, id, 0, limit);
+  }
+
+  private assertPolicy(opts: SearchOptions, policyKey: string): void {
+    if (opts.user && this.acl.policyKey(opts.user) !== policyKey) {
+      throw new RangeError('Search policy changed; retry the query');
+    }
   }
 
   private page(result: SearchResult, id: string, offset: number, limit: number): SearchResult {
@@ -151,7 +159,7 @@ export class SearchService {
     return [trigram, termRows];
   }
 
-  private async retrieve(query: string, opts: SearchOptions): Promise<SearchResult> {
+  private async retrieve(query: string, opts: SearchOptions, policyKey: string): Promise<SearchResult> {
     const filter = this.filter(opts);
     const channels = query ? this.lexical(query, filter).map((rows) => ({ rows, weight: 1 })) : [];
     let reason: DegradedReason | undefined;
@@ -160,13 +168,16 @@ export class SearchService {
     else if (!this.vectorsMatchConfig()) reason = 'vector_mismatch';
     else if (this.db.prepare(`SELECT 1 FROM chunks c WHERE c.vector_pending=1${filter.sql} LIMIT 1`).get(...filter.params)) reason = 'index_stale';
     if (!reason && this.repo && await this.repo.headSha().catch(() => null) !== this.meta('indexed_sha')) reason = 'index_stale';
+    this.assertPolicy(opts, policyKey);
     if (query && opts.kinds?.length !== 0) {
       const expanded = await this.expand(query);
+      this.assertPolicy(opts, policyKey);
       for (const alias of expanded) channels.push(...this.lexical(alias, filter).map((rows) => ({ rows, weight: 0.35 })));
       if (!reason) {
         let embeddingComplete = false;
         try {
           const [vector] = await embedTexts(this.config, [query]);
+          this.assertPolicy(opts, policyKey);
           embeddingComplete = true;
           const rows = this.db.prepare(`SELECT ${FIELDS} FROM (
             SELECT chunk_id,distance FROM chunk_vectors WHERE embedding MATCH ? AND k=${CANDIDATES}
@@ -175,6 +186,7 @@ export class SearchService {
             .all(Buffer.from(new Float32Array(vector!).buffer), ...filter.params) as ChunkRow[];
           channels.push({ rows, weight: 1 }); hybrid = true;
         } catch (error) {
+          this.assertPolicy(opts, policyKey);
           reason = embeddingComplete || !this.vectorsMatchConfig() ? 'vector_mismatch' : 'embedding_error';
           this.log.warn({ error }, 'Vector retrieval failed; retaining lexical results');
         }
@@ -209,7 +221,9 @@ export class SearchService {
         anchor: chunk.anchor, ...excerptFor(chunk.content, queryTerms), tags: JSON.parse(chunk.tags_json),
         updatedAt: chunk.updated_at, kind: chunk.kind, score: score + Math.min(score * 0.2, evidence), related: [] };
     }).sort((a, b) => b.score - a.score || a.path.localeCompare(b.path, 'en'));
+    this.assertPolicy(opts, policyKey);
     hits = await this.rerank(query, hits);
+    this.assertPolicy(opts, policyKey);
     const related = this.db.prepare(`SELECT target_path AS path FROM links WHERE source_path=? AND target_path IS NOT NULL
       UNION SELECT source_path AS path FROM links WHERE target_path=?`);
     for (const hit of hits) {

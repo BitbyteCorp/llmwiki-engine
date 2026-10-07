@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -184,6 +185,57 @@ describe('ACL-aware RAG HTTP with a real repository and index', () => {
     expect(denied.body.error.code).toBe('not_found');
     await get(`${url}?path=${bridge}`, 'bob').expect(200);
     await get(`${url}?path=${bridge}`, 'admin').expect(200);
+  });
+
+  it.each(['expansion', 'embeddings', 'reranking'])('rejects first-page results when ACL changes during %s', async (stage) => {
+    const reached = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const providerInputs: unknown[] = [];
+    const provider = createServer(async (req, res) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(Buffer.from(chunk));
+      const body = Buffer.concat(chunks).toString('utf8');
+      if (req.url === '/v1/responses') providerInputs.push(JSON.parse(body).input);
+      if (req.url === `/v1/${stage === 'embeddings' ? 'embeddings' : 'responses'}`) {
+        reached.resolve();
+        await release.promise;
+      }
+      const upstream = await fetch(`${fake.url}${req.url!.slice('/v1'.length)}`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body,
+      });
+      res.writeHead(upstream.status, { 'content-type': 'application/json' });
+      res.end(await upstream.text());
+    });
+    await new Promise<void>((resolve) => provider.listen(0, '127.0.0.1', resolve));
+    const address = provider.address();
+    if (!address || typeof address === 'string') throw new Error('Expected provider TCP port');
+    const originalUrl = config.openaiBaseUrl;
+    const originalRerank = config.searchRerank;
+    const originalExpand = config.searchExpand;
+    config.openaiBaseUrl = `http://127.0.0.1:${address.port}/v1`;
+    config.searchRerank = 'llm';
+    config.searchExpand = stage === 'expansion' ? 'llm' : 'off';
+    let revoked: number | undefined;
+    const pending = get('/api/search?q=needle&tags=common&limit=1').then((response) => response);
+    try {
+      await reached.promise;
+      revoked = acl.create({ prefix: 'wiki/public/', subjectType: 'user', subject: String(alice.id), access: 'none' }, admin).id;
+      release.resolve();
+      const response = await pending;
+      expect(response.status).toBe(400);
+      expect(response.body).toMatchObject({ error: { code: 'invalid_search', message: expect.stringContaining('policy changed') } });
+      expect(JSON.stringify(response.body)).not.toContain('Shared needle evidence');
+      if (stage === 'embeddings') expect(providerInputs).toEqual([]);
+      if (stage === 'expansion') expect(providerInputs).toEqual(['needle']);
+    } finally {
+      release.resolve();
+      await pending;
+      if (revoked !== undefined) acl.delete(revoked, admin);
+      config.openaiBaseUrl = originalUrl;
+      config.searchRerank = originalRerank;
+      config.searchExpand = originalExpand;
+      await new Promise<void>((resolve) => { provider.close(() => resolve()); provider.closeAllConnections(); });
+    }
   });
 
   it('preserves snapshots across index changes but invalidates them on policy revisions', async () => {
