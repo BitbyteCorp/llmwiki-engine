@@ -209,6 +209,21 @@ it('parses renames, unusual filenames, full messages, and history cursors', asyn
   await wt.dispose();
 });
 
+it('shows Korean paths in patch headers without octal escapes', async () => {
+  const { dir, repo } = await fixture();
+  await git('git', ['config', 'core.quotePath', 'true'], { cwd: join(dir, 'knowledge') });
+  const wt = await repo.createWorktree('korean-note');
+  const path = 'wiki/한국어-노트.md';
+  await wt.write(path, '# 한국어 노트\n');
+  const sha = (await wt.commit('Add Korean note', author))!;
+
+  const shown = await repo.show(sha);
+  expect(shown.files[0]?.path).toBe(path);
+  expect(shown.patch).toContain(`diff --git a/${path} b/${path}`);
+  expect(shown.patch).not.toMatch(/\\[0-7]{3}/);
+  await wt.dispose();
+});
+
 it('clones an empty remote, seeds main, pushes it, and reopens its tracked state', async () => {
   const { dir } = await fixture();
   const remote = join(dir, 'backup.git');

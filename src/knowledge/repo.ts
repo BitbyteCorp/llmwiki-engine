@@ -61,7 +61,7 @@ class Git {
     return { GIT_AUTHOR_NAME: author.name, GIT_AUTHOR_EMAIL: author.email, GIT_COMMITTER_NAME: this.cfg.gitBotName, GIT_COMMITTER_EMAIL: this.cfg.gitBotEmail };
   }
   async run(cwd: string, args: string[], env: Record<string, string> = {}): Promise<string> {
-    const result = await exec('git', args, { cwd, env: { ...this.env, ...env }, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    const result = await exec('git', ['-c', 'core.quotePath=false', ...args], { cwd, env: { ...this.env, ...env }, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
     return result.stdout;
   }
   async hasRef(cwd: string, ref: string): Promise<boolean> {
