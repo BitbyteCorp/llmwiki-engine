@@ -6,7 +6,7 @@
 
 ## 내용
 ### 저장소 수와 원문 수집 범위
-엔진이 관리하는 지식 저장소는 하나로 고정한다. 원문 수집은 현재 텍스트만 대상으로 하며, 파일·URL·PDF 업로드는 범위 밖이다. 현재 이관할 기존 지식은 없으며, 이관 기능도 범위 밖이다.
+엔진이 관리하는 지식 저장소는 하나로 고정한다. 텍스트·파일·URL·PDF와 Obsidian·Notion 내보내기를 [수집](ingestion.md)할 수 있다. 원본은 내용 해시별 `raw/<sha256>/` 아래에 불변으로 저장하고, 추출한 마크다운도 같은 디렉터리에 둔다. 같은 원본 경로는 덮어쓰지 않는다. 일반 웹·채팅의 바이너리 첨부는 `assets/`에 저장하고, 원본 수집의 바이너리만 import 작업이 `raw/`에 기록한다.
 
 ### main과 GitHub 백업
 지식 저장소의 기본 브랜치는 `main`이며, main이 진실 원천이다. GitHub는 사실상 백업으로 사용하고, push는 dreaming 후 하루 한 번 수행한다. 서버 디스크를 잃으면 최대 하루치 변경이 사라질 수 있으며, 사용자는 이 손실 범위를 수용했다.
@@ -20,23 +20,31 @@
 
 `KNOWLEDGE_REPO_URL`이 있으면 처음 실행할 때 해당 저장소를 클론하고, 없으면 `git init -b main`으로 로컬 전용 저장소를 만든다. 기존 저장소에 main이 있으면 그 브랜치를 사용하고, origin/main만 있으면 로컬 main을 만들며, 다른 브랜치에만 커밋이 있으면 그 HEAD에서 main을 만든다. 빈 저장소는 초기 커밋을 만들어 main이 항상 실제 커밋을 가리키게 한다.
 
-빈 저장소의 초기 파일은 모듈 옆의 `knowledge/seed`에서 복사한다. 개발 실행에서는 `src/knowledge/seed`, 빌드 실행에서는 `dist/knowledge/seed`에 대응하며, 빌드 자산이 없고 소스가 함께 있으면 소스 경로도 확인한다. seed가 없거나 비어 있으면 지식 내용을 임의로 만들지 않고 `raw/`, `wiki/`, `journal/` 디렉터리만 만든 뒤 필요하면 빈 초기 커밋을 남긴다. git은 빈 디렉터리를 추적하지 않으므로 이 경우 새 워크트리에서는 파일을 쓸 때 부모 디렉터리를 만든다. 초기 커밋의 author와 committer는 모두 `GIT_BOT_NAME`과 `GIT_BOT_EMAIL`이다.
+빈 저장소의 초기 파일은 모듈 옆의 `knowledge/seed`에서 복사한다. 개발 실행에서는 `src/knowledge/seed`, 빌드 실행에서는 `dist/knowledge/seed`에 대응하며, 빌드 자산이 없고 소스가 함께 있으면 소스 경로도 확인한다. seed가 없거나 비어 있으면 지식 내용을 임의로 만들지 않고 `raw/`, `wiki/`, `journal/` 디렉터리만 만든 뒤 필요하면 빈 초기 커밋을 남긴다. git은 빈 디렉터리를 추적하지 않으므로 이 경우 새 워크트리에서는 파일을 쓸 때 부모 디렉터리를 만든다. 초기 커밋의 author와 committer는 모두 `GIT_BOT_NAME`과 `GIT_BOT_EMAIL`이고, 작업 식별자는 `initialize`, source는 `dreaming`, requester는 봇 이메일로 기록한다.
 
-`GIT_SSH_KEY_PATH`가 있으면 clone과 push를 포함한 git 명령에 `GIT_SSH_COMMAND`를 적용한다. 지정 키만 쓰도록 `IdentitiesOnly=yes`를 설정하고, `StrictHostKeyChecking=accept-new`로 처음 보는 호스트 키는 등록하되 이미 등록된 키의 변경은 거부한다. git 자체는 셸 문자열이 아니라 `execFile` 인자로 실행한다. 원격 저장소가 없으면 push는 오류가 아니라 `{ pushed: false, reason }` 결과를 반환한다.
+`GIT_SSH_KEY_PATH`가 있으면 clone과 push를 포함한 git 명령에 `GIT_SSH_COMMAND`를 적용한다. 지정 키만 쓰도록 `IdentitiesOnly=yes`를 설정하고, `StrictHostKeyChecking=accept-new`로 처음 보는 호스트 키는 등록하되 이미 등록된 키의 변경은 거부한다. git 자체는 셸 문자열이 아니라 `execFile` 인자로 실행한다. 원격 저장소가 없으면 push는 오류가 아니라 `{ pushed: false, reason }` 결과를 반환한다. 성공한 `pushMain()`은 실제 사용한 `remote`와 원격 main으로 보낸 `sha`를 함께 반환한다.
 
 ### 격리 편집과 복구
 워크트리는 생성 시점의 main 커밋에서 파생하고, 수정·삭제·이동은 해당 워크트리 안에서만 수행한다. 일반 커밋의 author는 요청자이고 committer는 봇이다. 변경이 없는 `commit` 호출도 요청자를 기억하므로, main을 작업 브랜치로 병합하면서 자동으로 생기는 머지 커밋에도 요청자를 기록한다. 충돌 해결을 마친 `finishMerge`는 전달받은 요청자를 author로 기록한다.
 
+`setCommitMetadata({ jobId, source, requester, client? })`는 일반 커밋뿐 아니라 자동 머지와 `finishMerge`에도 같은 작업 출처를 적용한다. 모든 엔진 커밋은 `Wiki-Job`, `Wiki-Source`, `Wiki-Requester` trailer를 남기며 클라이언트가 있으면 `Wiki-Client`도 남긴다. 공용 `commitTrailers` 함수는 본문과 빈 줄로 구분하여 붙이는 trailer 블록을 만든다. 메타데이터를 지정하지 않은 저수준 워크트리 호출은 작업 브랜치 이름과 요청자 이메일을 사용하고 source를 `web`으로 기록한다.
+
 머지는 먼저 작업 브랜치 안에서 `main`을 병합한다. 충돌이 나면 main은 그대로 두고 충돌 파일 목록을 반환한다. 작업 워크트리에서 충돌을 해결하고 머지 커밋을 만든 뒤, 주 클론의 main을 작업 브랜치로 `--ff-only` 전진시킨다. main이 이미 갈라졌다면 fast-forward는 실패한다. 저장소 객체 사이에서도 공유하는 프로세스 단위 Promise 큐가 머지 락을 직렬화하며, 락 안의 작업이 실패해도 다음 작업에 락을 넘긴다. 호출자는 최신 main 병합부터 fast-forward와 인덱스 동기화까지 이 락 안에서 수행한다.
 
-부팅 시 `open`은 전용 워크트리 디렉터리의 남은 작업 워크트리와 `work/` 브랜치를 정리하고 git 워크트리 메타데이터를 prune한다. 크래시로 남은 미커밋 편집과 아직 main에 반영하지 않은 작업 커밋은 복구 대상으로 보존하지 않으며, main은 바꾸지 않는다. 따라서 `open`은 실행 중인 작업을 다시 여는 함수가 아니라 부팅 초기화 함수다.
+부팅 시 `open`은 전용 워크트리 디렉터리의 남은 작업 워크트리와 `work/` 브랜치를 정리하고 git 워크트리 메타데이터를 prune한다. 크래시로 남은 미커밋 편집은 복구 대상으로 보존하지 않으며, main은 바꾸지 않는다. 실패 처리가 `preserveFailed(jobId)`를 호출하면 현재 HEAD를 `refs/wiki/failed/<jobId>`로 보존하므로 작업 워크트리와 브랜치를 제거하거나 재부팅한 뒤에도 실패 커밋을 조회할 수 있다. 따라서 `open`은 실행 중인 작업을 다시 여는 함수가 아니라 부팅 초기화 함수다.
 
 ### 파일 경계와 이력 조회
 모든 파일 경로는 저장소 상대 경로다. 절대 경로, Windows 절대 경로, 역슬래시, NUL, `..` 세그먼트와 `.git` 세그먼트를 거부한다. 워크트리 파일 연산은 기존 경로 구성 요소의 실제 경로를 확인하여 외부로 향하는 심볼릭 링크와 git 메타데이터로 향하는 링크를 거부하며, 끊어진 심볼릭 링크도 거부한다. 내부의 일반 파일로 향하는 링크는 워크트리에서 읽을 수 있다.
 
 main과 과거 커밋의 읽기는 작업 디스크 파일을 직접 읽지 않고 ref를 커밋 SHA로 확정한 뒤 `git ls-tree`와 `git show`로 수행한다. 따라서 아직 머지하지 않은 편집은 읽기에 나타나지 않는다. 저장소의 파일 목록은 해당 ref에서 추적하는 `.md` 일반 파일만 반환하며, 심볼릭 링크는 목록에서 제외하고 파일 읽기도 거부한다. 워크트리의 목록은 충돌 검증과 편집을 위해 아직 추적하지 않는 파일과 마크다운 이외의 일반 파일도 포함한다.
 
-이력의 `sinceSha`는 그 커밋을 제외한 이후 main의 변경을 반환하고, `beforeSha`는 페이지 커서 커밋을 제외한 조상 커밋을 반환한다. 두 조건은 함께 사용할 수 있다. 커밋 상세의 변경 파일과 patch는 첫 번째 부모를 기준으로 비교하며, 초기 커밋은 빈 트리와 비교한다. 변경 파일은 추가·수정·삭제·이동을 구분하고, 이동은 이전 경로와 새 경로를 함께 반환한다. git 출력은 NUL 구분자로 해석하여 경로에 탭·개행·한글이 있어도 이동과 커밋 메시지를 섞지 않는다.
+`fileObjectId(path, ref='main')`는 ref를 확정한 뒤 트리 메타데이터만 조회하여 일반 파일의 Git blob OID를 반환한다. 바이너리를 UTF-8로 디코딩하거나 내용을 git 출력으로 읽지 않으므로 대용량 불변 원본의 중복 수집 및 바이트 동일성 검사에 사용한다. 디렉터리·없는 경로·서브모듈은 null이고 심볼릭 링크는 거부한다. 호출자는 원본 바이트의 Git blob 해시와 OID를 비교하여 불변 원본의 일치를 확인한다. 워크트리의 `hasFile(path)`도 파일 메타데이터만 확인하며 기존 경로와 같은 저장소·심볼릭 링크 경계 규칙을 적용한다.
+
+`resolveRef`는 ref를 실제 커밋 SHA로 확정한다. 이력의 `sinceSha`는 그 커밋을 제외한 이후 변경을 반환하고, `before`(기존 `beforeSha`도 지원)는 페이지 커서 커밋을 제외한 조상 커밋을 반환한다. 두 조건은 함께 사용할 수 있다. `log(path?, { ref, follow, limit, before })`의 `ref`는 조회 시작 커밋을 고정하며 생략하면 main을 사용한다. 인덱서가 이미 읽은 HEAD를 지정하면 이후 main 변경이 해당 스냅샷의 이력에 섞이지 않는다. `follow: true`이면 이동 전 이력까지 추적하며 각 커밋에 당시 `path`와 이동 시 `oldPath`를 반환한다. 페이지 경계가 이동 커밋을 지나도 이전 경로를 유지한다. 기본 limit는 50이고 `null`은 제한 없는 이력 조회다.
+
+`compare(base, head, path?)`는 확정된 두 SHA와 변경 파일, 바이너리도 포함하는 patch를 반환한다. 커밋 상세 `show(sha, parent=1)`는 선택한 부모와 비교하며, 초기 커밋은 빈 트리와 비교한다. 존재하지 않는 부모 번호는 400 오류다. 변경 파일은 추가·수정·삭제·이동을 구분하고 이동은 이전 경로와 새 경로를 함께 반환한다. 커밋에는 author 외에도 `committerName`, `committerEmail`, `committedAt`, `trailers`를 제공한다. `blame(path, ref)`는 확정된 ref와 연속 줄별 범위를 반환하며 같은 커밋의 인접 줄을 묶고 author·날짜·요약 및 `Wiki-Job`/`Wiki-Source`의 출처를 제공한다. git 출력은 NUL 구분자로 해석하여 경로에 탭·개행·한글이 있어도 이동과 커밋 메시지를 섞지 않는다.
+
+워크트리의 `write`는 문자열과 `Buffer`를 받아 바이너리를 변형하지 않는다. `revert(sha, paths?)`는 현재 편집을 index에 올린 뒤 대상 커밋의 첫 부모 기준 바이너리 patch를 역방향으로 index와 파일에 적용하므로 이후 독립 편집을 유지하면서 전체 또는 선택 경로만 되돌릴 수 있다. 머지 커밋도 첫 부모 기준이며 초기 커밋은 빈 트리 기준이다. 자동 적용이 충돌하면 설명을 포함한 `status: 409`, `code: revert_conflict` 오류를 내고 main을 바꾸지 않는다. `diff()`는 현재 파일 변경을 index에 올려 변경 파일과 바이너리 patch를 반환한다. 되돌리기 미리보기는 격리 워크트리에서 이 두 메서드를 호출한 뒤 워크트리를 폐기한다.
 
 모든 git 실행에는 `-c core.quotePath=false`를 붙인다. git은 기본값에서 한글 같은 비ASCII 경로를 `"a/wiki/\355\225\234..."`처럼 8진수로 이스케이프하므로, 이 설정이 없으면 웹 커밋 상세의 diff 머리글이 읽을 수 없는 경로로 보인다. 저장소나 사용자 git 설정에 `core.quotePath=true`가 있어도 엔진 출력은 항상 UTF-8 경로를 그대로 쓴다.
 
@@ -47,6 +55,8 @@ main과 과거 커밋의 읽기는 작업 디스크 파일을 직접 읽지 않�
 ```text
 .
 ├── raw/
+│   └── <sha256>/     # 불변 원본 및 추출 마크다운
+├── assets/          # 일반 첨부 바이너리
 ├── wiki/
 ├── index.md
 ├── journal/
@@ -55,7 +65,7 @@ main과 과거 커밋의 읽기는 작업 디스크 파일을 직접 읽지 않�
 └── AGENTS.md
 ```
 
-- `raw/`는 불변 원문 소스를 담는다.
+- `raw/<sha256>/`는 불변 원문 파일과 추출 마크다운을 담는다. 원문 수집 경로와 해시 규칙은 [수집](ingestion.md)을 따른다.
 - `wiki/`는 Luna가 유지하는 노트를 담으며, frontmatter, 태그, 위키링크를 사용해 Obsidian 볼트로 열 수 있다.
 - `index.md`는 큐레이션된 진입점 색인이며, Obsidian 규칙의 index note 역할도 한다.
 - `journal/YYYY-MM-DD.md`는 dreaming이 날짜별로 쓰는 일기다. LLM Wiki 표준의 `log.md`를 대신하며, 세부 변경 이력은 git 커밋 이력이 담는다.
@@ -84,3 +94,4 @@ Obsidian 규칙의 LiveSync는 사용하지 않으며, git 동기화로 대체�
 - [쓰기 흐름](write-flow.md)과 [dreaming](dreaming.md)은 지식 변경과 정리 절차를 설명한다.
 - [MCP](mcp.md)는 지식의 읽기·쓰기·검색 인터페이스를 설명한다.
 - [RAG](rag.md)는 지식 저장소에서 검색 인덱스를 만드는 방식을 설명한다.
+- [백업·복구](backup.md)는 원격 push와 전체 데이터 복구 절차를 설명한다.

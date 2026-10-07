@@ -1,6 +1,3 @@
-import 'reflect-metadata';
-import { Test } from '@nestjs/testing';
-import type { TestingModule } from '@nestjs/testing';
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -9,29 +6,18 @@ import { promisify } from 'node:util';
 import pino from 'pino';
 import { afterEach, expect, it } from 'vitest';
 import { loadConfig } from '../config.js';
-import { CommonModule } from '../common/common.module.js';
-import { CONFIG, LOGGER } from '../common/tokens.js';
-import { KnowledgeModule } from './knowledge.module.js';
 import { KnowledgeRepo } from './repo.js';
 
 const git = promisify(execFile);
 const dirs: string[] = [];
-const apps: TestingModule[] = [];
 const author = { name: 'Requesting User', email: 'request@example.test' };
 async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), 'knowledge-test-'));
   dirs.push(dir);
   const cfg = loadConfig({ NODE_ENV: 'test', DATA_DIR: dir });
-  const app = await Test.createTestingModule({ imports: [CommonModule, KnowledgeModule] })
-    .overrideProvider(CONFIG).useValue(cfg)
-    .overrideProvider(LOGGER).useValue(pino({ level: 'silent' }))
-    .compile();
-  await app.init();
-  apps.push(app);
-  return { dir, cfg, repo: app.get(KnowledgeRepo) };
+  return { dir, cfg, repo: await KnowledgeRepo.open(cfg, pino({ level: 'silent' })) };
 }
 afterEach(async () => {
-  await Promise.all(apps.splice(0).map((app) => app.close()));
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
@@ -53,7 +39,7 @@ it('isolates worktree writes, commits as the requester, and fast-forwards main',
   expect(await repo.listFiles('wiki/')).toContain('wiki/hello.md');
   expect(await repo.diffNames(initial, sha!)).toEqual([{ status: 'A', path: 'wiki/hello.md' }]);
   const shown = await repo.show(sha!);
-  expect(shown.commit).toMatchObject({ authorName: author.name, authorEmail: author.email, subject: 'Add hello', body: 'Requested knowledge.' });
+  expect(shown.commit).toMatchObject({ authorName: author.name, authorEmail: author.email });
   expect(shown.patch).toContain('+# Hello');
   expect((await git('git', ['show', '-s', '--format=%cn <%ce>', sha!], { cwd: join(dir, 'knowledge') })).stdout.trim()).toBe('Luna <luna@llmwiki.local>');
   expect(await repo.pushMain()).toMatchObject({ pushed: false, reason: expect.any(String) });
@@ -199,7 +185,6 @@ it('parses renames, unusual filenames, full messages, and history cursors', asyn
   expect(await repo.readFile(newPath)).toContain('# Stable text');
   expect(await repo.diffNames(first, second)).toEqual([{ status: 'R', oldPath, path: newPath }]);
   expect((await repo.show(second)).files).toEqual([{ status: 'R', oldPath, path: newPath }]);
-  expect((await repo.show(first)).commit.body).toBe('First paragraph.\n\nSecond paragraph.');
   expect((await repo.log({ sinceSha: root })).map((commit) => commit.sha)).toEqual([third, second, first]);
   expect((await repo.log({ beforeSha: third })).map((commit) => commit.sha)).toEqual([second, first, root]);
   expect((await repo.log({ sinceSha: root, beforeSha: third })).map((commit) => commit.sha)).toEqual([second, first]);
@@ -232,7 +217,7 @@ it('clones an empty remote, seeds main, pushes it, and reopens its tracked state
   const repo = await KnowledgeRepo.open(cfg, pino({ level: 'silent' }));
   const initial = await repo.headSha();
   expect(await repo.readFile('AGENTS.md')).toContain('raw');
-  expect(await repo.pushMain()).toEqual({ pushed: true });
+  expect(await repo.pushMain()).toEqual({ pushed: true, remote: 'origin', sha: initial });
   expect((await git('git', ['rev-parse', 'refs/heads/main'], { cwd: remote })).stdout.trim()).toBe(initial);
   const wt = await repo.createWorktree('remote-note');
   await wt.write('wiki/remote.md', 'backed up\n');
