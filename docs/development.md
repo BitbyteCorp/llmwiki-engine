@@ -133,6 +133,8 @@ DEV_LOGIN_EMAIL=admin@example.com pnpm dev
 
 Next custom server에는 `PUBLIC_URL`의 호스트 이름과 `PORT`를 전달한다. Next 개발 모드는 이 호스트와 `localhost`를 개발 자산·HMR의 허용 origin으로 사용한다. 이를 생략하면 Next가 `localhost:3000`을 기준으로 초기화되어 `127.0.0.1` 같은 설정된 주소에서 HMR 연결이 거절되고 화면이 로딩 상태에 머무를 수 있다. 브라우저에서는 `PUBLIC_URL`에 설정한 호스트로 접근한다.
 
+`pnpm dev`에서 Next 화면은 HMR로 즉시 갱신되지만 Nest 서버 코드(`src/`)와 SQL 마이그레이션은 프로세스 시작 시 한 번만 로드된다. 따라서 서버 코드를 바꾼 뒤 `pnpm dev`를 다시 시작하지 않으면 새 화면이 아직 없는 API를 호출해 Express 기본 404(`Cannot GET /api/...`)를 받는다. 마이그레이션도 재시작할 때 적용된다. `/readyz`가 404면 재시작 전의 서버가 떠 있는 상태다.
+
 빌드된 서버와 웹을 확인할 때는 `pnpm build` 후 `NODE_ENV=production pnpm start`를 사용한다. 이 모드에서는 개발 로그인을 사용할 수 없으므로 Google 로그인 설정이 필요하다. 관리자 권한 복구는 `pnpm cli user role admin@example.com admin`으로 수행한다. 첫 관리자 이후의 사용자·권한·허용 도메인 설정은 웹 관리 화면에서 변경하며 정책은 [인증](auth.md)에 기록한다.
 
 ### Docker 이미지와 영속 볼륨
