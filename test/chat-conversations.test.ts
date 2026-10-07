@@ -188,6 +188,34 @@ describe('conversation consumer contract', () => {
     ]);
   });
 
+  it('completes and replays an editor-started answer to the owner after the editor loses membership', async () => {
+    const f = await fixture([]);
+    const started = Promise.withResolvers<void>();
+    const completion = Promise.withResolvers<void>();
+    vi.spyOn(f.luna, 'answer').mockImplementationOnce(async (_messages, delta) => {
+      delta('Partial');
+      started.resolve();
+      await completion.promise;
+      return { text: 'Finished for remaining members', citations: [] };
+    });
+    const conversation = await f.create();
+    await f.request(`/conversations/${conversation.id}/members`, 'POST', { email: 'user2@example.test', role: 'editor' });
+    const response = await f.request(`/conversations/${conversation.id}/messages`, 'POST', { content: 'Editor question' }, 2);
+    expect(response.status).toBe(200);
+    await started.promise;
+    expect((await f.request(`/conversations/${conversation.id}/members/2`, 'DELETE')).status).toBe(204);
+    completion.resolve();
+    const result = frames(await response.text());
+    const generationId = result.find(frame => frame.event === 'generation')!.data.generationId;
+    const replay = await f.stream(`/generations/${generationId}/events`, 'GET');
+    expect(done(replay)).toMatchObject({ role: 'assistant', status: 'completed', content: 'Finished for remaining members' });
+    expect((await f.detail(conversation.id)).messages.map(message => [message.role, message.content, message.status])).toEqual([
+      ['user', 'Editor question', 'completed'], ['assistant', 'Finished for remaining members', 'completed'],
+    ]);
+    await expectError(await f.request(`/generations/${generationId}/events`, 'GET', undefined, 2), 404, 'not_found');
+    await expectError(await f.request(`/conversations/${conversation.id}`, 'GET', undefined, 2), 404, 'not_found');
+  });
+
   it('keeps a failed partial answer and retries its user turn without duplication or leaking provider errors', async () => {
     const f = await fixture(['Recovered answer']);
     vi.spyOn(f.luna, 'answer').mockImplementationOnce(async (_messages, delta) => {
@@ -242,6 +270,22 @@ describe('conversation consumer contract', () => {
     ]);
     expect(after.messages[0].id).toBe(before.messages[0].id);
     expect(f.fake.requests[2].body.input).toEqual([{ role: 'user', content: 'Correct premise' }]);
+  });
+
+  it('retains a discarded turn clientId so retrying its send cannot resurrect an edited-away conversation branch', async () => {
+    const f = await fixture(['First answer', 'Discarded answer', 'Corrected answer']);
+    const conversation = await f.create();
+    await f.send(conversation.id, { content: 'First question' });
+    const discardedInput = { content: 'Discarded question', clientId: 'discarded-turn' };
+    const discarded = await f.send(conversation.id, discardedInput);
+    const before = await f.detail(conversation.id);
+    await f.stream(`/conversations/${conversation.id}/messages/${before.messages[0].id}`, 'PATCH', { content: 'Corrected question' });
+    const replay = await f.send(conversation.id, discardedInput);
+    expect(replay).toEqual(discarded);
+    expect((await f.detail(conversation.id)).messages.map(message => [message.role, message.content])).toEqual([
+      ['user', 'Corrected question'], ['assistant', 'Corrected answer'],
+    ]);
+    expect(f.fake.requests).toHaveLength(3);
   });
 
   it('hides nonmembers, enforces member roles, and allows a global viewer who owns the conversation to write', async () => {
