@@ -90,7 +90,7 @@ export class IngestService implements OnApplicationBootstrap, OnModuleDestroy {
       }
       const title = extraction.title.replace(/[\r\n]/g, ' ');
       const content = [
-        '---', `title: ${JSON.stringify(title)}`, `import_id: ${JSON.stringify(importId)}`, `kind: ${input.kind}`,
+        '---', `title: ${JSON.stringify(title)}`, `import_id: ${JSON.stringify(importId)}`, `importer: ${userId}`, `kind: ${input.kind}`,
         `source: ${JSON.stringify(source)}`, ...(finalUrl ? [`resolved_url: ${JSON.stringify(finalUrl)}`] : []),
         `sha256: ${sha}`, `filename: ${JSON.stringify(filename)}`, `imported_at: ${JSON.stringify(new Date().toISOString())}`, '---', '',
         `# ${title}`, '', `[Immutable original](<${markdownHref(`../original/${filename}`)}>)`, '',

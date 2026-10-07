@@ -63,7 +63,7 @@ raw/<sha256>/
 └── imports/<importId>.md               # 추출한 본문 또는 볼트 노트 목록과 출처
 ```
 
-출처 Markdown의 frontmatter에는 import ID, 종류, 원래 source, 최종 URL, SHA-256, 파일명과 수집 시간을 기록한다. 본문은 불변 원문 링크와 추출 본문 또는 추출 노트 링크를 포함한다. 모든 새 원문·첨부·출처 Markdown은 `NoteWriterService.apply({ source: 'import', client: 'ingest' })` 한 번으로 커밋한다. 기존 raw 경로는 수정하지 않는다. 동일 원문을 다시 수집하면 git blob ID로 실제 바이트가 같은지 확인하여 기존 불변 자료를 재사용하고 별도의 출처 기록과 통합 작업을 생성한다. 대형 바이너리도 문자열로 읽지 않고 git 메타데이터와 입력 바이트의 blob 해시를 비교한다. 경로가 같으나 기존 바이트가 다르면 `409 raw_conflict`로 거부한다. git 커밋에는 일반 쓰기와 동일한 job/source/requester/client trailer가 들어간다.
+출처 Markdown의 frontmatter에는 import ID, `importer`(수집을 요청한 사용자의 숫자 ID), 종류, 원래 source, 최종 URL, SHA-256, 파일명과 수집 시간을 기록한다. 본문은 불변 원문 링크와 추출 본문 또는 추출 노트 링크를 포함한다. 모든 새 원문·첨부·출처 Markdown은 `NoteWriterService.apply({ source: 'import', client: 'ingest' })` 한 번으로 커밋한다. 기존 raw 경로는 수정하지 않는다. 동일 원문을 다시 수집하면 git blob ID로 실제 바이트가 같은지 확인하여 기존 불변 자료를 재사용하고 별도의 출처 기록과 통합 작업을 생성한다. 대형 바이너리도 문자열로 읽지 않고 git 메타데이터와 입력 바이트의 blob 해시를 비교한다. 경로가 같으나 기존 바이트가 다르면 `409 raw_conflict`로 거부한다. git 커밋에는 일반 쓰기와 동일한 job/source/requester/client trailer가 들어간다.
 
 ### 통합 작업과 복구
 원문마다 `source=import`인 Luna 작업 하나를 제출한다. 작업 입력에는 본문 전체를 붙이지 않고 커밋된 출처 Markdown 경로와 최대 10,000자의 지침만 전달한다. Luna는 출처 링크를 따라 필요한 자료를 읽고 원문을 지침으로 실행하지 않으며 raw 자료를 수정하지 않는다. 실제 통합 실행과 한도는 기존 [쓰기 흐름](write-flow.md)을 따른다.

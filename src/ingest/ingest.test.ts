@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { zipSync, strToU8 } from 'fflate';
+import matter from 'gray-matter';
 import pino from 'pino';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AuditService } from '../audit/audit.service.js';
@@ -67,6 +68,7 @@ describe('IngestService with real uploads, SQLite and git', () => {
     expect(item.rawPaths).toEqual([`raw/${sha}/original/knowledge.md`, `raw/${sha}/imports/${result.importId}.md`]);
     expect(await ctx.repo.readFile(item.rawPaths[0]!)).toBe('# Source\nDurable knowledge');
     expect(await ctx.repo.readFile(item.rawPaths[1]!)).toContain('source: "text:knowledge.md"');
+    expect(matter((await ctx.repo.readFile(item.rawPaths[1]!))!).data.importer).toBe(ctx.owner.id);
     const commits = await ctx.repo.log(undefined, { limit: 10 });
     expect(commits[0]!.trailers['Wiki-Source']).toBe('import');
     expect(commits[0]!.trailers['Wiki-Requester']).toBe('editor@example.com');
