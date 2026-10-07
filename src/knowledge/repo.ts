@@ -135,7 +135,57 @@ function treeEntries(output: string): Array<{ mode: string; oid: string; path: s
   });
 }
 
+/** Retain only immutable, pre-ACL derivations; failed loads are never cached. */
+class ReadCache<T> {
+  private readonly values = new Map<string, { value: T; bytes: number }>();
+  private readonly pending = new Map<string, Promise<T>>();
+  private bytes = 0;
+  constructor(private readonly maxEntries: number, private readonly maxBytes: number,
+    private readonly size: (value: T) => number = (value) => JSON.stringify(value).length * 2) {}
+  get(key: string, load: () => Promise<T>): Promise<T> {
+    const cached = this.values.get(key);
+    if (cached) {
+      this.values.delete(key);
+      this.values.set(key, cached);
+      return Promise.resolve(cached.value);
+    }
+    const pending = this.pending.get(key);
+    if (pending) return pending;
+    const promise = load().then((value) => {
+      const bytes = this.size(value);
+      if (bytes <= this.maxBytes) {
+        while (this.values.size >= this.maxEntries || this.bytes + bytes > this.maxBytes) {
+          const oldest = this.values.keys().next().value!;
+          this.bytes -= this.values.get(oldest)!.bytes;
+          this.values.delete(oldest);
+        }
+        this.values.set(key, { value, bytes });
+        this.bytes += bytes;
+      }
+      return value;
+    }).finally(() => { this.pending.delete(key); });
+    this.pending.set(key, promise);
+    return promise;
+  }
+}
+interface SnapshotTree {
+  entries: Map<string, { mode: string; oid: string; path: string }>;
+  notes: string[];
+  bytes: number;
+}
+function copyCommits(history: CommitInfo[]): CommitInfo[] {
+  return history.map((commit) => ({ ...commit, parents: [...commit.parents], trailers: { ...commit.trailers } }));
+}
+
 export class KnowledgeRepo {
+  private readonly resolving = new Map<string, Promise<string>>();
+  private readonly verifiedShas = new Map<string, true>();
+  private readonly trees = new ReadCache<SnapshotTree>(16, 16 * 1024 * 1024, (tree) => tree.bytes);
+  private readonly contents = new ReadCache<string>(256, 16 * 1024 * 1024, (value) => value.length * 2);
+  private readonly histories = new ReadCache<CommitInfo[]>(128, 16 * 1024 * 1024);
+  private readonly blames = new ReadCache<BlameRange[]>(128, 8 * 1024 * 1024);
+  private readonly changedFiles = new ReadCache<FileChange[]>(1024, 8 * 1024 * 1024);
+  private readonly commitMetadata = new ReadCache<CommitInfo>(1024, 4 * 1024 * 1024);
   private constructor(private readonly logger: Logger, private readonly git: Git, private readonly path: string, private readonly worktrees: string) {}
   static async open(cfg: Config, log: Logger): Promise<KnowledgeRepo> {
     const path = resolve(cfg.dataDir, 'knowledge');
@@ -190,22 +240,55 @@ export class KnowledgeRepo {
     }
     if (branches.length) this.logger.info({ count: branches.length }, 'Removed abandoned knowledge work branches');
   }
-  async headSha(): Promise<string> { return this.git.sha(this.path, 'refs/heads/main'); }
-  async resolveRef(ref: string): Promise<string> { return this.git.sha(this.path, ref); }
+  async headSha(): Promise<string> { return this.resolveRef('refs/heads/main'); }
+  private rememberSha(sha: string): void {
+    this.verifiedShas.delete(sha);
+    this.verifiedShas.set(sha, true);
+    if (this.verifiedShas.size > 4096) this.verifiedShas.delete(this.verifiedShas.keys().next().value!);
+  }
+  async resolveRef(ref: string): Promise<string> {
+    // Symbolic refs must be resolved on every request, including external updates.
+    // Only a successfully verified full object ID is safe to retain.
+    if (this.verifiedShas.has(ref)) {
+      this.rememberSha(ref);
+      return ref;
+    }
+    const pending = this.resolving.get(ref);
+    if (pending) return pending;
+    const promise = this.git.sha(this.path, ref).then((sha) => {
+      this.rememberSha(sha);
+      return sha;
+    }).finally(() => { this.resolving.delete(ref); });
+    this.resolving.set(ref, promise);
+    return promise;
+  }
+  private snapshotTree(sha: string): Promise<SnapshotTree> {
+    return this.trees.get(sha, async () => {
+      const output = await this.git.run(this.path, ['ls-tree', '-r', '-z', sha]);
+      const entries = treeEntries(output);
+      const notes = entries.filter((entry) => entry.mode !== '120000' && entry.mode !== '160000' && entry.path.endsWith('.md'))
+        .map((entry) => entry.path).sort();
+      return { entries: new Map(entries.map((entry) => [entry.path, entry])), notes,
+        bytes: output.length * 4 + entries.length * 128 };
+    });
+  }
+  private metadata(sha: string): Promise<CommitInfo> {
+    return this.commitMetadata.get(sha, async () =>
+      commits(await this.git.run(this.path, ['show', '-s', `--format=${commitFormat}`, sha]))[0]!);
+  }
   async readFile(path: string, ref = 'main'): Promise<string | null> {
     const safe = repoPath(path);
-    if (!safe) throw new Error('A file path is required');
-    const sha = await this.git.sha(this.path, ref);
-    const entry = treeEntries(await this.git.run(this.path, ['ls-tree', '-r', '-z', sha, '--', safe])).find((item) => item.path === safe);
+    const sha = await this.resolveRef(ref);
+    const entry = (await this.snapshotTree(sha)).entries.get(safe);
     if (!entry) return null;
     if (entry.mode === '120000') throw new Error(`Symlinks are not readable notes: ${path}`);
     if (entry.mode === '160000') return null;
-    return this.git.run(this.path, ['show', `${sha}:${safe}`]);
+    return this.contents.get(entry.oid, () => this.git.run(this.path, ['cat-file', 'blob', entry.oid]));
   }
   async readFileBytes(path: string, ref = 'main'): Promise<Buffer | null> {
     const safe = repoPath(path);
     const sha = await this.resolveRef(ref);
-    const entry = treeEntries(await this.git.run(this.path, ['ls-tree', '-r', '-z', sha, '--', safe])).find((item) => item.path === safe);
+    const entry = (await this.snapshotTree(sha)).entries.get(safe);
     if (entry?.mode === '120000') throw Object.assign(new Error(`Symlinks are not readable assets: ${path}`), { status: 403, code: 'forbidden' });
     if (entry?.mode !== '100644' && entry?.mode !== '100755') return null;
     return this.git.runBuffer(this.path, ['cat-file', 'blob', entry.oid]);
@@ -213,19 +296,21 @@ export class KnowledgeRepo {
   async fileObjectId(path: string, ref = 'main'): Promise<string | null> {
     const safe = repoPath(path);
     const sha = await this.resolveRef(ref);
-    const entry = treeEntries(await this.git.run(this.path, ['ls-tree', '-r', '-z', sha, '--', safe])).find((item) => item.path === safe);
+    const entry = (await this.snapshotTree(sha)).entries.get(safe);
     if (entry?.mode === '120000') throw new Error(`Symlinks are not readable notes: ${path}`);
     return entry?.mode === '100644' || entry?.mode === '100755' ? entry.oid : null;
   }
   async listFiles(prefix = '', ref = 'main'): Promise<string[]> {
     const safe = repoPath(prefix, true);
-    const sha = await this.git.sha(this.path, ref);
-    return treeEntries(await this.git.run(this.path, ['ls-tree', '-r', '-z', sha])).filter((entry) => entry.mode !== '120000' && entry.mode !== '160000' && entry.path.endsWith('.md') && entry.path.startsWith(safe)).map((entry) => repoPath(entry.path)).sort();
+    const sha = await this.resolveRef(ref);
+    return (await this.snapshotTree(sha)).notes.filter((path) => path.startsWith(safe)).map((path) => repoPath(path));
   }
   async diffNames(fromSha: string | null, toSha: string): Promise<FileChange[]> {
-    const from = fromSha === null ? emptyTree : await this.git.sha(this.path, fromSha);
-    const to = await this.git.sha(this.path, toSha);
-    return changes(await this.git.run(this.path, ['diff', '--name-status', '-z', '--find-renames', from, to, '--']));
+    const from = fromSha === null ? emptyTree : await this.resolveRef(fromSha);
+    const to = await this.resolveRef(toSha);
+    const files = await this.changedFiles.get(`${from}:${to}`, async () =>
+      changes(await this.git.run(this.path, ['diff', '--name-status', '-z', '--find-renames', from, to, '--'])));
+    return files.map((file) => ({ ...file }));
   }
   /** Regenerate a diff from an explicit, already-authorized set of paths. */
   async diffPatch(base: string | null, head: string, paths: string[]): Promise<string> {
@@ -262,35 +347,41 @@ export class KnowledgeRepo {
     if (limit === 0) return [];
     const root = opts.ref === undefined ? await this.headSha() : await this.resolveRef(opts.ref);
     const follow = opts.follow === true && path !== undefined;
-    const args = ['log', `--format=${commitFormat}`];
-    if (follow) args.push('--follow');
-    else if (limit !== null) args.push(`--max-count=${limit}`);
-    let ancestors: Set<string> | undefined;
     const before = opts.before ?? opts.beforeSha;
-    if (before) {
-      const cursor = await this.resolveRef(before);
-      const parents = (await this.git.run(this.path, ['show', '-s', '--format=%P', cursor])).trim().split(' ').filter(Boolean);
-      if (!parents.length) return [];
-      if (follow) {
-        ancestors = new Set((await this.git.run(this.path, ['rev-list', ...parents, '--'])).trim().split('\n'));
-        args.push(root);
-      } else args.push(...parents);
-    } else args.push(root);
-    if (opts.sinceSha) args.push(`^${await this.resolveRef(opts.sinceSha)}`);
-    args.push('--');
-    if (path !== undefined) args.push(path);
-    const history = commits(await this.git.run(this.path, args));
-    if (!follow) return history;
-    const result: CommitInfo[] = [];
-    let currentPath = path!;
-    for (const commit of history) {
-      commit.path = currentPath;
-      const renamed = (await this.diffNames(commit.parents[0] ?? null, commit.sha)).find((file) => file.status === 'R' && file.path === currentPath);
-      if (renamed) { commit.oldPath = renamed.oldPath; currentPath = renamed.oldPath!; }
-      if (!ancestors || ancestors.has(commit.sha)) result.push(commit);
-      if (result.length === limit) break;
-    }
-    return result;
+    const cursor = before ? await this.resolveRef(before) : undefined;
+    const since = opts.sinceSha ? await this.resolveRef(opts.sinceSha) : undefined;
+    const key = JSON.stringify([root, path, limit, follow, cursor, since]);
+    const result = await this.histories.get(key, async () => {
+      const args = ['log', `--format=${commitFormat}`];
+      if (follow) args.push('--follow');
+      else if (limit !== null) args.push(`--max-count=${limit}`);
+      let ancestors: Set<string> | undefined;
+      if (cursor) {
+        const parents = (await this.metadata(cursor)).parents;
+        if (!parents.length) return [];
+        if (follow) {
+          ancestors = new Set((await this.git.run(this.path, ['rev-list', ...parents, '--'])).trim().split('\n'));
+          args.push(root);
+        } else args.push(...parents);
+      } else args.push(root);
+      if (since) args.push(`^${since}`);
+      args.push('--');
+      if (path !== undefined) args.push(path);
+      const history = commits(await this.git.run(this.path, args));
+      for (const commit of history) this.rememberSha(commit.sha);
+      if (!follow) return history;
+      const result: CommitInfo[] = [];
+      let currentPath = path!;
+      for (const commit of history) {
+        commit.path = currentPath;
+        const renamed = (await this.diffNames(commit.parents[0] ?? null, commit.sha)).find((file) => file.status === 'R' && file.path === currentPath);
+        if (renamed) { commit.oldPath = renamed.oldPath; currentPath = renamed.oldPath!; }
+        if (!ancestors || ancestors.has(commit.sha)) result.push(commit);
+        if (result.length === limit) break;
+      }
+      return result;
+    });
+    return copyCommits(result);
   }
   async compare(base: string, head: string, path?: string): Promise<{ base: string; head: string; files: FileChange[]; patch: string }> {
     const from = await this.resolveRef(base);
@@ -304,44 +395,47 @@ export class KnowledgeRepo {
   }
   async show(sha: string, parent = 1): Promise<{ commit: CommitInfo; files: FileChange[]; patch: string }> {
     const resolved = await this.resolveRef(sha);
-    const commit = commits(await this.git.run(this.path, ['show', '-s', `--format=${commitFormat}`, resolved]))[0]!;
+    const commit = copyCommits([await this.metadata(resolved)])[0]!;
     if (!Number.isSafeInteger(parent) || parent < 1 || parent > Math.max(1, commit.parents.length)) throw Object.assign(new Error(`Commit has no parent ${parent}`), { status: 400, code: 'invalid_parent' });
     const from = commit.parents[parent - 1] ?? emptyTree;
     return {
       commit,
-      files: changes(await this.git.run(this.path, ['diff', '--name-status', '-z', '--find-renames', from, resolved, '--'])),
+      files: await this.diffNames(commit.parents[parent - 1] ?? null, resolved),
       patch: await this.git.run(this.path, ['diff', '--binary', '--find-renames', from, resolved, '--']),
     };
   }
   async blame(path: string, ref = 'main'): Promise<{ ref: string; ranges: BlameRange[] }> {
     const safe = repoPath(path);
     const resolved = await this.resolveRef(ref);
-    const entryAtRef = treeEntries(await this.git.run(this.path, ['ls-tree', '-r', '-z', resolved, '--', safe])).find((entry) => entry.path === safe);
-    if (!entryAtRef || entryAtRef.mode === '160000') throw Object.assign(new Error(`Note not found: ${safe}`), { status: 404, code: 'NOT_FOUND' });
-    if (entryAtRef.mode === '120000') throw new Error(`Symlinks are not readable notes: ${safe}`);
-    const output = await this.git.run(this.path, ['blame', '--line-porcelain', resolved, '--', safe]);
-    const lines: Array<{ sha: string; line: number }> = [];
-    let entry: { sha: string; line: number } | undefined;
-    for (const line of output.split('\n')) {
-      const header = /^([a-f0-9]{40,64}) \d+ (\d+)(?: \d+)?$/.exec(line);
-      if (header) entry = { sha: header[1]!, line: Number(header[2]) };
-      else if (line.startsWith('\t') && entry) { lines.push(entry); entry = undefined; }
-    }
-    const shas = [...new Set(lines.map((line) => line.sha))];
-    const metadata = new Map((shas.length ? commits(await this.git.run(this.path, ['show', '-s', `--format=${commitFormat}`, ...shas, '--'])) : []).map((commit) => [commit.sha, commit]));
-    const ranges: BlameRange[] = [];
-    for (const line of lines) {
-      const previous = ranges.at(-1);
-      if (previous?.sha === line.sha && previous.end + 1 === line.line) { previous.end = line.line; continue; }
-      const commit = metadata.get(line.sha)!;
-      ranges.push({
-        start: line.line, end: line.line, sha: line.sha,
-        authorName: commit.authorName, date: commit.date, summary: commit.subject,
-        ...(commit.trailers['Wiki-Job'] ? { jobId: commit.trailers['Wiki-Job'] } : {}),
-        ...(commit.trailers['Wiki-Source'] ? { source: commit.trailers['Wiki-Source'] } : {}),
-      });
-    }
-    return { ref: resolved, ranges };
+    const ranges = await this.blames.get(JSON.stringify([resolved, safe]), async () => {
+      const entryAtRef = (await this.snapshotTree(resolved)).entries.get(safe);
+      if (!entryAtRef || entryAtRef.mode === '160000') throw Object.assign(new Error(`Note not found: ${safe}`), { status: 404, code: 'NOT_FOUND' });
+      if (entryAtRef.mode === '120000') throw new Error(`Symlinks are not readable notes: ${safe}`);
+      const output = await this.git.run(this.path, ['blame', '--line-porcelain', resolved, '--', safe]);
+      const lines: Array<{ sha: string; line: number }> = [];
+      let entry: { sha: string; line: number } | undefined;
+      for (const line of output.split('\n')) {
+        const header = /^([a-f0-9]{40,64}) \d+ (\d+)(?: \d+)?$/.exec(line);
+        if (header) entry = { sha: header[1]!, line: Number(header[2]) };
+        else if (line.startsWith('\t') && entry) { lines.push(entry); entry = undefined; }
+      }
+      const shas = [...new Set(lines.map((line) => line.sha))];
+      const metadata = new Map((shas.length ? commits(await this.git.run(this.path, ['show', '-s', `--format=${commitFormat}`, ...shas, '--'])) : []).map((commit) => [commit.sha, commit]));
+      const ranges: BlameRange[] = [];
+      for (const line of lines) {
+        const previous = ranges.at(-1);
+        if (previous?.sha === line.sha && previous.end + 1 === line.line) { previous.end = line.line; continue; }
+        const commit = metadata.get(line.sha)!;
+        ranges.push({
+          start: line.line, end: line.line, sha: line.sha,
+          authorName: commit.authorName, date: commit.date, summary: commit.subject,
+          ...(commit.trailers['Wiki-Job'] ? { jobId: commit.trailers['Wiki-Job'] } : {}),
+          ...(commit.trailers['Wiki-Source'] ? { source: commit.trailers['Wiki-Source'] } : {}),
+        });
+      }
+      return ranges;
+    });
+    return { ref: resolved, ranges: ranges.map((range) => ({ ...range })) };
   }
   async createWorktree(name: string): Promise<Worktree> {
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name)) throw new Error('Worktree name must be a safe identifier');

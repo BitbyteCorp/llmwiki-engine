@@ -37,7 +37,7 @@ export class EventsController implements OnModuleDestroy {
         if (!paths.length) return;
         projected = { ...event, paths };
       }
-      response.write(`id: ${this.events.sequence}\nevent: ${projected.type}\ndata: ${JSON.stringify(projected)}\n\n`);
+      response.write(this.events.format(projected));
     });
     const heartbeat = setInterval(() => response.write(': ping\n\n'), 25_000);
     heartbeat.unref();

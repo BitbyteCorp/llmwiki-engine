@@ -141,6 +141,22 @@ describe('raw note assets HTTP with real Git and viewer sessions', () => {
     expect((await request('assets/picture.bin', beforeAsset)).status).toBe(404);
   });
 
+  it('revalidates SHA-addressed assets without bypassing revoked folder permissions', async () => {
+    const url = `${origin}/api/notes/raw?${new URLSearchParams({ path: 'assets/picture.bin', ref: firstRef })}`;
+    const initial = await fetch(url, { headers: { cookie } });
+    const etag = initial.headers.get('etag')!;
+    expect(initial.status).toBe(200);
+    expect(initial.headers.get('cache-control')).toBe('private, no-cache');
+    expect(etag).toMatch(/^"[a-f0-9]{64}"$/);
+    const unchanged = await fetch(url, { headers: { cookie, 'if-none-match': etag, 'cache-control': 'max-age=0' } });
+    expect(unchanged.status).toBe(304);
+    expect(await unchanged.text()).toBe('');
+    acl.create({ prefix: 'assets/', subjectType: 'role', subject: 'viewer', access: 'none' }, admin);
+    const denied = await fetch(url, { headers: { cookie, 'if-none-match': etag, 'cache-control': 'max-age=0' } });
+    expect(denied.status).toBe(404);
+    expect(await denied.json()).toMatchObject({ error: { code: 'not_found' } });
+  });
+
   it.each([
     '../assets/picture.bin', 'assets/../index.md', 'assets/./picture.bin', '/assets/picture.bin',
     'C:/assets/picture.bin', 'assets\\picture.bin', 'assets/.git/config', 'assets/.GIT/config',

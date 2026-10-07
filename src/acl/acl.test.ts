@@ -145,6 +145,23 @@ describe('repository path access policy', () => {
     expect(acl.policyKey({ id: editor.id, role: 'viewer' })).not.toBe(acl.policyKey(editor));
   });
 
+  it('captures fresh synchronous read policies with exact prefix, subject and role precedence', () => {
+    acl.create({ prefix: '/', subjectType: 'everyone', access: 'none' }, admin);
+    acl.create({ prefix: 'notes/', subjectType: 'role', subject: 'editor', access: 'read' }, admin);
+    const exact = acl.create({ prefix: 'notes/one.md', subjectType: 'user', subject: editor.id, access: 'none' }, admin);
+    acl.create({ prefix: 'notes/deep/', subjectType: 'user', subject: viewer.id, access: 'none' }, admin);
+    const paths = ['notes/one.md', 'notes/one.md.backup', 'notes/deep/two.md', 'notes-other/two.md'];
+    expect(paths.filter(acl.readPredicate(editor))).toEqual(['notes/one.md.backup', 'notes/deep/two.md']);
+    expect(paths.filter(acl.readPredicate(otherEditor))).toEqual(['notes/one.md', 'notes/one.md.backup', 'notes/deep/two.md']);
+    expect(paths.filter(acl.readPredicate(viewer))).toEqual([]);
+    expect(paths.filter(acl.readPredicate(admin))).toEqual(paths);
+    acl.delete(exact.id, admin);
+    expect(paths.filter(acl.readPredicate(editor))).toEqual(['notes/one.md', 'notes/one.md.backup', 'notes/deep/two.md']);
+    expect(paths.filter(acl.readPredicate({ id: editor.id, role: 'viewer' }))).toEqual([]);
+    acl.create({ prefix: 'notes/', subjectType: 'everyone', access: 'read' }, admin);
+    expect(paths.filter(acl.readPredicate(viewer))).toEqual(['notes/one.md', 'notes/one.md.backup']);
+  });
+
   it('revokes deleted user grants and gives replacement accounts strictly newer identities', async () => {
     acl.create({ prefix: 'private/', subjectType: 'everyone', access: 'none' }, admin);
     const folderGrant = acl.create({ prefix: 'private/', subjectType: 'user', subject: otherEditor.id, access: 'write' }, admin);

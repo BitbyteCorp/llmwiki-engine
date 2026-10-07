@@ -11,6 +11,11 @@ export function openDb(path: string): Db {
   const db = new Database(path);
   try {
     db.pragma('journal_mode = WAL');
+    db.pragma('synchronous = NORMAL');
+    db.pragma('busy_timeout = 5000');
+    db.pragma('cache_size = -32768');
+    db.pragma('mmap_size = 268435456');
+    db.pragma('temp_store = MEMORY');
     db.pragma('foreign_keys = ON');
     sqliteVec.load(db);
     return db;

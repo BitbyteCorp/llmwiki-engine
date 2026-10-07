@@ -115,6 +115,25 @@ describe('CatalogService', () => {
     expect(catalog.graph('wiki/Deleted.md', 5)).toEqual({ nodes: [], edges: [] });
   });
 
+  it('does not share mutable link summaries, graph nodes, tags or edges between responses', () => {
+    seedGraph();
+    const links = catalog.links('wiki/A.md');
+    links.outgoing[0]!.title = 'Mutated outgoing';
+    links.backlinks[0]!.path = 'wiki/Mutated.md';
+    links.unresolved.push('Mutated missing');
+    const graph = catalog.graph('wiki/A.md', 1);
+    graph.nodes[0]!.title = 'Mutated node';
+    graph.nodes[0]!.tags.push('mutated-tag');
+    graph.edges[0]!.to = 'wiki/Mutated.md';
+    graph.nodes.splice(1);
+    expect(catalog.links('wiki/A.md')).toEqual({
+      outgoing: [{ path: 'wiki/B.md', title: 'Beta' }],
+      backlinks: [{ path: 'wiki/E.md', title: 'Epsilon' }],
+      unresolved: ['deleted', 'unknown'],
+    });
+    expect(catalog.graph('wiki/A.md', 1)).toEqual({ nodes: [alpha, beta, epsilon], edges: firstEdges });
+  });
+
   it('counts distinct notes per tag and matches NFKC, lowercase, hash-prefixed normalized facets', () => {
     seedGraph();
     expect(catalog.tags()).toEqual([

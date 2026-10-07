@@ -243,6 +243,8 @@ export class IndexerService implements OnModuleInit, OnModuleDestroy {
       this.setMeta('last_error', embeddingError);
       const pending = db.prepare('SELECT count(*) AS count FROM chunks WHERE vector_pending = 1').get() as { count: number };
       if (force && config.openaiApiKey && pending.count === 0 && embeddingError === null) this.setMeta('vector_mismatch', '0');
+      // SHA can stay unchanged during a full/layout rebuild or pending-vector retry.
+      this.setMeta('catalog_revision', String(Number(this.meta('catalog_revision') ?? '0') + 1));
     })();
     this.needsRebuild = false;
     this.events?.publish({ type: 'index.updated', sha: head,

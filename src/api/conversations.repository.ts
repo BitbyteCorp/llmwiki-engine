@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Inject, Injectable } from '@nestjs/common';
+import type { Statement } from 'better-sqlite3';
 import { DB } from '../common/tokens.js';
 import type { Db } from '../db/index.js';
 import type { Citation } from '../luna/luna.types.js';
@@ -7,25 +8,46 @@ import type { Conversation, Message, MessageContext, Usage } from './conversatio
 
 type Row = Omit<Message, 'citations' | 'attachments' | 'context' | 'usage'> & { citations: string; attachments: string; context: string | null; usage: string | null };
 const columns = `m.id,m.role,m.content,m.citations,m.attachments,m.context,m.status,m.usage,m.model,m.effort,m.created_at AS createdAt,
-  (SELECT g.id FROM generations g WHERE g.assistant_message_id=m.id AND g.conversation_id=m.conversation_id ORDER BY g.rowid DESC LIMIT 1) AS generationId`;
+  g.id AS generationId`;
 const decode = (row: Row): Message => ({ ...row, citations: (JSON.parse(row.citations) as Array<Citation | string>).map(c => typeof c === 'string' ? { path: c } : c), attachments: JSON.parse(row.attachments), context: row.context ? JSON.parse(row.context) : null, usage: row.usage ? JSON.parse(row.usage) : null });
 
 @Injectable()
 export class ConversationsRepository {
-  constructor(@Inject(DB) private readonly db: Db) {}
+  private readonly membership: Statement<[string, number], { role: 'owner' | 'editor' | 'viewer' }>;
+  private readonly conversations: Statement<[number, string, string, string], Conversation>;
+  private readonly searchSnippet: Statement<[string, string], { content: string }>;
+  private readonly conversationMessages: Statement<[string, string], Row>;
+  private readonly singleMessage: Statement<[string, string, string, string], Row>;
 
-  role(id: string, userId: number): 'owner' | 'editor' | 'viewer' | null {
-    return (this.db.prepare('SELECT role FROM conversation_members WHERE conversation_id=? AND user_id=?').get(id, userId) as {role: 'owner' | 'editor' | 'viewer'} | undefined)?.role ?? null;
-  }
-  list(userId: number, q = ''): Conversation[] {
-    const rows = this.db.prepare(`SELECT c.id,c.title,c.created_at AS createdAt,c.updated_at AS updatedAt,cm.role
+  constructor(@Inject(DB) private readonly db: Db) {
+    this.membership = db.prepare('SELECT role FROM conversation_members WHERE conversation_id=? AND user_id=?');
+    this.conversations = db.prepare(`SELECT c.id,c.title,c.created_at AS createdAt,c.updated_at AS updatedAt,cm.role
       FROM conversations c JOIN conversation_members cm ON cm.conversation_id=c.id
       WHERE cm.user_id=? AND (?='' OR instr(lower(c.title),lower(?))>0 OR EXISTS
         (SELECT 1 FROM messages m WHERE m.conversation_id=c.id AND instr(lower(m.content),lower(?))>0))
-      ORDER BY c.updated_at DESC,c.rowid DESC`).all(userId,q,q,q) as Conversation[];
+      ORDER BY c.updated_at DESC,c.rowid DESC`);
+    this.searchSnippet = db.prepare('SELECT content FROM messages WHERE conversation_id=? AND instr(lower(content),lower(?))>0 ORDER BY rowid DESC LIMIT 1');
+    this.conversationMessages = db.prepare(`WITH latest AS (
+      SELECT assistant_message_id,MAX(rowid) AS generation_rowid FROM generations
+      WHERE conversation_id=? GROUP BY assistant_message_id
+    ) SELECT ${columns} FROM messages m
+      LEFT JOIN latest ON latest.assistant_message_id=m.id
+      LEFT JOIN generations g ON g.rowid=latest.generation_rowid
+      WHERE m.conversation_id=? ORDER BY m.rowid`);
+    this.singleMessage = db.prepare(`SELECT ${columns} FROM messages m
+      LEFT JOIN generations g ON g.rowid=(
+        SELECT MAX(rowid) FROM generations WHERE conversation_id=? AND assistant_message_id=?
+      ) WHERE m.conversation_id=? AND m.id=?`);
+  }
+
+  role(id: string, userId: number): 'owner' | 'editor' | 'viewer' | null {
+    return this.membership.get(id,userId)?.role ?? null;
+  }
+  list(userId: number, q = ''): Conversation[] {
+    const rows = this.conversations.all(userId,q,q,q);
     if (!q) return rows;
     return rows.map(row => {
-      const match = this.db.prepare('SELECT content FROM messages WHERE conversation_id=? AND instr(lower(content),lower(?))>0 ORDER BY rowid DESC LIMIT 1').get(row.id,q) as {content:string} | undefined;
+      const match = this.searchSnippet.get(row.id,q);
       const source = match?.content ?? row.title;
       const start = Math.max(0, source.toLowerCase().indexOf(q.toLowerCase()) - 60);
       return { ...row, snippet: source.slice(start,start+240) };
@@ -44,11 +66,11 @@ export class ConversationsRepository {
   }
   messages(id: string, userId: number): Message[] {
     if (!this.role(id,userId)) return [];
-    return (this.db.prepare(`SELECT ${columns} FROM messages m WHERE m.conversation_id=? ORDER BY m.rowid`).all(id) as Row[]).map(decode);
+    return this.conversationMessages.all(id,id).map(decode);
   }
   message(id: string, mid: string, userId: number): Message | null {
     if (!this.role(id,userId)) return null;
-    const row = this.db.prepare(`SELECT ${columns} FROM messages m WHERE m.conversation_id=? AND m.id=?`).get(id,mid) as Row | undefined;
+    const row = this.singleMessage.get(id,mid,id,mid);
     return row ? decode(row) : null;
   }
   delete(id: string, userId: number): boolean {

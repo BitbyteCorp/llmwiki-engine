@@ -28,10 +28,33 @@ export interface TagFacet {
 
 interface CatalogNote extends NoteSummary { tags_json: string }
 interface IndexedLink { source_path: string; target_name: string; target_text: string; target_path: string | null }
+interface DerivedLink {
+  source: string;
+  target: string | null;
+  text: string;
+  candidates: readonly string[];
+}
+interface CatalogSnapshot {
+  sha: string | null;
+  generation: string;
+  notes: Map<string, CatalogNote>;
+  outgoing: Map<string, DerivedLink[]>;
+  incoming: Map<string, DerivedLink[]>;
+  tags: Map<string, string[]>;
+}
 
 @Injectable()
 export class CatalogService {
-  constructor(@Inject(DB) private readonly db: Database.Database, private readonly acl: AclService) {}
+  // Keep only the current pre-ACL index, never user projections or historical SHAs.
+  private snapshot: CatalogSnapshot | undefined;
+  private readonly readVersion;
+
+  constructor(@Inject(DB) private readonly db: Database.Database, private readonly acl: AclService) {
+    this.readVersion = db.prepare(`SELECT
+      (SELECT value FROM index_meta WHERE key = 'indexed_sha') AS sha,
+      COALESCE((SELECT value FROM index_meta WHERE key = 'catalog_revision'),
+        CAST(total_changes() AS TEXT)) AS generation`);
+  }
 
   // Omitted users are explicitly unrestricted internal system catalog operations.
   private notes(user?: AclUser) {
@@ -39,38 +62,70 @@ export class CatalogService {
     return { sql: `notes AS (SELECT path, title, tags_json FROM chunks c WHERE ordinal = 0 AND (${access.sql}))`, params: access.params };
   }
 
-  private relations(user?: AclUser) {
-    const scope = this.notes(user);
-    const rows = this.db.prepare(`WITH ${scope.sql} SELECT * FROM notes ORDER BY path`).all(...scope.params) as CatalogNote[];
+  private indexSnapshot(): CatalogSnapshot {
+    const version = this.readVersion.get() as { sha: string | null; generation: string };
+    // The indexer's transactional generation changes even for same-SHA rebuilds.
+    // Before the first sync, total_changes also keeps direct DB fixtures fresh.
+    if (this.snapshot?.sha === version.sha && this.snapshot.generation === version.generation) return this.snapshot;
+
+    const rows = this.db.prepare('SELECT path,title,tags_json FROM chunks WHERE ordinal = 0 ORDER BY path').all() as CatalogNote[];
     const notes = new Map(rows.map((note) => [note.path, note]));
-    let resolver: NoteTargetResolver | undefined;
-    const indexed = this.db.prepare(`WITH ${scope.sql}
-      SELECT links.source_path,links.target_name,links.target_text,links.target_path
-      FROM links JOIN notes ON notes.path=links.source_path
-      ORDER BY links.source_path,links.target_name`).all(...scope.params) as IndexedLink[];
-    const edges: CatalogGraph['edges'] = [];
-    const seen = new Set<string>();
-    const unresolved = new Map<string, Set<string>>();
-    for (const link of indexed) {
-      // Never expose a globally resolved but unreadable destination as unresolved.
-      if (user && link.target_path !== null && !this.acl.canRead(user, link.target_path)) continue;
-      const text = link.target_text || link.target_name;
-      const target = link.target_path ?? (resolver ??= new NoteTargetResolver([...notes.keys()])).resolve(text).path;
-      if (target && notes.has(target)) {
-        const key = `${link.source_path}\0${target}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          edges.push({ from: link.source_path, to: target });
-        }
-      } else {
-        const names = unresolved.get(link.source_path) ?? new Set<string>();
-        names.add(text);
-        unresolved.set(link.source_path, names);
-      }
+    const resolver = new NoteTargetResolver([...notes.keys()]);
+    const outgoing = new Map<string, DerivedLink[]>();
+    const incoming = new Map<string, DerivedLink[]>();
+    const append = (map: Map<string, DerivedLink[]>, path: string, link: DerivedLink) => {
+      const links = map.get(path);
+      if (links) links.push(link);
+      else map.set(path, [link]);
+    };
+    const indexed = this.db.prepare(`SELECT source_path,target_name,target_text,target_path
+      FROM links ORDER BY source_path,target_name`).all() as IndexedLink[];
+    for (const row of indexed) {
+      if (!notes.has(row.source_path)) continue;
+      const text = row.target_text || row.target_name;
+      const candidates = row.target_path === null ? resolver.resolve(text).candidates : [row.target_path];
+      const link: DerivedLink = { source: row.source_path, target: row.target_path, text, candidates };
+      append(outgoing, link.source, link);
+      for (const candidate of candidates) if (notes.has(candidate)) append(incoming, candidate, link);
     }
-    edges.sort((left, right) => left.from < right.from ? -1 : left.from > right.from ? 1
-      : left.to < right.to ? -1 : left.to > right.to ? 1 : 0);
-    return { notes, edges, unresolved };
+    this.snapshot = { ...version, notes, outgoing, incoming, tags: new Map() };
+    return this.snapshot;
+  }
+
+  private reader(snapshot: CatalogSnapshot, user?: AclUser) {
+    const predicate = user ? this.acl.readPredicate(user) : () => true;
+    const visibility = new Map<string, boolean>();
+    const readable = (path: string) => {
+      let allowed = visibility.get(path);
+      if (allowed === undefined) {
+        allowed = predicate(path);
+        visibility.set(path, allowed);
+      }
+      return allowed;
+    };
+    const targets = new Map<DerivedLink, string | null | undefined>();
+    const target = (link: DerivedLink): string | null | undefined => {
+      if (targets.has(link)) return targets.get(link);
+      let resolved: string | null | undefined;
+      if (!readable(link.source)) resolved = undefined;
+      else if (link.target !== null) {
+        // A hidden resolved destination must not leak through unresolved spelling.
+        resolved = !readable(link.target) ? undefined : snapshot.notes.has(link.target) ? link.target : null;
+      } else {
+        resolved = null;
+        for (const candidate of link.candidates) {
+          if (!readable(candidate)) continue;
+          if (resolved !== null) {
+            resolved = null;
+            break;
+          }
+          resolved = candidate;
+        }
+      }
+      targets.set(link, resolved);
+      return resolved;
+    };
+    return { readable, target };
   }
 
   suggest(q: string, user?: AclUser): NoteSummary[] {
@@ -92,56 +147,73 @@ export class CatalogService {
 
   links(path: string, user?: AclUser): CatalogLinks {
     if (user) this.acl.assertRead(user, path);
-    const { notes, edges, unresolved } = this.relations(user);
-    const outgoing: NoteSummary[] = [];
-    const backlinks: NoteSummary[] = [];
-    for (const edge of edges) {
-      if (edge.from === path) {
-        const note = notes.get(edge.to)!;
-        outgoing.push({ path: note.path, title: note.title });
-      }
-      if (edge.to === path) {
-        const note = notes.get(edge.from)!;
-        backlinks.push({ path: note.path, title: note.title });
-      }
+    const snapshot = this.indexSnapshot();
+    const { target } = this.reader(snapshot, user);
+    const outgoing = new Set<string>();
+    const backlinks = new Set<string>();
+    const unresolved = new Set<string>();
+    for (const link of snapshot.outgoing.get(path) ?? []) {
+      const destination = target(link);
+      if (destination === null) unresolved.add(link.text);
+      else if (destination !== undefined) outgoing.add(destination);
     }
-    return { outgoing, backlinks, unresolved: [...(unresolved.get(path) ?? [])].sort() };
+    for (const link of snapshot.incoming.get(path) ?? []) {
+      if (target(link) === path) backlinks.add(link.source);
+    }
+    const summaries = (paths: Set<string>): NoteSummary[] => [...paths].sort().map((notePath) => {
+      const note = snapshot.notes.get(notePath)!;
+      return { path: note.path, title: note.title };
+    });
+    return { outgoing: summaries(outgoing), backlinks: summaries(backlinks), unresolved: [...unresolved].sort() };
   }
 
   graph(path?: string, depth = 1, user?: AclUser): CatalogGraph {
     if (user && path !== undefined) this.acl.assertRead(user, path);
-    const { notes, edges } = this.relations(user);
-    const selected = new Set<string>(path === undefined ? notes.keys() : notes.has(path) ? [path] : []);
+    const snapshot = this.indexSnapshot();
+    const { readable, target } = this.reader(snapshot, user);
+    const selected = new Set<string>(path === undefined
+      ? [...snapshot.notes.keys()].filter(readable)
+      : snapshot.notes.has(path) && readable(path) ? [path] : []);
     if (path !== undefined) {
-      // Traverse visible reader-resolved edges in both directions, retaining their orientation.
-      const adjacency = new Map<string, string[]>();
-      for (const edge of edges) {
-        const from = adjacency.get(edge.from) ?? [];
-        from.push(edge.to);
-        adjacency.set(edge.from, from);
-        const to = adjacency.get(edge.to) ?? [];
-        to.push(edge.from);
-        adjacency.set(edge.to, to);
-      }
+      // Traverse only incident reader-resolved links, preserving their orientation.
       let frontier = [...selected];
       for (let distance = 0; distance < depth && frontier.length; distance++) {
         const next: string[] = [];
-        for (const current of frontier) for (const neighbor of adjacency.get(current) ?? []) {
+        const visit = (neighbor: string) => {
           if (!selected.has(neighbor)) {
             selected.add(neighbor);
             next.push(neighbor);
+          }
+        };
+        for (const current of frontier) {
+          for (const link of snapshot.outgoing.get(current) ?? []) {
+            const destination = target(link);
+            if (destination !== null && destination !== undefined) visit(destination);
+          }
+          for (const link of snapshot.incoming.get(current) ?? []) {
+            if (target(link) === current) visit(link.source);
           }
         }
         frontier = next;
       }
     }
-    return {
-      nodes: [...selected].sort().map((notePath) => {
-        const note = notes.get(notePath)!;
-        return { path: note.path, title: note.title, tags: JSON.parse(note.tags_json) as string[] };
-      }),
-      edges: edges.filter((edge) => selected.has(edge.from) && selected.has(edge.to)),
-    };
+    const edges: CatalogGraph['edges'] = [];
+    const nodes = [...selected].sort().map((notePath) => {
+      const note = snapshot.notes.get(notePath)!;
+      let tags = snapshot.tags.get(notePath);
+      if (!tags) {
+        tags = JSON.parse(note.tags_json) as string[];
+        snapshot.tags.set(notePath, tags);
+      }
+      const destinations = new Set<string>();
+      for (const link of snapshot.outgoing.get(notePath) ?? []) {
+        const destination = target(link);
+        if (destination !== null && destination !== undefined && selected.has(destination)) destinations.add(destination);
+      }
+      for (const destination of [...destinations].sort()) edges.push({ from: notePath, to: destination });
+      return { path: note.path, title: note.title, tags: [...tags] };
+    });
+    return { nodes, edges };
   }
 
   tags(user?: AclUser): TagFacet[] {

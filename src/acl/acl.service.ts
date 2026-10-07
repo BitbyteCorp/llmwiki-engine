@@ -55,6 +55,15 @@ export class AclService {
     return this.access(user, path) !== 'none';
   }
 
+  /** Capture the current policy for a synchronous batch of trusted repository paths.
+   * Obtain a new predicate for every request; never retain it across awaits.
+   */
+  readPredicate(user: AclUser): (path: string) => boolean {
+    const reader = { ...user };
+    const rules = reader.role === 'admin' ? [] : this.rules();
+    return (path) => reader.role === 'admin' || this.effective(reader, this.match(reader, path, rules)) !== 'none';
+  }
+
   canWrite(user: AclUser, path: string): boolean {
     return this.access(user, path) === 'write';
   }
@@ -149,9 +158,9 @@ export class AclService {
     return this.cachedRules;
   }
 
-  private match(user: AclUser, path: string): AclRule | null {
+  private match(user: AclUser, path: string, rules = this.rules()): AclRule | null {
     const subject = String(user.id);
-    return this.rules().find((rule) =>
+    return rules.find((rule) =>
       (rule.subjectType === 'everyone' || (rule.subjectType === 'role' ? rule.subject === user.role : rule.subject === subject)) &&
       (rule.prefix === '/' || rule.prefix === path || (rule.prefix.endsWith('/') && path.startsWith(rule.prefix)))) ?? null;
   }

@@ -66,6 +66,23 @@ describe('live event audience and transport', () => {
     second.response.emit('close');
   });
 
+  it('assigns a new SSE sequence when the same event payload is published again', () => {
+    const bus = new EventsService();
+    const controller = new EventsController(bus, acl, users);
+    const first = connection(controller, user(1));
+    const second = connection(controller, user(2));
+    const event = { type: 'dream.updated' as const, runId: 'repeated', status: 'succeeded' };
+    bus.publish(event, 'all');
+    bus.publish(event, 'all');
+    for (const client of [first, second]) {
+      expect(client.frames.slice(1)).toEqual([
+        'id: 1\nevent: dream.updated\ndata: {"type":"dream.updated","runId":"repeated","status":"succeeded"}\n\n',
+        'id: 2\nevent: dream.updated\ndata: {"type":"dream.updated","runId":"repeated","status":"succeeded"}\n\n',
+      ]);
+      client.response.emit('close');
+    }
+  });
+
   it('closes live streams and stops their heartbeat when the application shuts down', () => {
     vi.useFakeTimers();
     const bus = new EventsService();

@@ -61,4 +61,37 @@ describe('reader-visible link resolution', () => {
     expect(catalog.links('public/Shared.md', viewer)).toEqual({ outgoing: [], backlinks: [], unresolved: [] });
     expect(catalog.graph(undefined, 1, viewer).edges).toEqual([]);
   });
+
+  it('projects warmed snapshots through current role grants and hides revoked resolved destinations', () => {
+    link('wiki/source.md', 'shared', 'Shared', null);
+    link('wiki/source.md', 'secret/private', 'secret/Private', 'secret/Private.md');
+    // Establish an index generation so ACL writes do not discard the pre-ACL snapshot.
+    db.prepare("INSERT INTO index_meta(key,value) VALUES('catalog_revision','1')").run();
+    expect(catalog.links('wiki/source.md', viewer)).toEqual({
+      outgoing: [{ path: 'public/Shared.md', title: 'public/Shared.md' }], backlinks: [], unresolved: [],
+    });
+    db.prepare(`INSERT INTO acl_rules(prefix,subject_type,subject,access,created_by,created_at)
+      VALUES('secret/','role','editor','read',1,'2026-10-07T00:00:00Z')`).run();
+    const editor: AclUser = { id: viewer.id, role: 'editor' };
+    expect(catalog.links('wiki/source.md', editor)).toEqual({
+      outgoing: [{ path: 'secret/Private.md', title: 'secret/Private.md' }], backlinks: [], unresolved: ['Shared'],
+    });
+    expect(catalog.graph('wiki/source.md', 1, editor).edges).toEqual([
+      { from: 'wiki/source.md', to: 'secret/Private.md' },
+    ]);
+    expect(catalog.links('wiki/source.md', viewer)).toEqual({
+      outgoing: [{ path: 'public/Shared.md', title: 'public/Shared.md' }], backlinks: [], unresolved: [],
+    });
+    db.prepare("DELETE FROM acl_rules WHERE subject_type = 'role'").run();
+    expect(catalog.graph('wiki/source.md', 1, editor)).toEqual({
+      nodes: [
+        { path: 'public/Shared.md', title: 'public/Shared.md', tags: [] },
+        { path: 'wiki/source.md', title: 'wiki/source.md', tags: [] },
+      ],
+      edges: [{ from: 'wiki/source.md', to: 'public/Shared.md' }],
+    });
+    expect(catalog.links('public/Shared.md', editor).backlinks).toEqual([
+      { path: 'wiki/source.md', title: 'wiki/source.md' },
+    ]);
+  });
 });

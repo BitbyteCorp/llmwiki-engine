@@ -1,5 +1,6 @@
 import { Body, Controller, Delete, Get, Post, Put, Query, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
+import { createHash } from 'node:crypto';
 import type { z } from 'zod';
 import { AclService } from '../acl/acl.service.js';
 import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
@@ -12,6 +13,17 @@ import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe.js';
 import { noteContentQuerySchema, noteRawQuerySchema, noteResolveQuerySchema, notePutSchema, noteMoveSchema, noteDeleteSchema, noteBlameQuerySchema } from './api.dto.js';
 import { NotesService } from './notes.service.js';
 
+function revisionCache(response: Response, ref: string | undefined, content: string | Buffer): void {
+  if (!ref || !/^[a-f0-9]{40}$/i.test(ref)) {
+    response.setHeader('Cache-Control', 'private, no-store');
+    return;
+  }
+  // Revalidate even immutable bytes: login and folder permissions may have changed.
+  response.setHeader('Cache-Control', 'private, no-cache');
+  response.vary('Cookie');
+  response.vary('Authorization');
+  response.setHeader('ETag', `"${createHash('sha256').update(content).digest('hex')}"`);
+}
 @Controller('api/notes')
 @UseGuards(SessionGuard, RolesGuard)
 export class NotesController {
@@ -23,8 +35,10 @@ export class NotesController {
   }
 
   @Get('content')
-  content(@Query(new ZodValidationPipe(noteContentQuerySchema)) query: z.infer<typeof noteContentQuerySchema>, @CurrentUser() user: User) {
-    return this.notes.content(query.path, query.ref, user);
+  async content(@Query(new ZodValidationPipe(noteContentQuerySchema)) query: z.infer<typeof noteContentQuerySchema>, @CurrentUser() user: User, @Res({ passthrough: true }) response: Response) {
+    const note = await this.notes.content(query.path, query.ref, user);
+    revisionCache(response, query.ref, JSON.stringify(note));
+    return note;
   }
 
   @Get('raw')
@@ -37,7 +51,7 @@ export class NotesController {
     response.setHeader('Content-Type', asset.contentType);
     response.setHeader('X-Content-Type-Options', 'nosniff');
     response.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
-    response.setHeader('Cache-Control', 'private, no-store');
+    revisionCache(response, query.ref, asset.bytes);
     response.send(asset.bytes);
   }
 

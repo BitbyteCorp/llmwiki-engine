@@ -148,6 +148,42 @@ describe('main-derived wikilink fidelity', () => {
     });
   });
 
+  it.each([true, false])('refreshes cached links and graph after a same-SHA rebuild (full=%s)', async (full) => {
+    const { db, repo, indexer, catalog, commit } = await fixture();
+    const head = await commit(async (worktree) => {
+      await worktree.write(source, '# Source\n[[wiki/target]]');
+      await worktree.write('wiki/target.md', '---\ntags: [restored]\n---\n# Target\nOriginal target.');
+      await worktree.write('wiki/decoy.md', '# Decoy\nNot the original target.');
+    });
+    await indexer.syncToHead();
+    // Warm a stale derived index, then repair it through the real same-HEAD path.
+    db.prepare("UPDATE chunks SET title = 'Stale title', tags_json = '[\"stale\"]' WHERE path = ?").run(source);
+    db.prepare('UPDATE links SET target_path = ? WHERE source_path = ?').run('wiki/decoy.md', source);
+    if (!full) db.prepare("UPDATE index_meta SET value = 'obsolete' WHERE key = 'layout_version'").run();
+    expect(catalog.links(source).outgoing).toEqual([{ path: 'wiki/decoy.md', title: 'Decoy' }]);
+    expect(catalog.graph(source, 1)).toEqual({
+      nodes: [
+        { path: 'wiki/decoy.md', title: 'Decoy', tags: [] },
+        { path: source, title: 'Stale title', tags: ['stale'] },
+      ],
+      edges: [{ from: source, to: 'wiki/decoy.md' }],
+    });
+    await indexer.reindex({ full });
+    expect(await repo.headSha()).toBe(head);
+    expect(catalog.links(source)).toEqual({
+      outgoing: [{ path: 'wiki/target.md', title: 'Target' }], backlinks: [], unresolved: [],
+    });
+    expect(catalog.graph(source, 1)).toEqual({
+      nodes: [
+        { path: source, title: 'Source', tags: [] },
+        { path: 'wiki/target.md', title: 'Target', tags: ['restored'] },
+      ],
+      edges: [{ from: source, to: 'wiki/target.md' }],
+    });
+    expect(catalog.links('wiki/decoy.md').backlinks).toEqual([]);
+    expect(catalog.links('wiki/target.md').backlinks).toEqual([{ path: source, title: 'Source' }]);
+  });
+
   it('upgrades a legacy index by reparsing original targets even when main HEAD is unchanged', async () => {
     const { config, db, repo, indexer, catalog, commit } = await fixture(true);
     const head = await commit(async (worktree) => {

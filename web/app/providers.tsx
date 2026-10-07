@@ -10,6 +10,6 @@ function LiveEvents() {
 }
 
 export function Providers({ children }: { children: ReactNode }) {
-  const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 15_000, refetchOnWindowFocus: true } } }))
+  const [queryClient] = useState(() => new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 30_000, gcTime: 10 * 60_000, refetchOnWindowFocus: false, structuralSharing: true } } }))
   return <QueryClientProvider client={queryClient}><LiveEvents />{children}</QueryClientProvider>
 }

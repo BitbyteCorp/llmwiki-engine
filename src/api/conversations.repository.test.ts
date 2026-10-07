@@ -53,6 +53,30 @@ describe('ConversationsRepository', () => {
     expect(store.message(conversation.id, assistant.id, 2)).toBeNull();
   });
 
+  it('selects the last inserted generation per message only within its conversation', () => {
+    const conversation = store.create(1);
+    const otherConversation = store.create(1);
+    const question = store.addMessage(conversation.id, 1, 'user', 'Question')!;
+    const assistant = store.addMessage(conversation.id, 1, 'assistant', 'Answer')!;
+    const ungenerated = store.addMessage(conversation.id, 1, 'assistant', 'Unrelated answer')!;
+    const insert = db.prepare(`INSERT INTO generations(id,conversation_id,user_message_id,assistant_message_id,user_id,status,created_at)
+      VALUES(?,?,?,?,?,?,?)`);
+    insert.run('older-insertion', conversation.id, question.id, assistant.id, 1, 'running', '2026-10-08T00:00:00.000Z');
+    insert.run('latest-insertion', conversation.id, question.id, assistant.id, 1, 'failed', '2026-10-06T00:00:00.000Z');
+    insert.run('different-conversation', otherConversation.id, question.id, assistant.id, 1, 'running', '2026-10-09T00:00:00.000Z');
+    insert.run('detached-generation', conversation.id, question.id, null, 1, 'completed', '2026-10-10T00:00:00.000Z');
+
+    expect(store.messages(conversation.id, 1)).toEqual([
+      { ...question, generationId: null },
+      { ...assistant, generationId: 'latest-insertion' },
+      { ...ungenerated, generationId: null },
+    ]);
+    expect(store.message(conversation.id, assistant.id, 1)?.generationId).toBe('latest-insertion');
+    expect(store.message(otherConversation.id, assistant.id, 1)).toBeNull();
+    expect(store.messages(conversation.id, 2)).toEqual([]);
+    expect(store.message(conversation.id, assistant.id, 2)).toBeNull();
+  });
+
   it('persists citation objects across reopening, preserving insertion order for equal timestamps', () => {
     const conversation = store.create(1);
     const first = store.addMessage(conversation.id, 1, 'user', 'Question\nwith Unicode 🐈');
