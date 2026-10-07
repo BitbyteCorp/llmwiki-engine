@@ -102,7 +102,31 @@ function Heading({ level, id, children, onFragment }: { level: number; id?: stri
   return createElement(`h${level}`, { id }, children, id && <a className="heading-anchor" data-heading-anchor="true" href={`#${encodeURIComponent(id)}`} aria-label="이 제목으로 이동" onClick={(event) => { event.preventDefault(); onFragment(id) }} />)
 }
 
-export function Markdown({ content, path, split = false, onNavigate }: { content: string; path?: string; split?: boolean; onNavigate?: Navigate }) {
+function imageSource(src: string | undefined, path?: string, ref?: string): string | undefined {
+  if (!src) return undefined
+  if (/^https:\/\//i.test(src)) {
+    try {
+      const url = new URL(src)
+      return url.protocol === 'https:' && !url.username && !url.password ? src : undefined
+    } catch { return undefined }
+  }
+  let relative: string
+  try { relative = decodeURIComponent(src.split(/[?#]/, 1)[0]!) } catch { return undefined }
+  if (!relative || relative.startsWith('/') || /^[a-z][a-z0-9+.-]*:/i.test(relative) || /[\\\u0000-\u001f\u007f]/u.test(relative)) return undefined
+  const segments = path?.split('/').slice(0, -1) ?? []
+  for (const part of relative.split('/')) {
+    if (part.toLowerCase() === '.git') return undefined
+    if (part === '..') {
+      if (!segments.length) return undefined
+      segments.pop()
+    } else if (part && part !== '.') segments.push(part)
+  }
+  if (segments[0] !== 'assets' || segments.length < 2 || segments.some((part) => !part || part.toLowerCase() === '.git')) return undefined
+  const query = new URLSearchParams({ path: segments.join('/'), ...(ref ? { ref } : {}) })
+  return `/api/notes/raw?${query}`
+}
+
+export function Markdown({ content, path, ref, split = false, onNavigate }: { content: string; path?: string; ref?: string; split?: boolean; onNavigate?: Navigate }) {
   const root = useRef<HTMLDivElement>(null)
   const workspace = useOptionalWorkspace()
   function scrollFragment(fragment: string) {
@@ -127,6 +151,11 @@ export function Markdown({ content, path, split = false, onNavigate }: { content
         rehypePlugins={[rehypeSlug, [rehypeHighlight, { detect: false, ignoreMissing: true }], [rehypeKatex, { trust: false, strict: 'warn' }]]}
         skipHtml
         components={{
+          img: ({ src, alt, title }) => {
+            const resolved = imageSource(typeof src === 'string' ? src : undefined, path, ref)
+            return resolved ? <img src={resolved} alt={alt ?? ''} title={title} loading="lazy" decoding="async" referrerPolicy="no-referrer" />
+              : <span title="허용되지 않는 이미지 경로">{alt}</span>
+          },
           h1: ({ id, children }) => <Heading level={1} id={id} onFragment={scrollFragment}>{children}</Heading>,
           h2: ({ id, children }) => <Heading level={2} id={id} onFragment={scrollFragment}>{children}</Heading>,
           h3: ({ id, children }) => <Heading level={3} id={id} onFragment={scrollFragment}>{children}</Heading>,

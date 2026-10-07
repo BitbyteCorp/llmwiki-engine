@@ -17,9 +17,9 @@ export function useLiveConnection(): typeof connectionState {
   )
 }
 const prefixes: Record<string, string[]> = {
-  'job.updated': ['jobs', 'job', 'activity', 'ops'],
-  'main.updated': ['notes/tree', 'notes/content', 'history', 'search', 'activity', 'journal', 'links', 'graph', 'tags'],
-  'index.updated': ['search', 'search/suggest', 'similar', 'ops'],
+  'job.updated': ['jobs', 'job', 'activity', 'ops', 'imports', 'import'],
+  'main.updated': ['notes/tree', 'notes/content', 'history', 'search', 'search/suggest', 'activity', 'journal', 'links', 'graph', 'tags', 'similar', 'duplicates'],
+  'index.updated': ['search', 'search/suggest', 'similar', 'links', 'graph', 'tags', 'duplicates', 'ops'],
   'dream.updated': ['activity', 'dreams', 'dream', 'journal', 'backup', 'ops'],
   'conversation.updated': ['conversations', 'conversation'],
   'conversation.presence': [],
