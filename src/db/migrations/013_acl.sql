@@ -28,3 +28,15 @@ END;
 CREATE TRIGGER acl_rules_delete AFTER DELETE ON acl_rules BEGIN
   UPDATE acl_policy SET revision = revision + 1 WHERE id = 1;
 END;
+
+-- users.id can be reused. A removed identity must never leave grants for its successor.
+CREATE TRIGGER acl_user_delete AFTER DELETE ON users BEGIN
+  INSERT INTO audit_events (actor_id, action, target, outcome, summary, created_at)
+    SELECT NULL, 'acl.delete', 'acl:' || id, 'success',
+      'User subject removed after deleting user:' || OLD.id,
+      strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    FROM acl_rules
+    WHERE subject_type = 'user' AND subject = CAST(OLD.id AS TEXT);
+  DELETE FROM acl_rules
+    WHERE subject_type = 'user' AND subject = CAST(OLD.id AS TEXT);
+END;

@@ -130,6 +130,31 @@ describe('repository path access policy', () => {
     expect(acl.policyKey({ id: editor.id, role: 'viewer' })).not.toBe(acl.policyKey(editor));
   });
 
+  it('revokes deleted user grants before a replacement account reuses the user ID', async () => {
+    acl.create({ prefix: 'private/', subjectType: 'everyone', access: 'none' }, admin);
+    const folderGrant = acl.create({ prefix: 'private/', subjectType: 'user', subject: otherEditor.id, access: 'write' }, admin);
+    const fileGrant = acl.create({ prefix: 'private/exact.md', subjectType: 'user', subject: otherEditor.id, access: 'read' }, admin);
+    const cachedReader = new AclService(database, users, audit);
+    expect(cachedReader.access(otherEditor, 'private/secret.md')).toBe('write');
+    const grantedPolicyKey = cachedReader.policyKey(otherEditor);
+    users.delete(otherEditor.id);
+    const replacement = users.create({ email: 'replacement@example.com', role: 'editor' });
+    expect(replacement.id).toBe(otherEditor.id);
+    expect(cachedReader.policyKey(replacement)).not.toBe(grantedPolicyKey);
+    expect(cachedReader.access(replacement, 'private/secret.md')).toBe('none');
+    expect(cachedReader.access(replacement, 'private/exact.md')).toBe('none');
+    const predicate = acl.sql(replacement, 'p.path');
+    expect(database.prepare(`SELECT p.path FROM (SELECT 'private/secret.md' AS path UNION ALL SELECT 'private/exact.md') p WHERE ${predicate.sql}`).all(...predicate.params)).toEqual([]);
+    const checked = await request(app.getHttpServer()).get('/api/admin/acl/check').set('x-user', String(admin.id))
+      .query({ userId: replacement.id, path: 'private/secret.md' }).expect(200);
+    expect(checked.body).toMatchObject({ userId: replacement.id, access: 'none', reason: 'rule', rule: { subjectType: 'everyone' } });
+    expect(acl.list().map((rule) => rule.subjectType)).toEqual(['everyone']);
+    expect(audit.list({ action: 'acl.delete', limit: 50 }).events.map(({ actorId, target, outcome }) => ({ actorId, target, outcome })).reverse()).toEqual([
+      { actorId: null, target: `acl:${folderGrant.id}`, outcome: 'success' },
+      { actorId: null, target: `acl:${fileGrant.id}`, outcome: 'success' },
+    ]);
+  });
+
   it('applies SQL read filtering before limits with literal prefixes and identical precedence', () => {
     database.exec('CREATE TABLE acl_test_paths (path TEXT PRIMARY KEY)');
     for (const path of ['a/secret.md', 'a/visible.md', 'b/fallback.md', 'wild%_/hidden.md', 'wildXX/visible.md']) {
