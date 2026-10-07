@@ -196,9 +196,9 @@ frontmatter 속성 패널은 제목·날짜·중요도 같은 알려진 필드�
 
 ### REST API와 저장 규칙
 
-웹 API는 `/api` 아래에 있으며 모든 요청에 웹 세션이 필요하다. `viewer`도 위키·검색·이력·질의응답을 이용할 수 있고, `/api/admin`은 `admin`만 이용할 수 있다. 오류는 HTTP 상태와 함께 `{error:{code,message}}` 형태로 반환한다. 마지막 관리자를 삭제하거나 다른 역할로 내리려 하면 `409`와 `last_admin` 코드를 반환한다.
+웹 API는 `/api` 아래에 있으며 웹은 세션으로 인증한다. 같은 API는 `SessionGuard`를 통해 REST Bearer 토큰도 받으며 읽기·쓰기 scope와 만료·회수 정책은 [인증과 권한](auth.md)을 따른다. `viewer`도 위키·검색·이력·질의응답을 이용할 수 있고, `/api/admin`은 `admin`만 이용할 수 있다. 오류는 HTTP 상태와 함께 `{error:{code,message}}` 형태로 반환한다. 마지막 관리자를 삭제하거나 다른 역할로 내리려 하면 `409`와 `last_admin` 코드를 반환한다.
 
-`src/api/api.module.ts`는 `MeController`, `NotesController`, `SearchController`, `HistoryController`, `JobsController`, `ConversationsController`, `AdminController`를 등록한다. 각 컨트롤러는 `SessionGuard`와 `RolesGuard`로 보호하며 관리 컨트롤러에는 `@Roles('admin')`을 적용한다. 입력은 `api.dto.ts`의 Zod 스키마와 공용 `ZodValidationPipe`로 검증하고 오류 응답은 전역 HTTP 예외 필터가 만든다. `NotesService`는 노트 읽기와 이름 해석을, `HistoryService`는 git 이력과 쓰기 작업 연결·요청자 표시를 담당한다.
+`src/api/api.module.ts`는 현재 사용자·노트·검색·이력·쓰기 작업·대화·관리 API뿐 아니라 업로드·생성 작업·Luna 모델·링크·그래프·태그 컨트롤러도 등록한다. 각 컨트롤러는 `SessionGuard`로 웹 세션 또는 REST Bearer 토큰을 검사하며 역할 제한이 필요한 접점에는 `RolesGuard`와 `@Roles`를 적용한다. 입력은 `api.dto.ts`의 Zod 스키마와 공용 `ZodValidationPipe`로 검증하고 오류 응답은 전역 HTTP 예외 필터가 만든다. `NotesService`는 노트 읽기와 이름 해석을, `HistoryService`는 git 이력과 쓰기 작업 연결·요청자 표시를 담당한다.
 
 | 접점 | 용도 |
 | --- | --- |
@@ -238,7 +238,7 @@ HTTP 연결 종료는 생성 작업을 중지하지 않는다. 명시적 `POST /
 
 스트림 AbortSignal은 관찰만 종료하며 생성 취소를 요청하지 않는다. `cancelGeneration()`만 명시적인 중지 API를 호출한다. 생성 이후의 `error` 프레임은 콜백에 전달한 뒤 Promise를 `null`로 완료하며 `done`은 저장된 메시지로 완료한다. 생성 ID를 받기 전 오류는 콜백 이후 예외로 전달한다.
 
-동일 대화의 동일 `clientId` 제출은 기존 생성 이벤트를 반환하며 질문을 중복 저장하지 않는다. `POST .../messages/:mid/retry`는 실패·취소·중단된 답변이나 남아 있는 사용자 질문을 재시도한다. `POST .../:mid/regenerate`는 assistant 메시지에서 이전 질문의 답변을 새로 만든다. `PATCH .../:mid` 입력은 `{content}`이며 사용자 질문만 수정한다. 이 세 경로는 같은 SSE 형식으로 응답하고 해당 질문 뒤의 턴을 삭제하며 사용자 질문을 새로 추가하지 않는다. 저장된 과거 요약도 무효화한다. 긴 대화는 최근 턴을 원문으로 유지하고 오래된 턴을 대화별 요약으로 저장한다. 아직 학습하지 않은 사용자 질문의 `learned_at`은 `NULL`이다.
+동일 대화의 동일 `clientId` 제출은 기존 생성 이벤트를 반환하며 질문을 중복 저장하지 않는다. `POST .../messages/:mid/retry`는 실패·취소·중단된 답변이나 남아 있는 사용자 질문을 재시도한다. `POST .../:mid/regenerate`는 assistant 메시지에서 이전 질문의 답변을 새로 만든다. `PATCH .../:mid` 입력은 `{content}`이며 사용자 질문만 수정한다. 이 세 경로는 같은 SSE 형식으로 응답하고 해당 질문 뒤의 턴을 삭제하며 사용자 질문을 새로 추가하지 않는다. 긴 대화는 요청자가 현재 읽을 수 있는 이력에서 오래된 턴을 요청별로 요약하고 최근 턴은 원문으로 유지한다. 요약을 저장하거나 구성원 사이에서 공유하지 않는 이유와 기준은 [Luna](luna.md#엔진이-정의하는-함수-도구)에 기록한다. `010_chat.sql`의 `conversations.summary`와 `summary_through` 열은 기존 DB와 적용된 마이그레이션의 호환성을 위해 남기지만 서비스는 읽거나 쓰지 않는다. 편집·재시도·재생성도 이 열을 초기화하지 않으며 다음 답변에서 현재 남은 이력으로 요약을 다시 만든다. 아직 학습하지 않은 사용자 질문의 `learned_at`은 `NULL`이다.
 
 수정·재생성으로 대화에서 제거한 턴의 생성 이벤트와 `clientId` 기록도 대화가 존재하는 동안 유지한다. 늦게 재전송한 이전 질문은 기존 이벤트를 재생하며 제거한 턴을 복원하지 않는다. 생성 중 요청자가 구성원에서 제거되어도 나머지 구성원에게 완성 메시지를 전달하며, 제거된 사용자의 실시간 스트림은 종료한다. 편집한 사용자 질문은 다시 미학습 상태가 되고 dreaming은 수집한 질문 내용과 현재 내용이 같은 경우에만 학습 완료로 기록한다.
 

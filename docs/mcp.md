@@ -31,7 +31,7 @@ MCP와 REST 가져오기(`/api/imports`)의 JSON 요청 본문 상한은 21 MiB�
 | --- | --- | --- | --- |
 | `search` | `query: string`, 선택 `limit`, `folder`, `tags: string[]`, `from`, `to`, `author`, `kinds: ("wiki"\|"journal"\|"raw"\|"other")[]` | `{ hits: SearchHit[] }` | 모든 역할이 공유 검색 필터를 사용할 수 있다. `query`는 trim 후 비어 있지 않아야 한다. 날짜는 ISO 날짜 또는 시간대가 있는 ISO datetime이며 `from`은 포함, 날짜형 `to`는 해당 UTC 날짜 전체를 포함한다. 작성자·수정 시각은 Git 기준이다. |
 | `read_note` | `path: string`, 선택 `ref: string` | `{ path, content, frontmatter, body, updatedSha, ref }` | 모든 역할이 노트를 읽는다. 생략한 `ref`는 현재 `main`이며, 내용과 두 SHA 필드는 한 커밋으로 고정한다. 과거 경로는 당시 경로를 사용한다. |
-| `list_notes` | 선택 인자 `prefix: string`으로 저장소 상대 경로 접두사를 지정한다. | 접두사를 생략하거나 `""`로 보내면 `{ files: string[], index: string \| null }`을 반환한다. 비어 있지 않은 접두사를 보내면 `{ files: string[] }`만 반환한다. | 모든 역할이 `main`에서 추적하는 마크다운 파일 목록을 볼 수 있다. `index`는 루트 `index.md`의 내용이며, 파일이 없으면 `null`이다. 별도 `index` 도구는 없다. |
+| `list_notes` | 선택 인자 `prefix: string`으로 저장소 상대 경로 접두사를 지정한다. | 접두사를 생략하거나 `""`로 보내면 `{ files: string[], index: string \| null }`을 반환한다. 비어 있지 않은 접두사를 보내면 `{ files: string[] }`만 반환한다. | 모든 역할이 `main`에서 추적하는 마크다운 중 읽을 수 있는 파일 목록을 볼 수 있다. `index`는 루트 `index.md`의 내용이며, 파일이 없거나 읽기 권한이 없으면 `null`이다. 별도 `index` 도구는 없다. |
 | `note_history` | `path`, 선택 `follow: boolean`, `limit`, `before: string` | `{ commits: CommitInfo[] }` | 모든 역할이 경로 변경 이력을 조회한다. 기본 `follow: true`는 이름 변경 전의 이력까지 따라간다. `before`는 커밋 페이지 커서다. |
 | `get_commit` | `sha`, 선택 `parent: number` | `{ commit, files, patch, truncated }` | 모든 역할이 커밋과 선택 부모 대비 변경을 읽는다. 부모는 1부터 시작하며 기본값은 1이다. 병합 커밋은 부모별 변경이 다를 수 있다. |
 | `compare` | `base`, `head`, 선택 `path` | `{ base, head, files, patch, truncated }` | 모든 역할이 두 커밋을 비교한다. 반환 `base`와 `head`는 해석된 SHA다. |

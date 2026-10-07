@@ -74,10 +74,7 @@ export class ConversationsRepository {
     this.db.prepare('UPDATE conversations SET updated_at=? WHERE id=(SELECT conversation_id FROM messages WHERE id=?)').run(new Date().toISOString(),mid);
   }
   truncate(id: string, mid: string, include = false): void {
-    this.db.transaction(() => {
-      this.db.prepare(`DELETE FROM messages WHERE conversation_id=? AND rowid ${include ? '>=' : '>'} (SELECT rowid FROM messages WHERE id=? AND conversation_id=?)`).run(id,mid,id);
-      this.db.prepare("UPDATE conversations SET summary='',summary_through=NULL WHERE id=?").run(id);
-    })();
+    this.db.prepare(`DELETE FROM messages WHERE conversation_id=? AND rowid ${include ? '>=' : '>'} (SELECT rowid FROM messages WHERE id=? AND conversation_id=?)`).run(id,mid,id);
   }
   edit(mid: string, content: string): void {
     this.db.prepare('UPDATE messages SET content=?,learned_at=NULL WHERE id=?').run(content,mid);

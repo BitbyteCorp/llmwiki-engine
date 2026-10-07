@@ -46,7 +46,7 @@ HTTP 진입점은 Nest 애플리케이션을 만들고 Next를 준비한 뒤 같
 공용 `ZodValidationPipe`는 검증과 Zod 변환 결과를 컨트롤러에 전달한다. 전역 `HttpExceptionFilter`는 HTTP 예외·Zod 검증 오류·도메인의 `status`와 `code` 오류를 `{ error: { code, message } }`로 반환한다. 예상하지 못한 오류는 500과 `internal_error`로 처리하고 내부 메시지를 노출하지 않는다. `/healthz`는 `{ ok: true }`를 반환한다.
 Zod 검증 실패는 400과 `invalid_input`을 반환한다. 메시지는 각 오류를 점으로 연결한 `path: message`로 표현하고 여러 오류를 `; `로 연결하며, 경로 없는 오류는 기존 API 계약과 같은 `input: message`를 사용한다. 오류 객체의 숫자 `status`가 400~599이면 해당 상태를 보존하고, 문자열 `code`가 없는 500 이외 오류는 `bad_request`를 사용한다.
 
-HTTP 진입점과 Nest 테스트 앱은 `src/common/http/configure-app.ts`의 `configureApp(app)`을 초기화와 수신 시작 전에 적용한다. OAuth 본문은 URL-encoded와 JSON 모두 64kb로 제한하며, URL-encoded 필드는 `extended: false`로 파싱한다. 이후 공용 JSON·`extended: true` URL-encoded 파서를 명시적으로 등록해 다른 백엔드 경로에는 기본 100kb 제한을 유지한다. Nest의 파서 중복 검사는 경로가 아니라 미들웨어 이름만 확인하므로 OAuth 전용 파서만 등록하면 다른 경로의 본문 파싱이 사라지는 함정이 있다. OAuth 제한을 넘는 본문은 413과 `bad_request`를 반환한다.
+HTTP 진입점과 Nest 테스트 앱은 `src/common/http/configure-app.ts`의 `configureApp(app)`을 초기화와 수신 시작 전에 적용한다. OAuth 본문은 URL-encoded와 JSON 모두 64 KiB로 제한하며, URL-encoded 필드는 `extended: false`로 파싱한다. `/api/imports`와 `/mcp`의 JSON 본문은 원문 수집을 위해 21 MiB까지 받는다. 이후 공용 JSON·`extended: true` URL-encoded 파서를 명시적으로 등록해 나머지 백엔드 경로에는 기본 100 KiB 제한을 유지한다. Nest의 파서 중복 검사는 경로가 아니라 미들웨어 이름만 확인하므로 경로 전용 파서만 등록하면 다른 경로의 본문 파싱이 사라지는 함정이 있다. 본문 제한을 넘으면 413과 `bad_request`를 반환한다.
 
 ### 루트 스크립트와 빌드 자산
 | 명령 | 동작 |
@@ -77,7 +77,7 @@ HTTP 진입점과 Nest 테스트 앱은 `src/common/http/configure-app.ts`의 `c
 fixture의 범위를 검증하는 명령은 `pnpm vitest run test/fake-openai.test.ts`다. 이 fixture는 OpenAI API의 유료 호출이나 외부 네트워크 없이 도구 호출과 스트리밍을 재현하기 위한 것이며 실제 모델 품질을 평가하지 않는다.
 
 ### 환경 변수
-설정은 프로세스 환경 변수에서 읽는다. 키와 비밀값은 저장소나 이미지에 넣지 않고 실행 시 전달한다.
+설정은 프로세스 환경 변수에서 읽는다. 키와 비밀값은 저장소나 이미지에 넣지 않고 실행 시 전달한다. 대부분은 `src/config.ts`의 Zod 스키마가 검증한다. `LUNA_MODELS`는 Luna 서비스와 모델 목록 컨트롤러가, `UPLOAD_RETENTION_DAYS`는 업로드 서비스가 직접 읽는다. 빈 `LUNA_MODELS`는 미설정과 다르며 허용 모델이 없는 목록이 되므로 기본 모델만 사용할 때는 변수를 아예 설정하지 않는다.
 
 | 변수 | 기본값 | 의미 |
 | --- | --- | --- |
@@ -95,7 +95,7 @@ fixture의 범위를 검증하는 명령은 `pnpm vitest run test/fake-openai.te
 | `OPENAI_BASE_URL` | 미설정 | OpenAI 호환 API 주소를 재정의한다. 테스트 서버 연결에도 사용한다. |
 | `LUNA_MODEL` | `gpt-6-luna` | Luna의 응답 모델이다. |
 | `LUNA_REASONING_EFFORT` | `medium` | Luna의 추론 강도다. |
-| `LUNA_MODELS` | `LUNA_MODEL` | 쉼표로 구분하는 채팅 모델 허용 목록이다. 미설정이면 기본 Luna 모델만 선택할 수 있다. |
+| `LUNA_MODELS` | `LUNA_MODEL` | 쉼표로 구분하는 채팅 모델 허용 목록이다. 미설정이면 기본 Luna 모델만 선택할 수 있다. 설정할 때는 `LUNA_MODEL`도 포함해야 기본값 요청을 허용하며 빈 값은 모든 모델을 거절한다. |
 | `UPLOAD_RETENTION_DAYS` | `7` | 사용하지 않는 임시 업로드의 보관 일수다. 가져온 raw 원문이나 assets git 파일의 보관 기간과 다르다. |
 | `EMBEDDING_MODEL` | `text-embedding-3-small` | 검색 임베딩 모델이다. |
 | `EMBEDDING_DIMENSIONS` | `1536` | 임베딩 벡터 차원이다. |
