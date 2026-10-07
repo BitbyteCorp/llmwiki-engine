@@ -4,7 +4,7 @@
 ## 배경
 MCP 연결만으로는 클라이언트가 언제 지식을 검색하고 무엇을 저장해야 하는지 충분히 안내하지 못한다. 설치형 Skills는 사용자가 명시적으로 저장을 요청하지 않아도 가치 있는 지식을 능동적으로 저장하도록 유도하고, 기존 지식을 먼저 활용하도록 안내한다.
 
-대상은 Claude Code, Codex, Hermes이며, Hermes는 Nous Research의 Hermes Agent를 뜻한다. 아래는 각 클라이언트의 공식 문서로 확인한 설치·연결 방식이며, 엔진의 실제 배포 패키지나 설치 명령이 확정되었다는 뜻은 아니다.
+대상은 Claude Code, Codex, Hermes이며, Hermes는 Nous Research의 Hermes Agent를 뜻한다. Skill은 현재 이 엔진 저장소 안에서 개발한다. 아래는 각 클라이언트의 공식 문서로 확인한 설치·연결 방식이며, 엔진의 실제 배포 패키지나 설치 명령이 확정되었다는 뜻은 아니다.
 
 ## 내용
 ### 공통 구성과 사용 프롬프트
@@ -12,14 +12,13 @@ MCP 연결만으로는 클라이언트가 언제 지식을 검색하고 무엇�
 
 프롬프트에는 다음 행동을 담는다.
 
-- 세션 시작 시 MCP로 메모리 파일을 먼저 읽고 현재 공유 문맥을 파악한다.
 - 지식에 관한 답변을 만들기 전에 지식 저장소를 검색하고 관련 노트를 읽어 근거를 확보한다.
 - 사용자의 명시적 저장 요청이 없어도 재사용할 가치가 있는 사실, 결정과 이유, 문제 해결 과정 등을 판단해 능동적으로 저장한다.
 - 저장할 때는 자연어 지시나 원문을 MCP로 제출하며, 클라이언트가 지식 저장소의 파일 배치와 직접 편집을 맡지 않는다.
 
-예를 들어 대화에서 반복되는 장애의 원인과 해결 방법을 알아냈다면, 기존 노트를 검색한 뒤 해당 지식을 보완할 자연어 지시와 원문을 제출한다. Luna가 지식을 반영하는 절차는 [쓰기 흐름](write-flow.md)을 따르며, 메모리 파일의 노출 방식과 도구 계약은 [MCP](mcp.md)를 따른다. 로그인과 접근 제어는 [인증](auth.md)을 따른다.
+예를 들어 대화에서 반복되는 장애의 원인과 해결 방법을 알아냈다면, 기존 노트를 검색한 뒤 해당 지식을 보완할 자연어 지시와 원문을 제출한다. Luna가 지식을 반영하는 절차는 [쓰기 흐름](write-flow.md)을 따르며, 도구 계약은 [MCP](mcp.md)를 따른다. 로그인과 접근 제어는 [인증](auth.md)을 따른다.
 
-`SKILL.md`의 설명에는 지식 질문, 세션 문맥 확인, 가치 있는 지식 발견이라는 사용 조건을 드러낸다. 다만 Claude Code와 Codex는 관련성에 따라 Skill을 선택하고 Hermes도 본문을 필요할 때 읽으므로, 설치만으로 모든 세션 시작 시 본문 실행이 보장되지는 않는다는 점은 각 [Claude Code Skills 문서](https://code.claude.com/docs/en/skills), [Codex Skills 문서](https://developers.openai.com/codex/skills), [Hermes Skills 가이드](https://hermes-agent.nousresearch.com/docs/guides/work-with-skills)에서 확인된다.
+`SKILL.md`의 설명에는 지식 질문과 가치 있는 지식 발견이라는 사용 조건을 드러낸다. Claude Code와 Codex는 관련성에 따라 Skill을 선택하고 Hermes는 본문을 필요할 때 읽는다는 점은 각 [Claude Code Skills 문서](https://code.claude.com/docs/en/skills), [Codex Skills 문서](https://developers.openai.com/codex/skills), [Hermes Skills 가이드](https://hermes-agent.nousresearch.com/docs/guides/work-with-skills)에서 확인된다.
 
 ### Claude Code
 #### Skill 설치
@@ -88,10 +87,9 @@ hermes mcp login "<MCP_SERVER_NAME>"
 인증 뒤 새 세션을 시작하거나 `/reload-mcp`로 연결을 다시 읽는 방식은 [공식 MCP 문서](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp)에 설명되어 있다. Hermes가 브라우저와 다른 호스트에서 실행되는 경우에는 loopback 콜백이 직접 도달하지 않으므로, [공식 원격 OAuth 안내](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp#oauth-authenticated-http-servers)에 따라 콜백 URL 붙여넣기나 SSH 포트 전달 등의 방식을 사용한다.
 
 ## 열린 쟁점
-- 엔진의 Skill 배포 산출물, 공개 저장소의 Skill 경로, Claude Code 플러그인·marketplace 식별자와 실제 MCP URL은 지정되지 않았으므로 엔진 전용 설치 명령은 아직 제시할 수 없다.
-- 메모리 파일을 모든 세션 시작에 반드시 읽게 만드는 클라이언트별 시작 문맥 주입 또는 자동 실행 방식은 엔진 배포 구성으로 검증되지 않았으므로, Skill 설치만으로 이 요구가 충족된다고 단정하지 않는다.
+- Skill 배포 방법은 나중에 정한다.
 
 ## 관련 문서
-- [MCP](mcp.md)는 메모리 파일의 리소스·도구 노출과 읽기·쓰기·검색 계약을 설명한다.
+- [MCP](mcp.md)는 지식의 읽기·쓰기·검색 계약을 설명한다.
 - [쓰기 흐름](write-flow.md)은 클라이언트가 제출한 지식을 Luna가 반영하는 절차를 설명한다.
 - [인증](auth.md)은 Google Workspace 로그인과 MCP OAuth의 엔진 측 계약을 설명한다.

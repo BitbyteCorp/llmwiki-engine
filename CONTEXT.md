@@ -16,7 +16,7 @@ Node.js 기반으로 LLM Wiki를 관리하는 도구다.
 - **Luna**: 지식을 쓰고 정리하고 답하는 OpenAI 모델(`gpt-6-luna`)이다.
 - **dreaming**: 매일 03:00(KST)에 하루치 변경을 정리하는 배치 작업이다.
 - **일기**: dreaming이 날짜별로 쓰는 `journal/YYYY-MM-DD.md`다.
-- **메모리 파일**: 지식 저장소 루트의 `MEMORY.md`로, 자주 바뀌는 즉시 정보를 담는다.
+- **메모리 파일**: Luna의 문맥을 담는 지식 저장소 루트의 `MEMORY.md`다.
 - **작업 워크트리**: 쓰기와 dreaming마다 `main`에서 파생하는 git worktree다.
 
 ## 문서 색인
