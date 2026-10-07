@@ -1,4 +1,3 @@
-import { basename } from 'node:path/posix';
 import { Inject, Injectable, Optional, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import type Database from 'better-sqlite3';
 import type { Logger } from 'pino';
@@ -8,15 +7,16 @@ import { EventsService } from '../events/events.service.js';
 import { KnowledgeRepo } from '../knowledge/repo.js';
 import { chunkNote, normalizedNoteHash, wikilinkTargets, type NoteChunk } from './chunking.js';
 import { embedTexts } from './embeddings.js';
+import { NoteTargetResolver } from './link-resolver.js';
 
 type PendingChunk = { id: number; content_hash: string; embedding_text: string };
-type PreparedNote = { path: string; chunks: NoteChunk[]; targets: string[]; updatedAt: string | null; author: string | null; normalizedHash: string };
+type PreparedNote = { path: string; chunks: NoteChunk[]; targets: Array<{ name: string; text: string }>; updatedAt: string | null; author: string | null; normalizedHash: string };
 
 function isIndexedPath(path: string): boolean {
   return path.toLowerCase().endsWith('.md') && path.toLowerCase() !== 'memory.md';
 }
 
-const LAYOUT_VERSION = '2';
+const LAYOUT_VERSION = '3';
 
 @Injectable()
 export class IndexerService implements OnModuleInit, OnModuleDestroy {
@@ -210,12 +210,12 @@ export class IndexerService implements OnModuleInit, OnModuleDestroy {
         (path,title,heading,content,embedding_text,content_hash,kind,ordinal,vector_pending,
          tags,tags_json,anchor,source_start,source_end,updated_at,author,normalized_hash)
         VALUES (?,?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?)`);
-      const insertLink = db.prepare('INSERT INTO links(source_path,target_name,target_path) VALUES (?,?,NULL)');
+      const insertLink = db.prepare('INSERT INTO links(source_path,target_name,target_text,target_path) VALUES (?,?,?,NULL)');
       for (const note of notes) {
         for (const chunk of note.chunks) insertChunk.run(note.path, chunk.title, chunk.heading, chunk.content,
           chunk.embeddingText, chunk.contentHash, chunk.kind, chunk.ordinal, chunk.tags.join(' '), JSON.stringify(chunk.tags),
           chunk.anchor, chunk.sourceStart, chunk.sourceEnd, note.updatedAt, note.author, note.normalizedHash);
-        for (const target of note.targets) insertLink.run(note.path, target);
+        for (const target of note.targets) insertLink.run(note.path, target.name, target.text);
       }
       const cache = db.prepare('INSERT OR REPLACE INTO embedding_cache(content_hash,model,dimensions,embedding) VALUES (?,?,?,?)');
       for (const [hash, bytes] of generated) cache.run(hash, config.embeddingModel, config.embeddingDimensions, bytes);
@@ -229,14 +229,10 @@ export class IndexerService implements OnModuleInit, OnModuleDestroy {
         }
       }
       if (allPaths) {
-        const byName = new Map<string, string>();
-        for (const path of allPaths) {
-          const name = basename(path).replace(/\.md$/i, '').toLowerCase();
-          if (!byName.has(name)) byName.set(name, path);
-        }
+        const resolver = new NoteTargetResolver(allPaths);
         const updateLink = db.prepare('UPDATE links SET target_path = ? WHERE target_name = ?');
-        for (const { target_name } of db.prepare('SELECT DISTINCT target_name FROM links').all() as Array<{ target_name: string }>) {
-          updateLink.run(byName.get(target_name) ?? null, target_name);
+        for (const { target_name, target_text } of db.prepare('SELECT target_name,target_text FROM links GROUP BY target_name').all() as Array<{ target_name: string; target_text: string }>) {
+          updateLink.run(resolver.resolve(target_text || target_name).path, target_name);
         }
       }
       this.setMeta('embedding_model', config.embeddingModel);

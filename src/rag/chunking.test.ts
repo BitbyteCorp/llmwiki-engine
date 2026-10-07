@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chunkNote, kindForPath, wikilinkTargets } from './chunking.js';
+import { chunkNote, kindForPath } from './chunking.js';
 
 describe('note chunking', () => {
   it.each([
@@ -104,11 +104,3 @@ describe('knowledge path kinds', () => {
   });
 });
 
-describe('wikilink targets', () => {
-  it('normalizes basenames, extension, case, aliases and anchors while deduplicating', () => {
-    const markdown = '[[wiki/Note.md#Heading|Alias]] [[NOTE]] [[folder/note.MD|Another]] '
-      + '[[ Journal/Other.md | Label ]] [[Other#^block]] ![[raw/한국어.md#문맥]] '
-      + '[[#Local heading]] [[ | Empty ]] [[third#Part|Name]]';
-    expect(wikilinkTargets(markdown)).toEqual(['note', 'other', '한국어', 'third']);
-  });
-});

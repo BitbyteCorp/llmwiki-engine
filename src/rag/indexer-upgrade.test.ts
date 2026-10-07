@@ -27,6 +27,7 @@ async function fixture() {
   const db = openDb(':memory:');
   db.exec(readFileSync(new URL('../db/migrations/006_rag.sql', import.meta.url), 'utf8'));
   db.exec(readFileSync(new URL('../db/migrations/009_rag.sql', import.meta.url), 'utf8'));
+  db.exec(readFileSync(new URL('../db/migrations/014_link_targets.sql', import.meta.url), 'utf8'));
   const log = pino({ level: 'silent' });
   const repo = await KnowledgeRepo.open(config, log);
   const events = new EventsService();

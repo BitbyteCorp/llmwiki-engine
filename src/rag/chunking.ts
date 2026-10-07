@@ -6,6 +6,7 @@ import rehypeSlug from 'rehype-slug';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import type { SearchHit } from './types.js';
+import { normalizeLinkTarget } from './link-resolver.js';
 
 export interface NoteChunk {
   title: string;
@@ -205,12 +206,12 @@ export function chunkNote(path: string, markdown: string): NoteChunk[] {
   return chunks;
 }
 
-export function wikilinkTargets(markdown: string): string[] {
-  const targets = new Set<string>();
+export function wikilinkTargets(markdown: string): Array<{ name: string; text: string }> {
+  const targets = new Map<string, string>();
   for (const match of markdown.matchAll(/\[\[([^\[\]\r\n]+)\]\]/g)) {
-    const target = match[1]!.split(/[|#]/, 1)[0]!.trim();
-    const name = posix.basename(target).replace(/\.md$/i, '').trim().toLowerCase();
-    if (name) targets.add(name);
+    const text = match[1]!.split(/[|#]/, 1)[0]!.trim();
+    const name = normalizeLinkTarget(text);
+    if (name && !targets.has(name)) targets.set(name, text);
   }
-  return [...targets];
+  return [...targets].map(([name, text]) => ({ name, text }));
 }

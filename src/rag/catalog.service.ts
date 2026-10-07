@@ -3,6 +3,7 @@ import type Database from 'better-sqlite3';
 import { DB } from '../common/tokens.js';
 import { AclService, type AclUser } from '../acl/acl.service.js';
 import { normalizeTag } from './chunking.js';
+import { NoteTargetResolver } from './link-resolver.js';
 
 export interface NoteSummary {
   path: string;
@@ -25,11 +26,8 @@ export interface TagFacet {
   count: number;
 }
 
-const resolvedEdges = `edges AS (
-  SELECT DISTINCT source_path AS "from", target_path AS "to"
-  FROM links JOIN notes source ON source.path = source_path
-    JOIN notes target ON target.path = target_path
-)`;
+interface CatalogNote extends NoteSummary { tags_json: string }
+interface IndexedLink { source_path: string; target_name: string; target_text: string; target_path: string | null }
 
 @Injectable()
 export class CatalogService {
@@ -39,6 +37,40 @@ export class CatalogService {
   private notes(user?: AclUser) {
     const access = user ? this.acl.sql(user, 'c.path') : { sql: '1', params: [] };
     return { sql: `notes AS (SELECT path, title, tags_json FROM chunks c WHERE ordinal = 0 AND (${access.sql}))`, params: access.params };
+  }
+
+  private relations(user?: AclUser) {
+    const scope = this.notes(user);
+    const rows = this.db.prepare(`WITH ${scope.sql} SELECT * FROM notes ORDER BY path`).all(...scope.params) as CatalogNote[];
+    const notes = new Map(rows.map((note) => [note.path, note]));
+    let resolver: NoteTargetResolver | undefined;
+    const indexed = this.db.prepare(`WITH ${scope.sql}
+      SELECT links.source_path,links.target_name,links.target_text,links.target_path
+      FROM links JOIN notes ON notes.path=links.source_path
+      ORDER BY links.source_path,links.target_name`).all(...scope.params) as IndexedLink[];
+    const edges: CatalogGraph['edges'] = [];
+    const seen = new Set<string>();
+    const unresolved = new Map<string, Set<string>>();
+    for (const link of indexed) {
+      // Never expose a globally resolved but unreadable destination as unresolved.
+      if (user && link.target_path !== null && !this.acl.canRead(user, link.target_path)) continue;
+      const text = link.target_text || link.target_name;
+      const target = link.target_path ?? (resolver ??= new NoteTargetResolver([...notes.keys()])).resolve(text).path;
+      if (target && notes.has(target)) {
+        const key = `${link.source_path}\0${target}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          edges.push({ from: link.source_path, to: target });
+        }
+      } else {
+        const names = unresolved.get(link.source_path) ?? new Set<string>();
+        names.add(text);
+        unresolved.set(link.source_path, names);
+      }
+    }
+    edges.sort((left, right) => left.from < right.from ? -1 : left.from > right.from ? 1
+      : left.to < right.to ? -1 : left.to > right.to ? 1 : 0);
+    return { notes, edges, unresolved };
   }
 
   suggest(q: string, user?: AclUser): NoteSummary[] {
@@ -60,61 +92,55 @@ export class CatalogService {
 
   links(path: string, user?: AclUser): CatalogLinks {
     if (user) this.acl.assertRead(user, path);
-    const notes = this.notes(user);
-    const outgoing = this.db.prepare(`
-      WITH ${notes.sql}
-      SELECT DISTINCT notes.path, notes.title FROM links
-      JOIN notes ON notes.path = links.target_path
-      WHERE links.source_path = ? ORDER BY notes.path
-    `).all(...notes.params, path) as NoteSummary[];
-    const backlinks = this.db.prepare(`
-      WITH ${notes.sql}
-      SELECT DISTINCT notes.path, notes.title FROM links
-      JOIN notes ON notes.path = links.source_path
-      WHERE links.target_path = ? ORDER BY notes.path
-    `).all(...notes.params, path) as NoteSummary[];
-    const target = user ? this.acl.sql(user, 'links.target_path') : { sql: '1', params: [] };
-    const unresolved = this.db.prepare(`
-      SELECT DISTINCT target_name FROM links
-      WHERE source_path = ? AND (target_path IS NULL
-        OR ((${target.sql}) AND NOT EXISTS (SELECT 1 FROM chunks WHERE chunks.path = links.target_path)))
-      ORDER BY target_name
-    `).all(path, ...target.params) as Array<{ target_name: string }>;
-    return { outgoing, backlinks, unresolved: unresolved.map((link) => link.target_name) };
+    const { notes, edges, unresolved } = this.relations(user);
+    const outgoing: NoteSummary[] = [];
+    const backlinks: NoteSummary[] = [];
+    for (const edge of edges) {
+      if (edge.from === path) {
+        const note = notes.get(edge.to)!;
+        outgoing.push({ path: note.path, title: note.title });
+      }
+      if (edge.to === path) {
+        const note = notes.get(edge.from)!;
+        backlinks.push({ path: note.path, title: note.title });
+      }
+    }
+    return { outgoing, backlinks, unresolved: [...(unresolved.get(path) ?? [])].sort() };
   }
 
   graph(path?: string, depth = 1, user?: AclUser): CatalogGraph {
     if (user && path !== undefined) this.acl.assertRead(user, path);
-    const notes = this.notes(user);
-    // A neighborhood follows both outgoing links and backlinks; returned edges keep direction.
-    const scope = path === undefined ? `WITH ${notes.sql}, ${resolvedEdges}, selected AS (SELECT path FROM notes)` : `
-      WITH RECURSIVE ${notes.sql}, ${resolvedEdges},
-      adjacency AS (
-        SELECT "from", "to" FROM edges UNION SELECT "to", "from" FROM edges
-      ), neighborhood(path, distance) AS (
-        SELECT path, 0 FROM notes WHERE path = ?
-        UNION
-        SELECT adjacency."to", neighborhood.distance + 1
-        FROM neighborhood JOIN adjacency ON adjacency."from" = neighborhood.path
-        WHERE neighborhood.distance < ?
-      ), selected AS (SELECT DISTINCT path FROM neighborhood)
-    `;
-    const params = [...notes.params, ...(path === undefined ? [] : [path, depth])];
-    const rows = this.db.prepare(`
-      ${scope}
-      SELECT notes.path, title, tags_json FROM notes JOIN selected USING (path) ORDER BY notes.path
-    `).all(...params) as Array<NoteSummary & { tags_json: string }>;
-    const edges = this.db.prepare(`
-      ${scope}
-      SELECT "from", "to" FROM edges
-      WHERE "from" IN (SELECT path FROM selected) AND "to" IN (SELECT path FROM selected)
-      ORDER BY "from", "to"
-    `).all(...params) as CatalogGraph['edges'];
+    const { notes, edges } = this.relations(user);
+    const selected = new Set<string>(path === undefined ? notes.keys() : notes.has(path) ? [path] : []);
+    if (path !== undefined) {
+      // Traverse visible reader-resolved edges in both directions, retaining their orientation.
+      const adjacency = new Map<string, string[]>();
+      for (const edge of edges) {
+        const from = adjacency.get(edge.from) ?? [];
+        from.push(edge.to);
+        adjacency.set(edge.from, from);
+        const to = adjacency.get(edge.to) ?? [];
+        to.push(edge.from);
+        adjacency.set(edge.to, to);
+      }
+      let frontier = [...selected];
+      for (let distance = 0; distance < depth && frontier.length; distance++) {
+        const next: string[] = [];
+        for (const current of frontier) for (const neighbor of adjacency.get(current) ?? []) {
+          if (!selected.has(neighbor)) {
+            selected.add(neighbor);
+            next.push(neighbor);
+          }
+        }
+        frontier = next;
+      }
+    }
     return {
-      nodes: rows.map(({ path: notePath, title, tags_json }) => ({
-        path: notePath, title, tags: JSON.parse(tags_json) as string[],
-      })),
-      edges,
+      nodes: [...selected].sort().map((notePath) => {
+        const note = notes.get(notePath)!;
+        return { path: note.path, title: note.title, tags: JSON.parse(note.tags_json) as string[] };
+      }),
+      edges: edges.filter((edge) => selected.has(edge.from) && selected.has(edge.to)),
     };
   }
 
