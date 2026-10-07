@@ -21,13 +21,14 @@ import { GenerationsController } from './generations.controller.js';
 import { GenerationsService } from './generations.service.js';
 import { LinksController, GraphController } from './links.controller.js';
 import { TagsController } from './tags.controller.js';
+import { LunaModelsController } from './luna-models.controller.js';
 
 @Module({
   imports: [AuthModule, JobsModule, KnowledgeModule, LunaModule, RagModule, UploadsModule],
   controllers: [
     MeController, NotesController, SearchController, HistoryController,
     JobsController, ConversationsController, AdminController,
-    UploadsController, GenerationsController,
+    UploadsController, GenerationsController, LunaModelsController,
     LinksController, GraphController, TagsController,
   ],
   providers: [ConversationsRepository, ConversationsService, GenerationsService, NotesService, HistoryService],
