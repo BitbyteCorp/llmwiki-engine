@@ -79,6 +79,14 @@ class Git {
       }
     });
   }
+  async runBuffer(cwd: string, args: string[]): Promise<Buffer> {
+    const { promise, resolve, reject } = Promise.withResolvers<Buffer>();
+    execFile('git', ['-c', 'core.quotePath=false', ...args], { cwd, env: this.env, encoding: 'buffer', maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) reject(Object.assign(error, { stderr: stderr.toString('utf8') }));
+      else resolve(stdout);
+    });
+    return promise;
+  }
   async hasRef(cwd: string, ref: string): Promise<boolean> {
     try { await this.run(cwd, ['rev-parse', '--verify', '--quiet', '--end-of-options', ref]); return true; }
     catch (error) { if (error !== null && typeof error === 'object' && 'code' in error && error.code === 1) return false; throw error; }
@@ -194,6 +202,14 @@ export class KnowledgeRepo {
     if (entry.mode === '160000') return null;
     return this.git.run(this.path, ['show', `${sha}:${safe}`]);
   }
+  async readFileBytes(path: string, ref = 'main'): Promise<Buffer | null> {
+    const safe = repoPath(path);
+    const sha = await this.resolveRef(ref);
+    const entry = treeEntries(await this.git.run(this.path, ['ls-tree', '-r', '-z', sha, '--', safe])).find((item) => item.path === safe);
+    if (entry?.mode === '120000') throw Object.assign(new Error(`Symlinks are not readable assets: ${path}`), { status: 403, code: 'forbidden' });
+    if (entry?.mode !== '100644' && entry?.mode !== '100755') return null;
+    return this.git.runBuffer(this.path, ['cat-file', 'blob', entry.oid]);
+  }
   async fileObjectId(path: string, ref = 'main'): Promise<string | null> {
     const safe = repoPath(path);
     const sha = await this.resolveRef(ref);
@@ -210,6 +226,13 @@ export class KnowledgeRepo {
     const from = fromSha === null ? emptyTree : await this.git.sha(this.path, fromSha);
     const to = await this.git.sha(this.path, toSha);
     return changes(await this.git.run(this.path, ['diff', '--name-status', '-z', '--find-renames', from, to, '--']));
+  }
+  /** Regenerate a diff from an explicit, already-authorized set of paths. */
+  async diffPatch(base: string | null, head: string, paths: string[]): Promise<string> {
+    if (!paths.length) return '';
+    const from = base === null ? emptyTree : await this.resolveRef(base);
+    const to = await this.resolveRef(head);
+    return this.git.run(this.path, ['diff', '--binary', '--find-renames', from, to, '--', ...paths.map((path) => repoPath(path))]);
   }
   async log(opts?: LogOptions): Promise<CommitInfo[]>;
   async log(path?: string, opts?: Omit<LogOptions, 'path'>): Promise<CommitInfo[]>;

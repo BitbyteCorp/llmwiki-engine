@@ -7,6 +7,8 @@ import type { Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { AclService } from '../acl/acl.service.js';
+import { AuditService } from '../audit/audit.service.js';
 import type { Role, User } from '../auth/users.types.js';
 import { UsersService } from '../auth/users.service.js';
 import { SessionsService } from '../auth/sessions.service.js';
@@ -20,9 +22,11 @@ import { DB, LOGGER } from '../common/tokens.js';
 import { openDb, runMigrations, type Db } from '../db/index.js';
 import type { WriteJob } from '../jobs/write-job.types.js';
 import { WriteJobsService } from '../jobs/write-jobs.service.js';
+import { WriteJobsRepository } from '../jobs/write-jobs.repository.js';
 import { NoteWriterService } from '../jobs/note-writer.service.js';
 import { KnowledgeRepo, type CommitInfo } from '../knowledge/repo.js';
 import { LunaService } from '../luna/luna.service.js';
+import { IndexerService } from '../rag/indexer.service.js';
 import { EventsService } from '../events/events.service.js';
 import { UploadsService } from '../uploads/uploads.service.js';
 import { MeController } from './me.controller.js';
@@ -85,6 +89,7 @@ describe('web REST API', () => {
     listFiles: ReturnType<typeof vi.fn<(prefix?: string, ref?: string) => Promise<string[]>>>;
     log: Mock<(opts?: { path?: string; ref?: string; limit?: number; sinceSha?: string; beforeSha?: string }) => Promise<CommitInfo[]>>;
     show: ReturnType<typeof vi.fn<(sha: string) => Promise<{ commit: CommitInfo; files: Array<{ status: 'M'; path: string }>; patch: string }>>>;
+    diffNames: Mock<() => Promise<Array<{ status: 'M'; path: string }>>>;
   };
   let answer: ReturnType<typeof vi.fn<Answer>>;
   let users: {
@@ -119,6 +124,7 @@ describe('web REST API', () => {
         ref === 'main' ? ['index.md', 'wiki/Navigation.md', 'journal/2026-01-01.md'] : ['wiki/Unmerged.md']),
       log: vi.fn(async (opts) => [commit(opts?.ref ?? head)]),
       show: vi.fn(async (sha) => ({ commit: commit(sha), files: [{ status: 'M' as const, path: 'wiki/Navigation.md' }], patch: '+Main branch content' })),
+      diffNames: vi.fn(async () => [{ status: 'M' as const, path: 'wiki/Navigation.md' }]),
     };
     answer = vi.fn(async (_messages, delta, _signal, options) => {
       delta('Read ');
@@ -162,11 +168,12 @@ describe('web REST API', () => {
       ],
       providers: [
         ConversationsRepository, ConversationsService, GenerationsService, NotesService, HistoryService,
-        SessionGuard, RolesGuard,
+        SessionGuard, RolesGuard, AclService, AuditService, WriteJobsService,
         { provide: DB, useValue: db },
         { provide: LOGGER, useValue: log },
         { provide: KnowledgeRepo, useValue: repo },
-        { provide: NoteWriterService, useValue: {} },
+        { provide: NoteWriterService, useValue: { stop: async () => {} } },
+        { provide: IndexerService, useValue: {} },
         { provide: LunaService, useValue: { answer, validateModel: () => 'gpt-6-luna', validateEffort: (effort?: string) => effort ?? 'medium', summarize: async () => 'Summary', proposal: vi.fn() } },
         { provide: UploadsService, useValue: { parts: async () => [], get: vi.fn() } },
         { provide: EventsService, useValue: { publish: vi.fn() } },
@@ -184,7 +191,7 @@ describe('web REST API', () => {
             };
           },
         } },
-        { provide: WriteJobsService, useValue: {
+        { provide: WriteJobsRepository, useValue: {
           get: (id: string) => jobRows.get(id) ?? null,
           events: () => [],
           list: (opts?: { userId?: number; limit?: number; before?: string }) => [...jobRows.values()]

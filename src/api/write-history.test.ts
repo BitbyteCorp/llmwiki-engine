@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pino from 'pino';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { AclService } from '../acl/acl.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { ApiTokensRepository } from '../auth/api-tokens.repository.js';
 import { ApiTokensService } from '../auth/api-tokens.service.js';
@@ -75,7 +76,7 @@ describe('write and history HTTP acceptance with real Git and SQLite', () => {
       providers: [
         NotesService, HistoryService, NoteWriterService, WriteJobsService, WriteJobsRepository,
         UsersService, UsersRepository, SessionsService, ApiTokensService, ApiTokensRepository,
-        SessionGuard, RolesGuard, EventsService, AuditService,
+        SessionGuard, RolesGuard, EventsService, AuditService, AclService,
         { provide: CONFIG, useValue: config },
         { provide: DB, useValue: db },
         { provide: LOGGER, useValue: log },
