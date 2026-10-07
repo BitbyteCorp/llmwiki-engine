@@ -23,7 +23,12 @@ async function main(): Promise<void> {
   const app = await NestFactory.create(AppModule, new ExpressAdapter(), { bodyParser: true });
   const config = app.get<Config>(CONFIG);
   const log = app.get<Logger>(LOGGER);
-  const web = next({ dev: config.nodeEnv !== 'production', dir: resolve('web') });
+  const web = next({
+    dev: config.nodeEnv !== 'production',
+    dir: resolve('web'),
+    hostname: new URL(config.publicUrl).hostname,
+    port: config.port,
+  });
   const lifecycle = app.get(AppModule);
   lifecycle.closeNext = () => web.close();
   try {

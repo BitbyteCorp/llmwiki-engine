@@ -40,7 +40,7 @@ Next의 CommonJS 진입점은 호출 가능한 함수를 내보내지만 `NodeNe
 기능별 Nest 모듈은 컨트롤러·서비스·저장소 제공자를 등록하고 필요한 제공자를 명시적으로 내보낸다. 전역 `CommonModule`은 설정·Pino 로그·마이그레이션을 적용한 SQLite 연결을 `CONFIG`, `LOGGER`, `DB` 토큰으로 제공한다. 비클래스 의존성은 토큰으로 주입하며 서비스 클래스는 타입으로 주입한다. SQL 마이그레이션은 `001_core`, `002_auth`, `003_jobs`, `004_chat`, `005_dreaming`, `006_rag` 순서다. 벡터 테이블은 임베딩 차원 설정에 맞춰 RAG 모듈이 런타임에 생성한다.
 
 HTTP 진입점은 Nest 애플리케이션을 만들고 Next를 준비한 뒤 같은 프로세스에서 초기 검색 인덱스 동기화를 백그라운드로 시작하고 쓰기 워커와 dreaming을 명시적으로 시작한다. CLI는 필요할 때 Nest 애플리케이션 컨텍스트를 만들고 모듈별 관리 명령에서 서비스를 조회하며 HTTP 서버·쓰기 워커·dreaming 스케줄러를 시작하지 않는다. Nest 종료 훅은 `SIGINT`와 `SIGTERM`에서 서비스와 서버를 정리하고 DB 연결을 닫도록 한다. 요청 분기와 MVC 경계는 [엔진 아키텍처](architecture.md#nestjs와-nextjs의-mvc-경계)에 기록한다.
-종료 전에는 초기 인덱스 동기화가 끝나기를 기다린다. Nest의 역방향 모듈 종료 순서에서 전역 `CommonModule`이 마지막에 DB를 닫으므로, 기능 서비스의 종료 훅은 작업 중단을 끝까지 기다려야 한다. Next 핸들러도 애플리케이션 종료 훅에서 닫는다.
+종료 전에는 초기 인덱스 동기화가 끝나기를 기다린다. Nest의 역방향 모듈 종료 순서에서 전역 `CommonModule`이 마지막에 DB를 닫으므로, 기능 서비스의 종료 훅은 작업 중단을 끝까지 기다려야 한다. `AppModule.beforeApplicationShutdown`은 Nest가 HTTP 서버를 닫기 전에 Next 핸들러를 닫고 추적한 업그레이드 소켓을 정리한다. Next 16의 custom server `close()`는 개발 락을 해제하지만 HMR WebSocket을 닫지 않으며, Node HTTP 서버의 `close()`는 열린 업그레이드 소켓이 있으면 완료되지 않는다. 따라서 Next를 HTTP 서버 종료 이후 훅에서 닫으면 HMR이 연결된 개발 서버의 `SIGINT`·`SIGTERM` 종료가 멈춘다. 업그레이드 소켓만 명시적으로 종료하며 일반 HTTP 요청의 정상 종료 대기는 Nest에 남긴다. CLI 애플리케이션 컨텍스트에는 HTTP 어댑터가 없으므로 소켓 추적을 생략한다.
 
 공용 `ZodValidationPipe`는 검증과 Zod 변환 결과를 컨트롤러에 전달한다. 전역 `HttpExceptionFilter`는 HTTP 예외·Zod 검증 오류·도메인의 `status`와 `code` 오류를 `{ error: { code, message } }`로 반환한다. 예상하지 못한 오류는 500과 `internal_error`로 처리하고 내부 메시지를 노출하지 않는다. `/healthz`는 `{ ok: true }`를 반환한다.
 Zod 검증 실패는 400과 `invalid_input`을 반환한다. 메시지는 각 오류를 점으로 연결한 `path: message`로 표현하고 여러 오류를 `; `로 연결하며, 경로 없는 오류는 기존 API 계약과 같은 `input: message`를 사용한다. 오류 객체의 숫자 `status`가 400~599이면 해당 상태를 보존하고, 문자열 `code`가 없는 500 이외 오류는 `bad_request`를 사용한다.
@@ -110,6 +110,8 @@ DEV_LOGIN_EMAIL=admin@example.com pnpm dev
 ```
 
 `pnpm dev` 하나로 API와 UI를 함께 실행하므로 별도 UI 개발 서버를 띄우지 않는다. 서버가 준비되면 `http://localhost:3000/auth/dev-login`에 접근해 등록한 관리자 세션을 만든다. 개발 로그인은 Google 없이 로컬 화면을 확인하기 위한 접점이며 신규 사용자를 자동 생성하지 않는다. 사용자 이메일은 CLI로 미리 등록해야 한다. API 키 없이 로컬 인증과 저장소를 확인할 수 있지만 Luna의 응답과 임베딩을 확인하려면 `OPENAI_API_KEY`가 필요하다.
+
+Next custom server에는 `PUBLIC_URL`의 호스트 이름과 `PORT`를 전달한다. Next 개발 모드는 이 호스트와 `localhost`를 개발 자산·HMR의 허용 origin으로 사용한다. 이를 생략하면 Next가 `localhost:3000`을 기준으로 초기화되어 `127.0.0.1` 같은 설정된 주소에서 HMR 연결이 거절되고 화면이 로딩 상태에 머무를 수 있다. 브라우저에서는 `PUBLIC_URL`에 설정한 호스트로 접근한다.
 
 빌드된 서버와 웹을 확인할 때는 `pnpm build` 후 `NODE_ENV=production pnpm start`를 사용한다. 이 모드에서는 개발 로그인을 사용할 수 없으므로 Google 로그인 설정이 필요하다. 관리자 권한 복구는 `pnpm cli user role admin@example.com admin`으로 수행한다. 첫 관리자 이후의 사용자·권한·허용 도메인 설정은 웹 관리 화면에서 변경하며 정책은 [인증](auth.md)에 기록한다.
 

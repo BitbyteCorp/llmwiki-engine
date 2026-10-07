@@ -62,7 +62,7 @@ flowchart TB
 ### NestJS와 Next.js의 MVC 경계
 모델은 `*.repository.ts`의 SQL·git 데이터 접근과 `*.entity.ts` 또는 `*.types.ts`의 데이터 형식으로 구성한다. 서비스는 `*.service.ts`에서 업무 규칙을 수행하며 Nest의 `@Injectable()` 제공자로 등록한다. 컨트롤러는 `*.controller.ts`에서 요청을 해석·검증하고 서비스를 호출해 응답을 만든다. DTO의 Zod 스키마와 공용 `ZodValidationPipe`가 입력 검증을 담당한다. 기능별 `*.module.ts`는 제공자와 컨트롤러를 묶고 모듈 간 의존성을 DI로 연결한다. 뷰는 `web/`의 Next.js App Router 앱이다.
 
-Nest가 Express 어댑터의 HTTP 서버와 수신 포트를 소유한다. `src/main.ts`는 `next({ dev: process.env.NODE_ENV !== 'production', dir: 'web' })`를 준비하고 Nest 라우트보다 앞에 Express 미들웨어를 등록한다. 경로가 `^/(api|auth|oauth|mcp|\.well-known|healthz)(/|$)`와 일치하면 Nest가 처리하고, 나머지 경로는 Next 요청 핸들러로 전달한다. 따라서 `/api`, 인증·OAuth, MCP, 상태 확인은 서버 컨트롤러에 남고 화면과 Next 자산은 같은 주소에서 제공된다.
+Nest가 Express 어댑터의 HTTP 서버와 수신 포트를 소유한다. `src/main.ts`는 Next custom server에 개발 모드 여부, `web` 디렉터리, `PUBLIC_URL`의 호스트 이름과 설정된 `PORT`를 전달해 준비하고 Nest 라우트보다 앞에 Express 미들웨어를 등록한다. 개발 origin과 HMR의 호스트 설정은 [개발 환경과 실행](development.md#로컬-실행과-첫-관리자)에 기록한다. 경로가 `^/(api|auth|oauth|mcp|\.well-known|healthz)(/|$)`와 일치하면 Nest가 처리하고, 나머지 경로는 Next 요청 핸들러로 전달한다. 따라서 `/api`, 인증·OAuth, MCP, 상태 확인은 서버 컨트롤러에 남고 화면과 Next 자산은 같은 주소에서 제공된다.
 
 Next custom server를 선택한 이유는 Nest의 MVC·DI 구조를 사용하면서도 프로세스와 컨테이너를 하나로 유지하기 위해서다. 별도 Next 서버나 개발용 UI 포트를 두지 않으며 Next의 standalone 출력도 사용하지 않는다. 개발 시에도 한 진입점이 Nest와 Next 개발 모드를 함께 실행한다. 빌드·메타데이터 설정과 컨테이너에 필요한 자산은 [개발 환경과 실행](development.md)에 기록한다.
 
