@@ -9,7 +9,7 @@ describe('note chunking', () => {
     ['---\ntitle: 42\n---\n# Heading title\nBody', 'Heading title'],
     ['No heading here.', 'fallback'],
   ])('chooses a title by frontmatter, H1, then filename precedence', (markdown, title) => {
-    expect(chunkNote('wiki/fallback.md', markdown).map((chunk) => chunk.title)).toEqual([title]);
+    expect([...new Set(chunkNote('wiki/fallback.md', markdown).map((chunk) => chunk.title))]).toEqual([title]);
   });
 
   it('keeps H2 context for H3 sections and resets it at the next H2', () => {
@@ -53,11 +53,17 @@ describe('note chunking', () => {
     ['unbroken text', 'x'.repeat(10001), 3200],
     ['Korean', '한국어 검색은 문맥을 보존한다.\n'.repeat(700), 1400],
     ['astral code points', '🌙'.repeat(2401), 1611],
-  ])('bounds long %s sections and preserves every character', (_name, text, maxLength) => {
+  ])('bounds long %s sections with lossless overlapping source ranges', (_name, text, maxLength) => {
     const body = `## Section\n${text}`;
     const chunks = chunkNote('wiki/note.md', body);
-    expect(chunks.map((chunk) => chunk.content).join('')).toBe(body);
+    expect(chunks[0]!.sourceStart).toBe(0);
+    expect(chunks.at(-1)!.sourceEnd).toBe(body.length);
+    for (let index = 1; index < chunks.length; index++) {
+      expect(chunks[index]!.sourceStart).toBeLessThan(chunks[index - 1]!.sourceEnd);
+      expect(chunks[index]!.sourceEnd).toBeGreaterThan(chunks[index - 1]!.sourceEnd);
+    }
     for (const chunk of chunks) {
+      expect(body.slice(chunk.sourceStart, chunk.sourceEnd)).toBe(chunk.content);
       expect(chunk.content.length).toBeLessThanOrEqual(maxLength);
       expect(chunk.heading).toBe('Section');
       expect(chunk.embeddingText.startsWith('note > Section\n\n')).toBe(true);

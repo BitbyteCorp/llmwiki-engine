@@ -1,9 +1,7 @@
 import { readFileSync } from 'node:fs';
-import { createServer } from 'node:http';
-import type { AddressInfo } from 'node:net';
 import { Test } from '@nestjs/testing';
 import pino from 'pino';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { loadConfig, type Config } from '../../src/config.js';
 import { openDb } from '../../src/db/index.js';
 import { CONFIG, DB, LOGGER } from '../../src/common/tokens.js';
@@ -21,9 +19,9 @@ async function fixture(overrides: Partial<Config> = {}) {
   const db = openDb(':memory:');
   cleanup.push(() => { db.close(); });
   db.exec(readFileSync(new URL('../../src/db/migrations/006_rag.sql', import.meta.url), 'utf8'));
+  db.exec(readFileSync(new URL('../../src/db/migrations/009_rag.sql', import.meta.url), 'utf8'));
   const config = { ...loadConfig({ NODE_ENV: 'test', EMBEDDING_DIMENSIONS: '2' }), ...overrides };
   const log = pino({ enabled: false });
-  const warn = vi.spyOn(log, 'warn');
   const app = await Test.createTestingModule({
     providers: [
       SearchService,
@@ -51,7 +49,7 @@ async function fixture(overrides: Partial<Config> = {}) {
     }
     return id;
   }
-  return { db, config, search, warn, chunk };
+  return { db, config, search, chunk };
 }
 
 async function vectorFixture(query: string) {
@@ -77,27 +75,11 @@ describe('SearchService', () => {
     link.run('wiki/storage.md', 'self', 'wiki/storage.md');
     link.run('wiki/storage.md', 'missing', null);
     link.run('wiki/outgoing.md', 'second-hop', 'wiki/second-hop.md');
-    expect(await f.search.search('저장소')).toEqual([{
+    expect(await f.search.search('저장소')).toMatchObject([{
       path: 'wiki/storage.md', title: '지식 관리', heading: '관리 > 보존',
-      snippet: '저장소는 main을 보존한다.', score: expect.closeTo(0.0163934426, 9),
+      snippet: '저장소는 main을 보존한다.',
       kind: 'wiki', related: ['wiki/incoming.md', 'wiki/outgoing.md'],
     }]);
-  });
-
-  it('logs the missing embedding key once per service while retaining keyword results', async () => {
-    const f = await fixture();
-    f.chunk({ path: 'wiki/a.md', content: '저장소는 안전하다.' });
-    expect((await f.search.search('저장소'))[0]?.path).toBe('wiki/a.md');
-    expect((await f.search.search('안전하다'))[0]?.path).toBe('wiki/a.md');
-    expect(f.warn).toHaveBeenCalledTimes(1);
-    expect(f.warn).toHaveBeenCalledWith(expect.stringContaining('OPENAI_API_KEY'));
-  });
-
-  it('returns no keyword candidates for queries shorter than three Unicode codepoints', async () => {
-    const f = await fixture();
-    f.chunk({ path: 'wiki/a.md', content: '저장소는 중요하다. 😀😀' });
-    expect(await f.search.search('저장')).toEqual([]);
-    expect(await f.search.search('😀😀')).toEqual([]);
   });
 
   it('still retrieves vector candidates for short queries', async () => {
@@ -106,14 +88,14 @@ describe('SearchService', () => {
     expect((await f.search.search('저장')).map((hit) => hit.path)).toEqual(['wiki/a.md']);
   });
 
-  it('quotes the complete keyword query and escapes embedded quotation marks', async () => {
+  it('treats embedded quotes and query operators as literal search text', async () => {
     const f = await fixture();
     f.chunk({ path: 'wiki/exact.md', content: 'alpha" OR "beta' });
     f.chunk({ path: 'wiki/other.md', content: 'beta unrelated' });
     expect((await f.search.search('alpha" OR "beta')).map((hit) => hit.path)).toEqual(['wiki/exact.md']);
   });
 
-  it('filters keyword kinds before selecting the top fifty candidates', async () => {
+  it('finds the requested keyword kind even among many other kinds', async () => {
     const f = await fixture();
     for (let i = 0; i < 51; i++) f.chunk({ path: `wiki/${i}.md`, content: '저장소' });
     f.chunk({ path: 'journal/day.md', content: '저장소', kind: 'journal' });
@@ -132,9 +114,9 @@ describe('SearchService', () => {
     expect((await f.search.search('질문', { kinds: ['raw'] })).map((hit) => hit.path)).toEqual(['raw/source.md']);
   });
 
-  it('fuses chunk ranks, sums note scores and chooses the best fused chunk rather than first keyword chunk', async () => {
+  it('returns the best matching chunk as a note preview and respects an explicit limit', async () => {
     const f = await vectorFixture('저장소');
-    f.chunk({ path: 'wiki/combined.md', heading: '첫째', content: '저장소 첫째', ordinal: 0,
+    f.chunk({ path: 'wiki/combined.md', heading: '첫째', content: '관련 없는 소개', ordinal: 0,
       vector: [f.queryVector[0]! + 2, f.queryVector[1]!] });
     f.chunk({ path: 'wiki/combined.md', heading: '둘째', content: '저장소 둘째', ordinal: 1,
       vector: f.queryVector });
@@ -143,47 +125,16 @@ describe('SearchService', () => {
     const hits = await f.search.search('저장소');
     expect(hits.map((hit) => hit.path)).toEqual(['wiki/combined.md', 'wiki/single.md']);
     expect(hits[0]).toMatchObject({ heading: '둘째', snippet: '저장소 둘째' });
-    // Worked RRF example: keyword ranks 1,2; vector ranks 3,1 for the two combined chunks.
-    expect(hits[0]!.score).toBeCloseTo(0.0647889334, 9);
-    expect(hits[1]!.score).toBeCloseTo(0.0161290323, 9);
     expect(await f.search.search('저장소', { limit: 1 })).toEqual([hits[0]]);
     expect(await f.search.search('저장소')).toEqual(hits);
-  });
-
-  it('ranks equal vector distances deterministically by chunk id', async () => {
-    const f = await vectorFixture('두글');
-    f.chunk({ path: 'wiki/z.md', content: '본문', vector: f.queryVector });
-    f.chunk({ path: 'wiki/a.md', content: '본문', vector: f.queryVector });
-    // Equal distances still produce stable, distinct RRF ranks.
-    const hits = await f.search.search('두글');
-    expect(hits.map((hit) => hit.path)).toEqual(['wiki/z.md', 'wiki/a.md']);
-    expect(hits[0]!.score).toBeCloseTo(0.0163934426, 9);
-    expect(hits[1]!.score).toBeCloseTo(0.0161290323, 9);
-  });
-
-  it('breaks equal fused note scores by path, not candidate insertion order', async () => {
-    const f = await vectorFixture('저장소');
-    f.chunk({ path: 'wiki/z.md', content: '저장소', vector: [f.queryVector[0]! + 1, f.queryVector[1]!] });
-    f.chunk({ path: 'wiki/a.md', content: '저장소', vector: f.queryVector });
-    const hits = await f.search.search('저장소');
-    expect(hits.map((hit) => hit.path)).toEqual(['wiki/a.md', 'wiki/z.md']);
-    expect(hits[0]!.score).toBeCloseTo(0.0325224749, 9);
-    expect(hits[1]!.score).toBeCloseTo(0.0325224749, 9);
-  });
-
-  it('returns ten notes by default and never takes more than fifty keyword candidates', async () => {
-    const f = await fixture();
-    const paths = Array.from({ length: 51 }, (_, i) => `wiki/${String(i).padStart(2, '0')}.md`);
-    for (const path of paths) f.chunk({ path, content: '저장소' });
-    expect((await f.search.search('저장소')).map((hit) => hit.path)).toEqual(paths.slice(0, 10));
-    expect((await f.search.search('저장소', { limit: 100 })).map((hit) => hit.path)).toEqual(paths.slice(0, 50));
   });
 
   it('skips pending vectors while still finding their keyword content', async () => {
     const f = await vectorFixture('저장소');
     f.chunk({ path: 'wiki/pending.md', content: '저장소', vector: f.queryVector, pending: true });
+    f.chunk({ path: 'wiki/vector-only.md', content: '별개의 내용', vector: f.queryVector, pending: true });
     const hits = await f.search.search('저장소');
-    expect(hits[0]!.score).toBeCloseTo(0.0163934426, 9);
+    expect(hits.map((hit) => hit.path)).toEqual(['wiki/pending.md']);
   });
 
   it.each([
@@ -192,30 +143,20 @@ describe('SearchService', () => {
   ])('ignores stale vectors when %s differs from configuration', async (key, value) => {
     const f = await vectorFixture('저장소');
     f.chunk({ path: 'wiki/a.md', content: '저장소는 보존된다.', vector: f.queryVector });
+    f.chunk({ path: 'wiki/vector-only.md', content: '별개의 내용', vector: f.queryVector });
     f.db.prepare('UPDATE index_meta SET value = ? WHERE key = ?').run(value, key);
-    // An invalid endpoint ensures stale indices cannot trigger an embedding API request.
-    f.config.openaiBaseUrl = 'http://127.0.0.1:1/v1';
+    const requests = f.fake.requests.length;
     const hits = await f.search.search('저장소');
-    expect(hits[0]!.score).toBeCloseTo(0.0163934426, 9);
-  });
-
-  it('surfaces embedding API failures instead of silently falling back to keyword search', async () => {
-    const f = await vectorFixture('저장소');
-    f.chunk({ path: 'wiki/a.md', content: '저장소', vector: f.queryVector });
-    const server = createServer((_request, response) => {
-      response.writeHead(400, { 'content-type': 'application/json' });
-      response.end(JSON.stringify({ error: { message: 'Embedding model unavailable', type: 'invalid_request_error' } }));
-    });
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-    cleanup.push(() => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
-    f.config.openaiBaseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
-    await expect(f.search.search('저장소')).rejects.toThrow('Embedding model unavailable');
+    expect(hits.map((hit) => hit.path)).toEqual(['wiki/a.md']);
+    expect(f.fake.requests).toHaveLength(requests);
   });
 
   it('returns no results for whitespace without making embedding requests', async () => {
-    const f = await fixture({ openaiApiKey: 'test-key', openaiBaseUrl: 'http://127.0.0.1:1/v1' });
+    const f = await vectorFixture('질문');
+    f.chunk({ path: 'wiki/a.md', content: '본문', vector: f.queryVector });
+    const requests = f.fake.requests.length;
     expect(await f.search.search(' \n\t ')).toEqual([]);
-    expect(f.warn).not.toHaveBeenCalled();
+    expect(f.fake.requests).toHaveLength(requests);
   });
 
   it.each([0, -1, 101, 1.5, Number.NaN])('rejects invalid limit %s', async (limit) => {

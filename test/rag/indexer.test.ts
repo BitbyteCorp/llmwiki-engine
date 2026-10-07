@@ -32,6 +32,13 @@ class GitRepoDouble {
     try { return (await exec('git', ['-C', this.directory, 'show', `${ref}:${path}`])).stdout; }
     catch { return null; }
   }
+  async log({ path, ref = 'main', limit = 1 }: { path: string; ref?: string; limit?: number }) {
+    const output = await this.git('log', `--max-count=${limit}`, '--format=%aI%x00%cI%x00%an%x00%ae', ref, '--', path);
+    return output.split('\n').filter(Boolean).map((line) => {
+      const [date, committedAt, authorName, authorEmail] = line.split('\0');
+      return { date, committedAt, authorName, authorEmail };
+    });
+  }
   async diffNames(from: string | null, to: string): Promise<FileChange[]> {
     this.diffs.push(from);
     if (from === null) return (await this.listFiles(undefined, to)).map((path) => ({ status: 'A', path }));
@@ -61,6 +68,7 @@ async function fixture(key = false) {
   const db = openDb(':memory:');
   cleanup.push(() => db.close());
   db.exec(await readFile(new URL('../../src/db/migrations/006_rag.sql', import.meta.url), 'utf8'));
+  db.exec(await readFile(new URL('../../src/db/migrations/009_rag.sql', import.meta.url), 'utf8'));
   const fake = key ? await startFakeOpenAI() : null;
   if (fake) cleanup.push(() => fake.close());
   const config = loadConfig({ NODE_ENV: 'test', EMBEDDING_DIMENSIONS: '8',

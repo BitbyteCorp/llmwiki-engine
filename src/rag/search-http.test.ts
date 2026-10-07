@@ -1,0 +1,102 @@
+import 'reflect-metadata';
+import { readFileSync } from 'node:fs';
+import type { INestApplication } from '@nestjs/common';
+import { Test } from '@nestjs/testing';
+import type { Request } from 'express';
+import pino from 'pino';
+import request from 'supertest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { loadConfig } from '../config.js';
+import { CONFIG, DB, LOGGER } from '../common/tokens.js';
+import { HttpExceptionFilter } from '../common/filters/http-exception.filter.js';
+import { openDb, type Db } from '../db/index.js';
+import { SessionsService } from '../auth/sessions.service.js';
+import { ApiTokensService } from '../auth/api-tokens.service.js';
+import { RolesGuard } from '../auth/guards/roles.guard.js';
+import { SessionGuard } from '../auth/guards/session.guard.js';
+import { SearchController } from '../api/search.controller.js';
+import { LinksController, GraphController } from '../api/links.controller.js';
+import { TagsController } from '../api/tags.controller.js';
+import { SearchService } from './search.service.js';
+import { CatalogService } from './catalog.service.js';
+import { ComparisonService } from './comparison.service.js';
+
+const paths = ['wiki/alpha.md', 'wiki/beta.md', 'journal/day.md'];
+describe('search workspace HTTP', () => {
+  let app: INestApplication;
+  let db: Db;
+  beforeEach(async () => {
+    db = openDb(':memory:');
+    for (const migration of ['006_rag.sql', '009_rag.sql']) db.exec(readFileSync(new URL(`../db/migrations/${migration}`, import.meta.url), 'utf8'));
+    const put = db.prepare(`INSERT INTO chunks(path,title,heading,content,embedding_text,content_hash,kind,ordinal,tags,tags_json,anchor,updated_at,author,normalized_hash)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    put.run(paths[0], 'Alpha 저장', '검색', '저장 데이터 검색', 'alpha', 'a', 'wiki', 0, 'search', '["search"]', '검색', '2026-10-01T00:00:00.000Z', 'Ada <ada@example.com>', 'same');
+    put.run(paths[1], 'Beta', '', '저장 데이터 검색', 'beta', 'b', 'wiki', 0, 'search', '["search"]', null, '2026-10-02T00:00:00.000Z', 'Bob <bob@example.com>', 'same');
+    put.run(paths[2], 'Journal', '', '일기 기록', 'journal', 'c', 'journal', 0, 'journal', '["journal"]', null, null, null, 'different');
+    const link = db.prepare('INSERT INTO links(source_path,target_name,target_path) VALUES(?,?,?)');
+    link.run(paths[0], 'beta', paths[1]); link.run(paths[1], 'day', paths[2]); link.run(paths[0], 'missing', null);
+    const log = pino({ enabled: false });
+    const module = await Test.createTestingModule({
+      controllers: [SearchController, LinksController, GraphController, TagsController],
+      providers: [SearchService, CatalogService, ComparisonService, SessionGuard, RolesGuard,
+        { provide: CONFIG, useValue: loadConfig({ NODE_ENV: 'test', EMBEDDING_DIMENSIONS: '2' }) },
+        { provide: DB, useValue: db }, { provide: LOGGER, useValue: log },
+        { provide: ApiTokensService, useValue: { authenticate: () => { throw new Error('No bearer fixture'); } } },
+        { provide: SessionsService, useValue: {
+          sessionUser: (req: Request) => req.get('x-session') === 'viewer' ? { id: 1, email: 'viewer@example.com', name: 'Viewer', role: 'viewer' } : null,
+          assertSameOrigin: () => {},
+        } },
+      ],
+    }).compile();
+    app = module.createNestApplication();
+    app.useGlobalFilters(new HttpExceptionFilter(log));
+    await app.init();
+  });
+  afterEach(async () => { await app.close(); db.close(); });
+
+  it('serves enriched filtered hits and quick-open suggestions to a viewer', async () => {
+    const result = await request(app.getHttpServer()).get('/api/search').query({ q: '저장', folder: 'wiki', tags: 'SEARCH', author: 'Ada', from: '2026-10-01', to: '2026-10-01' }).set('x-session', 'viewer').expect(200);
+    expect(result.body).toMatchObject({ mode: 'keyword', degraded: { reason: 'no_api_key' }, nextCursor: null,
+      hits: [{ path: paths[0], anchor: '검색', excerpt: '저장 데이터 검색', tags: ['search'], updatedAt: '2026-10-01T00:00:00.000Z', highlights: [[0, 2]] }] });
+    const suggest = await request(app.getHttpServer()).get('/api/search/suggest?q=Al').set('x-session', 'viewer').expect(200);
+    expect(suggest.body.map((note: { path: string }) => note.path)).toEqual([paths[0], paths[2]]);
+  });
+
+  it('serves directional links, bounded graph and distinct note tag facets', async () => {
+    const links = await request(app.getHttpServer()).get('/api/links').query({ path: paths[1] }).set('x-session', 'viewer').expect(200);
+    expect(links.body).toEqual({ outgoing: [{ path: paths[2], title: 'Journal' }], backlinks: [{ path: paths[0], title: 'Alpha 저장' }], unresolved: [] });
+    const alpha = await request(app.getHttpServer()).get('/api/links').query({ path: paths[0] }).set('x-session', 'viewer').expect(200);
+    expect(alpha.body.unresolved).toEqual(['missing']);
+    const graph = await request(app.getHttpServer()).get('/api/graph').query({ path: paths[0], depth: 1 }).set('x-session', 'viewer').expect(200);
+    expect(graph.body.nodes.map((node: { path: string }) => node.path)).toEqual([paths[0], paths[1]]);
+    expect(graph.body.edges).toEqual([{ from: paths[0], to: paths[1] }]);
+    const facets = await request(app.getHttpServer()).get('/api/tags').set('x-session', 'viewer').expect(200);
+    expect(facets.body).toEqual([{ tag: 'journal', count: 1 }, { tag: 'search', count: 2 }]);
+    const notes = await request(app.getHttpServer()).get('/api/tags/notes?tag=SEARCH').set('x-session', 'viewer').expect(200);
+    expect(notes.body).toEqual([{ path: paths[0], title: 'Alpha 저장' }, { path: paths[1], title: 'Beta' }]);
+  });
+
+  it('keeps duplicates read-only and does not return linked-only semantic neighbors', async () => {
+    const pairs = await request(app.getHttpServer()).get('/api/search/duplicates?limit=1').set('x-session', 'viewer').expect(200);
+    expect(pairs.body).toMatchObject([{ left: { path: paths[0] }, right: { path: paths[1] }, reason: 'exact', score: 1,
+      passages: [{ left: { excerpt: '저장 데이터 검색' }, right: { excerpt: '저장 데이터 검색' } }] }]);
+    const similar = await request(app.getHttpServer()).get('/api/search/similar').query({ path: paths[0] }).set('x-session', 'viewer').expect(200);
+    expect(similar.body).toEqual([]);
+    expect((db.prepare('SELECT COUNT(*) AS count FROM chunks').get() as { count: number }).count).toBe(3);
+  });
+
+  it.each(['/api/search?q=저장', '/api/search/suggest?q=a', '/api/search/similar?path=wiki/alpha.md', '/api/search/duplicates', '/api/links?path=wiki/alpha.md', '/api/graph', '/api/tags', '/api/tags/notes?tag=search'])('requires authentication for %s', async (url) => {
+    const response = await request(app.getHttpServer()).get(url).expect(401);
+    expect(response.body.error.code).toBe('unauthorized');
+  });
+
+  it.each(['/api/search', '/api/search?q=a&limit=0', '/api/search?q=a&limit=101', '/api/search?q=a&limit=1.5', '/api/search?q=a&from=bad', '/api/search/similar?path=../x.md', '/api/search/duplicates?limit=0', '/api/links', '/api/graph?depth=6', '/api/tags/notes'])('validates query inputs for %s', async (url) => {
+    const response = await request(app.getHttpServer()).get(url).set('x-session', 'viewer').expect(400);
+    expect(response.body.error.code).toBe('invalid_input');
+  });
+
+  it('rejects invalid cursors with a public error instead of a server failure', async () => {
+    const response = await request(app.getHttpServer()).get('/api/search?q=저장&cursor=bad.1').set('x-session', 'viewer').expect(400);
+    expect(response.body.error.code).toBe('invalid_search');
+  });
+});
