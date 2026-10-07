@@ -14,7 +14,7 @@ import { ConversationPresence } from '@/components/chat/presence';
 import { ChatMessageView } from '@/components/chat/message-view';
 import { ChatProposal } from '@/components/chat/proposal';
 
-interface RunningStream { conversationId: string; controller: AbortController; generationId?: string; answerId: string; stopRequested?: boolean }
+interface RunningStream { conversationId: string; controller: AbortController; generationId?: string; answerId: string; stopRequested?: boolean; onAccepted?: () => void }
 interface ToolActivity { name: string; summary?: string; status?: string; path?: string }
 const phases: Record<string, string> = { queued: '답변 준비 중', thinking: '생각 중', answering: '답변 작성 중', summarizing: '이전 대화 요약 중', tool: '위키 확인 중' };
 
@@ -72,6 +72,7 @@ export function ChatPage() {
         switch (event.event) {
           case 'generation':
             stream.generationId = event.data.generationId;
+            stream.onAccepted?.();
             if (stream.stopRequested) void cancelGeneration(event.data.generationId).catch(setError);
             setLocalMessages(previous => previous?.map(message => message.id.startsWith('local-user-') && event.data.userMessageId ? {...message, id: event.data.userMessageId} : message) ?? null);
             break;
@@ -128,7 +129,7 @@ export function ChatPage() {
   }, []);
   useEffect(() => {
     const keyboard = (event: KeyboardEvent) => {
-      if (event.isComposing) return;
+      if (event.defaultPrevented || event.isComposing || event.keyCode === 229 || document.querySelector('dialog[open]')) return;
       if (event.key === 'Escape' && active.current) { event.preventDefault(); void stop(); }
     };
     window.addEventListener('keydown',keyboard);
@@ -137,13 +138,16 @@ export function ChatPage() {
 
   const messages = localMessages ?? detail.data?.messages ?? [];
   const submit = async (input: ChatMessageInput) => {
-    if (!id || active.current || !detail.data) return;
+    if (!id || active.current || !detail.data) return false;
+    const accepted = Promise.withResolvers<boolean>();
     const temporary = crypto.randomUUID();
     const answer: Message = {id:`local-answer-${temporary}`,role:'assistant',content:'',citations:[],attachments:[],context:null,status:'running',usage:null,model:input.model ?? null,effort:input.effort ?? null,createdAt:new Date().toISOString()};
     const previous = editing ? messages.slice(0,messages.findIndex(message => message.id === editing.id)+1).map(message => message.id === editing.id ? {...message,content:input.content} : message) : [...messages,{...answer,id:`local-user-${temporary}`,role:'user' as const,content:input.content,status:'completed' as const,attachments:input.attachments ?? [],context:input.context ?? null}];
     setLocalMessages([...previous,answer]);
-    const editId = editing?.id; setEditing(null);
-    await run({conversationId:id,controller:new AbortController(),answerId:answer.id},(handlers,signal) => editId ? streamMessageAction(id,editId,'edit',{content:input.content},handlers,signal) : sendMessage(id,input,handlers,signal));
+    const editId = editing?.id;
+    const stream: RunningStream = {conversationId:id,controller:new AbortController(),answerId:answer.id,onAccepted:() => {setEditing(null); accepted.resolve(true);}};
+    void run(stream,(handlers,signal) => editId ? streamMessageAction(id,editId,'edit',{content:input.content},handlers,signal) : sendMessage(id,input,handlers,signal)).finally(() => accepted.resolve(false));
+    return accepted.promise;
   };
   const action = async (message: Message, kind: 'retry' | 'regenerate') => {
     if (!id || active.current) return;
@@ -168,7 +172,7 @@ export function ChatPage() {
         <ol className="space-y-6">{messages.map(message => <li key={message.id}><ChatMessageView message={message} tools={tools[message.id]} disabled={streaming || readonly} onEdit={setEditing} onAction={(item,kind) => void action(item,kind)} onProposal={(item,mode) => setProposal({messageId:item.id,mode})}/></li>)}</ol>
         {streaming && <p role="status" aria-live="polite" className="animate-pulse text-xs text-muted-foreground">{phase}…</p>}
       </section>
-      <div className="sticky bottom-0 z-10 bg-background pb-2 pt-3"><ChatComposer conversationId={id} disabled={readonly || !detail.data} streaming={streaming} onSubmit={input => void submit(input)} onStop={() => void stop()} edit={editing} onCancelEdit={() => setEditing(null)} onEditLast={() => {const last=messages.findLast(item => item.role==='user');if(last && !streaming && window.confirm('질문을 수정하면 이후 답변과 대화가 교체됩니다. 계속할까요?')) setEditing(last);}} onSaveLast={() => {const last=messages.findLast(item => item.role==='assistant' && item.status==='completed');if(last)setProposal({messageId:last.id,mode:'new'});}}/>{readonly && <p className="text-xs text-muted-foreground">공유된 대화를 읽는 권한입니다. 질문하려면 소유자에게 편집 권한을 요청하세요.</p>}</div>
+      <div className="sticky bottom-0 z-10 bg-background pb-2 pt-3"><ChatComposer conversationId={id} disabled={readonly || !detail.data} streaming={streaming} onSubmit={submit} onStop={() => void stop()} edit={editing} onCancelEdit={() => setEditing(null)} onEditLast={() => {const last=messages.findLast(item => item.role==='user');if(last && !streaming && window.confirm('질문을 수정하면 이후 답변과 대화가 교체됩니다. 계속할까요?')) setEditing(last);}} onSaveLast={() => {const last=messages.findLast(item => item.role==='assistant' && item.status==='completed');if(last)setProposal({messageId:last.id,mode:'new'});}}/>{readonly && <p className="text-xs text-muted-foreground">공유된 대화를 읽는 권한입니다. 질문하려면 소유자에게 편집 권한을 요청하세요.</p>}</div>
       <div ref={bottom}/>
     </>}
     {id && proposal && <ChatProposal conversationId={id} messageId={proposal.messageId} mode={proposal.mode} onClose={() => setProposal(null)}/>}
