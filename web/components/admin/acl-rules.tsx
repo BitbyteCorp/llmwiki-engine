@@ -29,7 +29,7 @@ function AccessResult({ result, users }: { result: AclCheck; users: User[] }) {
   const user = users.find(candidate => candidate.id === result.userId)
   return <div role="status" className="space-y-3 rounded-lg border bg-card p-4 text-sm">
     <p className="text-sm font-semibold">최종 접근 권한: {accessLabels[result.access]}</p>
-    <dl className="grid gap-3 sm:grid-cols-[auto_1fr]">
+    <dl className="grid grid-cols-1 gap-3 @2xl/settings-panel:grid-cols-[auto_1fr]">
       <dt className="text-muted-foreground">사용자</dt><dd className="break-all">{user ? userLabel(user) : `사용자 ID: ${result.userId}`}</dd>
       <dt className="text-muted-foreground">경로</dt><dd className="break-all font-mono">{result.path}</dd>
       <dt className="text-muted-foreground">판정 근거</dt><dd>{result.reason === 'admin' ? '관리자는 모든 경로를 읽고 쓸 수 있다.' : result.reason === 'role_default' ? '일치하는 규칙이 없어 전역 역할의 기본 권한을 적용했다.' : '가장 구체적인 적용 규칙을 사용했다.'}</dd>
@@ -125,7 +125,7 @@ export function AclRules() {
       {rules.data && !rules.data.rules.length && <EmptyState title="등록된 접근 규칙이 없다" description="모든 경로에 전역 역할의 기본 권한을 적용한다. 아래에서 폴더나 파일의 접근 규칙을 추가할 수 있다." />}
       {groupedRules.map(([groupPrefix, entries]) => <div key={groupPrefix} className="overflow-hidden rounded-lg border">
         <h4 className="break-all border-b bg-muted/30 px-4 py-3 font-mono text-sm font-semibold">{groupPrefix === '/' ? '/ (전체 저장소)' : groupPrefix}</h4>
-        <Table className="min-w-[32rem]">
+        <Table className="min-w-[600px]">
           <TableHeader><TableRow><TableHead scope="col">대상</TableHead><TableHead scope="col">권한</TableHead><TableHead scope="col">등록 시각</TableHead><TableHead scope="col"><span className="sr-only">규칙 삭제</span></TableHead></TableRow></TableHeader>
           <TableBody>{entries.map(rule => <TableRow key={rule.id}>
             <TableCell className="min-w-48 max-w-xs whitespace-normal break-all">{subjectLabel(rule, userList)}</TableCell>
@@ -152,7 +152,7 @@ export function AclRules() {
       {users.isError && <div className="space-y-3"><ErrorNotice error={users.error} /><Button variant="outline" size="sm" disabled={users.isFetching} onClick={() => void users.refetch()}>사용자 목록 다시 불러오기</Button></div>}
       {users.data && !userList.length && <p className="text-sm text-muted-foreground">선택할 사용자가 없다. 역할이나 모든 사용자 대상 규칙은 저장할 수 있다.</p>}
       <form onSubmit={submitRule} className="space-y-3">
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 @2xl/settings-panel:grid-cols-2">
           <div className="space-y-2"><Label htmlFor="acl-folder">폴더 선택</Label><NativeSelect id="acl-folder" className="w-full" value={folders.includes(prefix) ? prefix : ''} disabled={busy} onChange={event => { if (event.target.value) setPrefix(event.target.value) }}><option value="">직접 입력한 경로</option>{folders.map(folder => <option key={folder} value={folder}>{folder === '/' ? '/ (전체 저장소)' : folder}</option>)}</NativeSelect></div>
           <div className="space-y-2"><Label htmlFor="acl-prefix">폴더 또는 정확한 파일 경로</Label><Input id="acl-prefix" value={prefix} required disabled={busy} aria-describedby="acl-prefix-help" placeholder="team/ 또는 team/note.md" onChange={event => { setPrefix(event.target.value); create.reset() }} /><p id="acl-prefix-help" className="text-xs text-muted-foreground">저장소 상대 경로를 사용한다. 상위 경로(..)와 절대 경로는 사용할 수 없다. /는 전체 저장소를 뜻한다.</p></div>
           <div className="space-y-2"><Label htmlFor="acl-subject-type">대상 유형</Label><NativeSelect id="acl-subject-type" className="w-full" value={subjectType} disabled={busy} onChange={event => { setSubjectType(event.target.value as AclSubjectType); create.reset() }}>{Object.entries(subjectLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</NativeSelect></div>
@@ -169,7 +169,7 @@ export function AclRules() {
       <h3 id="acl-check-heading" className="text-sm font-semibold">접근 확인</h3>
       <p className="text-sm text-muted-foreground">사용자와 파일 경로를 선택해 실제 접근 권한과 적용 규칙을 확인한다.</p>
       <form onSubmit={submitCheck} className="space-y-3">
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-3 @2xl/settings-panel:grid-cols-2">
           <div className="space-y-2"><Label htmlFor="acl-check-user">확인할 사용자</Label><NativeSelect id="acl-check-user" className="w-full" value={checkUser} required disabled={users.isPending || !userList.length} onChange={event => setCheckUser(event.target.value)}><option value="">사용자 선택</option>{userList.map(user => <option key={user.id} value={String(user.id)}>{userLabel(user)}</option>)}</NativeSelect></div>
           <div className="space-y-2"><Label htmlFor="acl-check-path">확인할 파일 경로</Label><Input id="acl-check-path" required value={checkPath} placeholder="team/note.md" onChange={event => setCheckPath(event.target.value)} /></div>
         </div>

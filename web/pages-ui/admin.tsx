@@ -73,8 +73,8 @@ export function UsersAndSettings({ currentUser, tab }: { currentUser: User; tab:
         {deleteUser.error && <ErrorNotice error={deleteUser.error} />}
         {users.data && (users.data.users.length === 0 ? <EmptyState title="등록된 사용자가 없습니다" /> : (
           <div className="overflow-x-auto rounded-lg border">
-            <table className="w-full text-left text-sm">
-              <thead className="border-b bg-muted/30 text-muted-foreground"><tr><th className="px-4 py-3 font-medium">사용자</th><th className="px-4 py-3 font-medium">역할</th><th className="px-4 py-3 font-medium">최근 로그인</th><th className="px-4 py-3 font-medium"><span className="sr-only">사용자 삭제</span></th></tr></thead>
+            <table className="w-full min-w-[600px] text-left text-sm">
+              <thead className="whitespace-nowrap border-b bg-muted/30 text-muted-foreground"><tr><th className="px-4 py-3 font-medium">사용자</th><th className="px-4 py-3 font-medium">역할</th><th className="px-4 py-3 font-medium">최근 로그인</th><th className="px-4 py-3 font-medium"><span className="sr-only">사용자 삭제</span></th></tr></thead>
               <tbody className="divide-y">{users.data.users.map((user) => (
                 <tr key={user.id}>
                   <td className="px-4 py-3"><p className="font-medium">{user.name || user.email}{user.id === currentUser.id && <span className="ml-2 text-xs text-muted-foreground">나</span>}</p>{user.name && <p className="mt-1 text-xs text-muted-foreground">{user.email}</p>}</td>
@@ -91,7 +91,7 @@ export function UsersAndSettings({ currentUser, tab }: { currentUser: User; tab:
       <section className="space-y-3 rounded-lg border bg-card p-4" aria-labelledby="add-user-heading">
         <h2 id="add-user-heading" className="text-sm font-semibold">사용자 추가</h2>
         <form onSubmit={submitUser} className="space-y-3">
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 @2xl/settings-panel:grid-cols-2 @4xl/settings-panel:grid-cols-3">
             <div className="space-y-2"><Label htmlFor="user-email">이메일</Label><Input id="user-email" type="email" required autoComplete="email" placeholder="name@example.com" value={email} onChange={(event) => setEmail(event.target.value)} disabled={createUser.isPending} /></div>
             <div className="space-y-2"><Label htmlFor="user-name">이름 <span className="text-muted-foreground">(선택)</span></Label><Input id="user-name" autoComplete="name" value={name} onChange={(event) => setName(event.target.value)} disabled={createUser.isPending} /></div>
             <div className="flex flex-col gap-2"><Label htmlFor="user-role">역할</Label><RoleSelect id="user-role" label="새 사용자 역할" value={role} onChange={setRole} disabled={createUser.isPending} /></div>

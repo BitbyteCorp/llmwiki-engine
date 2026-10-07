@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useRouter, useSearchParams } from 'next/navigation'
 import { useQuery } from '@tanstack/react-query'
 import { useTheme } from 'next-themes'
@@ -26,8 +26,15 @@ export function SettingsPage({ publicUrl }: { publicUrl?: string }) {
   const me = useQuery({ queryKey: ['me'], queryFn: api.me })
   const router = useRouter()
   const params = useSearchParams()
+  const layout = useRef<HTMLDivElement>(null)
   const [desktop, setDesktop] = useState(false)
-  useEffect(() => { const media = window.matchMedia('(min-width: 768px)'); const update = () => setDesktop(media.matches); update(); media.addEventListener('change', update); return () => media.removeEventListener('change', update) }, [])
+  useEffect(() => {
+    const element = layout.current
+    if (!element) return
+    const observer = new ResizeObserver(([entry]) => setDesktop(entry.contentRect.width >= 720))
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [])
   const requested = params.get('tab')
   const tab = [...personalTabs, ...adminTabs].find(item => item.id === requested)?.id ?? 'account'
   const isAdmin = me.data?.user.role === 'admin'
@@ -39,14 +46,14 @@ export function SettingsPage({ publicUrl }: { publicUrl?: string }) {
     query.set('tab', next)
     router.replace(`/settings?${query}`, { scroll: false })
   }
-  return <div className="space-y-6">
+  return <div ref={layout} className="@container/settings-layout min-w-0 space-y-6">
     <PageHeader title="설정" description="개인 설정과 관리 기능을 한곳에서 확인합니다." />
     {me.isPending && <Loading label="계정 정보를 불러오는 중…" />}
     {me.error && <div className="space-y-3"><ErrorNotice error={me.error} /><Button variant="outline" disabled={me.isFetching} onClick={() => void me.refetch()}>계정 정보 다시 불러오기</Button></div>}
-    {me.data && <div className="grid min-w-0 gap-6 md:grid-cols-[180px_minmax(0,1fr)]">
-      <div role="tablist" aria-label="설정" aria-orientation={desktop ? 'vertical' : 'horizontal'} className="flex min-w-0 gap-1 overflow-x-auto border-b pb-2 md:flex-col md:self-start md:border-b-0 md:border-r md:pr-3">
+    {me.data && <div className="grid min-w-0 gap-6 @[720px]/settings-layout:grid-cols-[180px_minmax(0,1fr)]">
+      <div role="tablist" aria-label="설정" aria-orientation={desktop ? 'vertical' : 'horizontal'} className="flex min-w-0 gap-1 overflow-x-auto border-b pb-2 @[720px]/settings-layout:flex-col @[720px]/settings-layout:self-start @[720px]/settings-layout:border-b-0 @[720px]/settings-layout:border-r @[720px]/settings-layout:pr-3">
         {tabs.map((item, index) => <div key={item.id} role="presentation" className="shrink-0">
-          {(index === 0 || item.id === 'ops') && <span className="hidden px-3 pb-2 pt-3 text-xs font-semibold text-muted-foreground md:block">{index === 0 ? '개인' : '관리'}</span>}
+          {(index === 0 || item.id === 'ops') && <span className="hidden px-3 pb-2 pt-3 text-xs font-semibold text-muted-foreground @[720px]/settings-layout:block">{index === 0 ? '개인' : '관리'}</span>}
           <button type="button" role="tab" id={`settings-tab-${item.id}`} aria-selected={tab === item.id} aria-controls={`settings-panel-${item.id}`} tabIndex={tab === item.id || (denied && index === 0) ? 0 : -1} className={`h-9 w-full whitespace-nowrap rounded-md px-3 text-left text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring ${tab === item.id ? 'bg-secondary font-semibold text-secondary-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground'}`} onClick={() => selectTab(item.id)} onKeyDown={event => {
             const forward = desktop ? 'ArrowDown' : 'ArrowRight'
             const backward = desktop ? 'ArrowUp' : 'ArrowLeft'
@@ -61,9 +68,9 @@ export function SettingsPage({ publicUrl }: { publicUrl?: string }) {
           }}>{item.label}</button>
         </div>)}
       </div>
-      <div role="tabpanel" id={`settings-panel-${tab}`} aria-labelledby={denied ? undefined : `settings-tab-${tab}`} aria-label={denied ? '관리자 권한 필요' : undefined} tabIndex={0} className="min-w-0 space-y-6 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+      <div role="tabpanel" id={`settings-panel-${tab}`} aria-labelledby={denied ? undefined : `settings-tab-${tab}`} aria-label={denied ? '관리자 권한 필요' : undefined} tabIndex={0} className="@container/settings-panel min-w-0 space-y-6 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
         {denied ? <EmptyState title="관리자 권한이 필요합니다" description="이 설정은 관리자만 확인하거나 변경할 수 있습니다." /> : <>
-          {tab === 'account' && <section aria-labelledby="account-heading" className="space-y-3 rounded-lg border bg-card p-4"><h2 id="account-heading" className="flex items-center gap-2 text-sm font-semibold"><UserRound className="size-4" />내 계정</h2><div className="flex flex-wrap items-center gap-2 text-sm"><p className="break-all font-medium">{me.data.user.name || me.data.user.email}</p><Badge variant="secondary">{roleLabels[me.data.user.role]}</Badge></div><dl className="grid gap-3 text-sm sm:grid-cols-2"><div className="space-y-1"><dt className="text-muted-foreground">이메일</dt><dd className="break-all">{me.data.user.email}</dd></div><div className="space-y-1"><dt className="text-muted-foreground">가입일</dt><dd>{formatDate(me.data.user.createdAt)}</dd></div></dl></section>}
+          {tab === 'account' && <section aria-labelledby="account-heading" className="space-y-3 rounded-lg border bg-card p-4"><h2 id="account-heading" className="flex items-center gap-2 text-sm font-semibold"><UserRound className="size-4" />내 계정</h2><div className="flex flex-wrap items-center gap-2 text-sm"><p className="break-all font-medium">{me.data.user.name || me.data.user.email}</p><Badge variant="secondary">{roleLabels[me.data.user.role]}</Badge></div><dl className="grid gap-3 text-sm @2xl/settings-panel:grid-cols-2"><div className="space-y-1"><dt className="text-muted-foreground">이메일</dt><dd className="break-all">{me.data.user.email}</dd></div><div className="space-y-1"><dt className="text-muted-foreground">가입일</dt><dd>{formatDate(me.data.user.createdAt)}</dd></div></dl></section>}
           {tab === 'appearance' && <AppearanceSettings />}
           {tab === 'tokens' && <TokenSettings user={me.data.user} />}
           {tab === 'mcp' && <McpHelp publicUrl={publicUrl} />}
@@ -83,5 +90,5 @@ function AppearanceSettings() {
   const { theme, setTheme } = useTheme()
   const [mounted, setMounted] = useState(false)
   useEffect(() => setMounted(true), [])
-  return <section aria-labelledby="appearance-heading" className="space-y-3 rounded-lg border bg-card p-4"><h2 id="appearance-heading" className="text-sm font-semibold">화면 테마</h2><fieldset><legend className="sr-only">화면 테마 선택</legend><div className="grid gap-3 sm:grid-cols-3">{themeOptions.map(({ value, label, icon: Icon }) => <label key={value} className={`flex cursor-pointer items-center gap-3 rounded-lg border p-4 hover:bg-muted/50 ${mounted && theme === value ? 'border-primary bg-primary/5' : ''}`}><input type="radio" name="settings-theme" value={value} checked={mounted && theme === value} disabled={!mounted} onChange={() => setTheme(value)} className="size-4 accent-primary" /><Icon className="size-4" /><span className="text-sm font-medium">{label}</span></label>)}</div></fieldset><p className="text-xs text-muted-foreground">선택한 테마는 이 브라우저에 저장됩니다.</p></section>
+  return <section aria-labelledby="appearance-heading" className="space-y-3 rounded-lg border bg-card p-4"><h2 id="appearance-heading" className="text-sm font-semibold">화면 테마</h2><fieldset><legend className="sr-only">화면 테마 선택</legend><div className="grid gap-3 @2xl/settings-panel:grid-cols-3">{themeOptions.map(({ value, label, icon: Icon }) => <label key={value} className={`flex cursor-pointer items-center gap-3 rounded-lg border p-4 hover:bg-muted/50 ${mounted && theme === value ? 'border-primary bg-primary/5' : ''}`}><input type="radio" name="settings-theme" value={value} checked={mounted && theme === value} disabled={!mounted} onChange={() => setTheme(value)} className="size-4 accent-primary" /><Icon className="size-4" /><span className="text-sm font-medium">{label}</span></label>)}</div></fieldset><p className="text-xs text-muted-foreground">선택한 테마는 이 브라우저에 저장됩니다.</p></section>
 }
