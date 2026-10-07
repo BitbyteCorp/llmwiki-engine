@@ -21,7 +21,11 @@ MCP와 REST 가져오기(`/api/imports`)의 JSON 요청 본문 상한은 21 MiB�
 
 `McpModule`은 인증·검색·지식 저장소·쓰기 작업·수집 모듈을 명시적으로 가져온다. `McpService`는 공유 검색·링크·유사도 서비스, `KnowledgeRepo`, `WriteJobsService`, `IngestService`를 DI로 받아 REST와 같은 데이터와 쓰기 파이프라인을 사용한다. `McpController`는 전송의 연결·요청 처리·응답 종료 시 정리를 담당한다. Nest의 JSON 파서가 요청 본문을 먼저 읽으므로 원래 Express 요청·응답과 이미 해석한 `req.body`를 함께 `transport.handleRequest`에 전달한다.
 
-전송의 근거는 [공식 SDK의 stateless 예제](https://github.com/modelcontextprotocol/typescript-sdk/blob/v1.x/src/examples/server/simpleStatelessStreamableHttp.ts)와 [Streamable HTTP 명세](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#streamable-http)에 기록되어 있다.
+전송의 근거는 [공식 SDK의 stateless 예제](https://github.com/modelcontextprotocol/typescript-sdk/blob/v1.x/src/examples/server/simpleStatelessStreamableHttp.ts)와 [2025-11-25 Streamable HTTP 명세](https://modelcontextprotocol.io/specification/2025-11-25/basic/transports#streamable-http)에 기록되어 있다.
+
+설정의 일반 클라이언트 안내는 이 문서의 기존 근거보다 새 버전인 [2026-07-28 Streamable HTTP 명세](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http)를 연결한다. 안내에 표시하는 요청은 위 미디어 타입 헤더와 `Authorization: Bearer <OAuth 액세스 토큰>`, `MCP-Protocol-Version: <클라이언트가 협상한 버전>`, `Mcp-Method: <JSON-RPC method>`를 포함한다. 이 새 명세의 `tools/call`, `resources/read`, `prompts/get`은 `Mcp-Name`도 요구한다고 안내한다. 프로토콜 버전별 헤더 구성은 클라이언트 SDK에 맡긴다. 이는 안내가 참조하는 명세 버전의 차이를 설명하며, 엔진 컨트롤러가 새 헤더를 별도로 검증하거나 2026-07-28 명세 전체의 호환성을 보장한다는 뜻은 아니다.
+
+설정의 MCP 탭, 공개 주소 계산·발견 검사와 일곱 종류의 클라이언트 등록·로그인·문제 해결은 기존 연결 안내의 소유 문서인 [설치형 Skills](skills.md#설정의-mcp-연결-안내)에 모은다.
 
 ### 도구 계약
 
@@ -106,7 +110,7 @@ MCP와 REST 가져오기(`/api/imports`)의 JSON 요청 본문 상한은 21 MiB�
 ## 관련 문서
 
 - [인증과 권한](auth.md)은 MCP 로그인과 엔진 토큰 발급을 설명한다.
-- [설치형 Skills](skills.md)는 클라이언트별 MCP 연결과 사용 지침을 설명한다.
+- [설치형 Skills](skills.md)는 설정 MCP 탭과 클라이언트별 연결·실제 도구 확인, 설치와 사용 지침을 설명한다.
 - [쓰기 흐름](write-flow.md)은 제출한 지식을 Luna가 반영하는 절차를 설명한다.
 - [지식 저장소](knowledge-repository.md)는 노트와 색인의 배치를 설명한다.
 - [RAG](rag.md)는 검색 구현과 활용 방식을 설명한다.

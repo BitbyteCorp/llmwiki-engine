@@ -137,6 +137,13 @@ Next custom server에는 `PUBLIC_URL`의 호스트 이름과 `PORT`를 전달한
 
 빌드된 서버와 웹을 확인할 때는 `pnpm build` 후 `NODE_ENV=production pnpm start`를 사용한다. 이 모드에서는 개발 로그인을 사용할 수 없으므로 Google 로그인 설정이 필요하다. 관리자 권한 복구는 `pnpm cli user role admin@example.com admin`으로 수행한다. 첫 관리자 이후의 사용자·권한·허용 도메인 설정은 웹 관리 화면에서 변경하며 정책은 [인증](auth.md)에 기록한다.
 
+### 개발 서버 출력과 병렬 실행
+VS Code의 `pnpm dev` 터미널 출력이 일시 정지되거나 계속 배출되지 않는 상태에서는 동기 TTY 쓰기가 Node 프로세스 전체를 막을 수 있다. 실제로 이 상태에서 Next 화면뿐 아니라 `/healthz`도 응답하지 않는 현상이 관찰됐다. API와 Next가 한 이벤트 루프를 공유하므로 생존 확인 경로도 이 차단을 우회하지 못한다. 이를 DB·git·네트워크 지연으로 단정하기 전에 터미널 출력을 다시 흐르게 하고 로그 소비가 계속되는 실행 환경인지 확인한다.
+
+같은 소스 저장소에서 두 번째 `pnpm dev`를 실행하면 Next가 `web/.next/dev/lock`을 이미 사용 중이라고 보고 시작을 거부한다. 포트나 `DATA_DIR`만 바꾸어도 같은 Next 개발 출력 경로를 사용하므로 해결되지 않는다. 개발 락은 정상 서버 종료로 해제하며 실행 중인 다른 서버의 락을 지우지 않는다.
+
+병렬 확인이 필요하면 독립된 저장소 복사본과 자체 Next 개발 출력 디렉터리를 사용한다. 복사본마다 별도 `DATA_DIR`, `PORT`, 해당 포트의 `PUBLIC_URL`을 지정해 SQLite·지식 저장소·작업 워크트리·PID 파일을 공유하지 않는다. git 머지 직렬화는 프로세스 내부에서 수행하므로 같은 데이터 디렉터리의 여러 서버를 위한 프로세스 간 락으로 해석하지 않는다. 기존 사용자의 서버를 중지하거나 재시작하는 대신 복사본으로 실험한다. 로컬 성능 관찰과 운영 보장을 구분하는 기준은 [읽기 성능](performance.md#측정의-해석)에 기록한다.
+
 ### Docker 이미지와 영속 볼륨
 Dockerfile은 `node:24-bookworm-slim` 기반의 두 단계 빌드를 사용한다. 빌드 단계에서 루트 의존성을 frozen lockfile로 한 번 설치하고 `pnpm build`를 실행한 뒤 개발 의존성을 제거한다. 실행 단계에는 서버와 Next에 필요한 루트 운영 의존성, `dist/`, `skills/`, `web/.next/`, `web/public/`, Next 설정을 복사하며 git, openssh-client, tini를 설치한다. Nest와 Next를 같은 Node 프로세스에서 실행하므로 Next standalone 서버나 별도 웹 컨테이너는 사용하지 않는다.
 
@@ -181,3 +188,4 @@ docker compose --profile dev down
 - [인증](auth.md)은 관리자 부트스트랩 이후 적용되는 사용자와 로그인 정책을 설명한다.
 - [지식 저장소](knowledge-repository.md)는 영속 지식의 구조와 원격 백업 범위를 설명한다.
 - [웹](web.md), [MCP](mcp.md), [RAG](rag.md)는 각 모듈의 외부 계약을 설명한다.
+- [읽기 성능과 캐시 경계](performance.md)는 조회 캐시와 전송·렌더링 최적화 및 로컬 측정의 한계를 설명한다.
