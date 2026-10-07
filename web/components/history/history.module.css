@@ -1,0 +1,15 @@
+.scroll { overflow-x: auto; }
+.diff { width: 100%; border-collapse: collapse; font-family: var(--font-geist-mono), monospace; font-size: 12px; line-height: 1.7; }
+.diff td { white-space: pre-wrap; overflow-wrap: anywhere; vertical-align: top; padding: 0 8px; }
+.split { table-layout: fixed; min-width: 600px; }
+.number { width: 3rem; user-select: none; text-align: right; color: var(--muted-foreground); background: var(--muted); border-right: 1px solid var(--border); }
+.diff .fold { white-space: normal; background: var(--muted); color: var(--muted-foreground); padding: 5px 8px; }
+.added { background: light-dark(#e6f6e9, #143826); color: light-dark(#194c29, #bbefc8); }
+.removed { background: light-dark(#fce8e8, #461e26); color: light-dark(#7d2424, #ffc7cb); }
+.word { background: light-dark(#00000018, #ffffff22); font-weight: 600; border-radius: 2px; }
+.blame { width: 100%; border-collapse: collapse; font-size: 12px; }
+.blame td { vertical-align: top; padding: 2px 8px; }
+.gutter { width: 180px; min-width: 150px; border-right: 1px solid var(--border); font-size: 11px; }
+.blameContent { white-space: pre; font-family: var(--font-geist-mono), monospace; }
+.blame details { position: relative; }
+.blame details > div { position: absolute; z-index: 20; top: 100%; left: 0; width: 280px; white-space: normal; background: var(--popover); color: var(--popover-foreground); border: 1px solid var(--border); border-radius: 6px; padding: 12px; box-shadow: 0 8px 24px #0003; }
