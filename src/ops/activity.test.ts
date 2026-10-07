@@ -1,0 +1,263 @@
+import 'reflect-metadata';
+import type { INestApplication } from '@nestjs/common';
+import { Test } from '@nestjs/testing';
+import type { Request, Response, NextFunction } from 'express';
+import pino from 'pino';
+import request from 'supertest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { ApiError } from '../api/api-error.js';
+import { AuditService } from '../audit/audit.service.js';
+import { RolesGuard } from '../auth/guards/roles.guard.js';
+import { SessionGuard } from '../auth/guards/session.guard.js';
+import type { User } from '../auth/users.types.js';
+import { HttpExceptionFilter } from '../common/filters/http-exception.filter.js';
+import { DB } from '../common/tokens.js';
+import { openDb, runMigrations, type Db } from '../db/index.js';
+import type { DreamRun } from '../dreaming/dream-run.types.js';
+import { DreamRunsRepository } from '../dreaming/dream-runs.repository.js';
+import { DreamingService } from '../dreaming/dreaming.service.js';
+import { WriteJobsRepository } from '../jobs/write-jobs.repository.js';
+import { WriteJobsService } from '../jobs/write-jobs.service.js';
+import { KnowledgeRepo, type CommitInfo, type LogOptions } from '../knowledge/repo.js';
+import { IndexerService } from '../rag/indexer.service.js';
+import { ActivityService } from './activity.service.js';
+import { OpsController } from './ops.controller.js';
+
+const stamp = '2026-01-02T00:00:00.000Z';
+const viewer: User = { id: 1, email: 'viewer@example.test', name: 'Viewer', role: 'viewer', createdAt: stamp, lastLoginAt: null };
+const admin: User = { ...viewer, id: 3, role: 'admin' };
+function commit(sha: string, at = stamp, source = 'web', jobId?: string): CommitInfo {
+  return { sha, parents: [], authorName: 'Writer', authorEmail: 'writer@example.test', date: at,
+    committedAt: at, committerName: 'Luna', committerEmail: 'luna@example.test', subject: 'Updated note', body: '',
+    trailers: { 'Wiki-Source': source, ...(jobId ? { 'Wiki-Job': jobId } : {}) } };
+}
+function dream(id: string, at = stamp): DreamRun {
+  return { id, startedAt: at, finishedAt: at, status: 'succeeded', fromSha: null, toSha: null, mergeSha: 'e'.repeat(40),
+    pushed: true, error: null, summary: 'Daily summary', changedPaths: ['wiki/route.md', 'journal/2026-01-02.md'], journalPath: 'journal/2026-01-02.md',
+    push: { status: 'succeeded', remote: 'origin', sha: 'a'.repeat(40), at, reason: null } };
+}
+
+describe('operations activity and REST', () => {
+  let db: Db;
+  let dreams: DreamRunsRepository;
+  let jobRows: WriteJobsRepository;
+  let activity: ActivityService;
+  let commits: Array<CommitInfo & { files?: string[] }>;
+  let app: INestApplication | undefined;
+  let manual: ReturnType<typeof vi.fn<() => Promise<DreamRun>>>;
+  let index: { status: ReturnType<typeof vi.fn>; reindex: ReturnType<typeof vi.fn> };
+  let jobs: { retry: ReturnType<typeof vi.fn>; cancel: ReturnType<typeof vi.fn> };
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    runMigrations(db);
+    dreams = new DreamRunsRepository(db);
+    jobRows = new WriteJobsRepository(db);
+    commits = [];
+    const repo = {
+      log: async (path?: string, options: Omit<LogOptions, 'path'> = {}) => {
+        const matching = commits.filter((row) => !path || row.files?.includes(path));
+        return options.limit === null ? matching : matching.slice(0, options.limit ?? 50);
+      },
+      listFiles: async () => ['journal/2026-01-01.md', 'journal/2026-01-02.md', 'journal/not-a-date.md', 'journal/sub/2026-01-03.md'],
+    } as unknown as KnowledgeRepo;
+    activity = new ActivityService(db, repo, dreams);
+    manual = vi.fn(async () => dream('manual-run'));
+    index = { status: vi.fn(async () => ({ indexedSha: 'main', syncing: false })), reindex: vi.fn(async () => {}) };
+    jobs = {
+      retry: vi.fn((id: string) => {
+        const original = jobRows.get(id);
+        if (!original) throw new ApiError(404, 'not_found', 'Write job not found');
+        if (original.status !== 'failed') throw new ApiError(409, 'job_not_retryable', 'Only failed jobs can be retried');
+        jobRows.enqueue('retried', original.userId, original.input, stamp, original.source);
+        return jobRows.get('retried')!;
+      }),
+      cancel: vi.fn((id: string) => {
+        if (!jobRows.cancelQueued(id, stamp)) throw new ApiError(409, 'job_not_cancelable', 'Only queued jobs can be canceled');
+        return jobRows.get(id)!;
+      }),
+    };
+  });
+
+  afterEach(async () => {
+    if (app) await app.close();
+    app = undefined;
+    db.close();
+  });
+
+  function saveDream(run: DreamRun) {
+    dreams.create(run);
+    dreams.finish(run);
+  }
+
+  async function server() {
+    const module = await Test.createTestingModule({
+      controllers: [OpsController],
+      providers: [RolesGuard,
+        { provide: DB, useValue: db }, { provide: ActivityService, useValue: activity },
+        { provide: DreamRunsRepository, useValue: dreams }, { provide: DreamingService, useValue: { runManual: manual } },
+        { provide: WriteJobsService, useValue: jobs }, { provide: IndexerService, useValue: index }, AuditService],
+    }).overrideGuard(SessionGuard).useValue({ canActivate: () => true }).compile();
+    app = module.createNestApplication();
+    app.use((req: Request, _res: Response, next: NextFunction) => {
+      req.user = req.headers['x-admin'] === '1' ? admin : viewer;
+      next();
+    });
+    app.useGlobalFilters(new HttpExceptionFilter(pino({ level: 'silent' })));
+    await app.init();
+    return app.getHttpServer();
+  }
+
+  it('pages tied mixed sources without duplicates after a newer insertion', async () => {
+    jobRows.enqueue('job-z', 1, 'owner prompt', stamp, 'web');
+    jobRows.enqueue('job-a', 2, 'private other prompt', stamp, 'mcp');
+    saveDream(dream('dream-a'));
+    commits.push(commit('c'.repeat(40)), commit('b'.repeat(40)));
+    const first = await activity.list({ limit: 2 }, viewer);
+    expect(first.items.map((item) => [item.type, item.id])).toEqual([['job', 'job-z'], ['job', 'job-a']]);
+    jobRows.enqueue('job-new', 2, 'new private prompt', '2026-01-03T00:00:00.000Z', 'web');
+    commits.unshift(commit('d'.repeat(40), '2026-01-03T00:00:00.000Z'));
+    const second = await activity.list({ limit: 2, before: first.nextCursor! }, viewer);
+    expect(second.items.map((item) => [item.type, item.id])).toEqual([['dream', 'dream-a'], ['commit', 'c'.repeat(40)]]);
+    const third = await activity.list({ limit: 2, before: second.nextCursor! }, viewer);
+    expect(third.items.map((item) => [item.type, item.id])).toEqual([['commit', 'b'.repeat(40)], ['backup', 'dream-a']]);
+    expect(third.nextCursor).toBeNull();
+  });
+
+  it('retains arbitrarily old commit pages, including nonmonotonic git dates', async () => {
+    for (let i = 0; i < 301; i++) commits.push(commit(i.toString(16).padStart(40, '0'), `2025-01-01T00:${Math.floor(i / 60).toString().padStart(2, '0')}:${(i % 60).toString().padStart(2, '0')}.000Z`));
+    const ids: string[] = [];
+    let before: string | undefined;
+    do {
+      const page = await activity.list({ limit: 37, before, type: 'commit' }, viewer);
+      ids.push(...page.items.map((item) => item.id));
+      before = page.nextCursor ?? undefined;
+    } while (before);
+    expect(ids).toEqual(Array.from({ length: 301 }, (_, i) => (300 - i).toString(16).padStart(40, '0')));
+  });
+
+  it('matches SQLite ID tie ordering across cursor pages', async () => {
+    for (const id of ['job-A', 'job-a', 'job_z']) jobRows.enqueue(id, 1, 'prompt', stamp, 'web');
+    const first = await activity.list({ limit: 1, type: 'job' }, viewer);
+    const second = await activity.list({ limit: 1, type: 'job', before: first.nextCursor! }, viewer);
+    const third = await activity.list({ limit: 1, type: 'job', before: second.nextCursor! }, viewer);
+    expect([first.items[0]!.id, second.items[0]!.id, third.items[0]!.id]).toEqual(['job_z', 'job-a', 'job-A']);
+    expect(third.nextCursor).toBeNull();
+  });
+
+  it('filters path, source and type together and protects other users raw inputs and errors', async () => {
+    jobRows.enqueue('own', 1, 'visible owner prompt', stamp, 'web');
+    jobRows.enqueue('foreign', 2, 'secret other prompt', stamp, 'web');
+    jobRows.markFailed('foreign', 'error containing secret prompt', stamp);
+    jobRows.enqueue('unrelated', 2, 'other file prompt', stamp, 'mcp');
+    commits.push({ ...commit('a'.repeat(40), stamp, 'web', 'foreign'), files: ['wiki/route.md'] });
+    const shared = await activity.list({ limit: 10, type: 'job' }, viewer);
+    expect(shared.items.find((item) => item.id === 'own')!.job!.input).toBe('visible owner prompt');
+    expect(shared.items.find((item) => item.id === 'foreign')!.job).not.toHaveProperty('input');
+    expect(shared.items.find((item) => item.id === 'foreign')!.job).not.toHaveProperty('error');
+    const filtered = await activity.list({ limit: 10, type: 'job', path: 'wiki/route.md', source: 'web' }, viewer);
+    expect(filtered.items.map((item) => item.id)).toEqual(['foreign']);
+    expect(JSON.stringify(filtered)).not.toContain('secret');
+    const privileged = await activity.list({ limit: 10, type: 'job' }, admin);
+    expect(privileged.items.find((item) => item.id === 'foreign')!.job!.input).toBe('secret other prompt');
+    await expect(activity.list({ limit: 10, before: 'bad-cursor' }, viewer)).rejects.toMatchObject({ status: 400, code: 'invalid_cursor' });
+  });
+
+  it('supports asset path activity while rejecting paths outside the repository', async () => {
+    commits.push({ ...commit('a'.repeat(40)), files: ['assets/image.png'] });
+    const http = await server();
+    const feed = await request(http).get('/api/activity').query({ path: 'assets/image.png', type: 'commit' }).expect(200);
+    expect(feed.body.items).toMatchObject([{ id: 'a'.repeat(40), type: 'commit', paths: ['assets/image.png'] }]);
+    expect(feed.body.nextCursor).toBeNull();
+    await request(http).get('/api/activity').query({ path: '../assets/image.png' }).expect(400);
+    await request(http).get('/api/activity').query({ path: '.git/config' }).expect(400);
+  });
+
+  it('serves viewer dream list/detail, backup outcomes, and newest dated journals', async () => {
+    saveDream(dream('old', '2026-01-01T00:00:00.000Z'));
+    saveDream(dream('new'));
+    const http = await server();
+    const first = await request(http).get('/api/dreams?limit=1').expect(200);
+    expect(first.body.runs.map((run: DreamRun) => run.id)).toEqual(['new']);
+    expect(first.body.nextCursor).toBe('new');
+    const second = await request(http).get('/api/dreams?limit=1&before=new').expect(200);
+    expect(second.body).toMatchObject({ runs: [{ id: 'old' }], nextCursor: null });
+    const detail = await request(http).get('/api/dreams/new').expect(200);
+    expect(detail.body).toEqual(dream('new'));
+    await request(http).get('/api/dreams/missing').expect(404);
+    await request(http).get('/api/dreams?limit=0').expect(400);
+    const backup = await request(http).get('/api/backup/status').expect(200);
+    expect(backup.body).toMatchObject({ lastAttempt: { id: 'new' }, lastSuccess: { id: 'new' } });
+    const journal = await request(http).get('/api/journal').expect(200);
+    expect(journal.body).toEqual([
+      { date: '2026-01-02', path: 'journal/2026-01-02.md', dreamRunId: 'new' },
+      { date: '2026-01-01', path: 'journal/2026-01-01.md', dreamRunId: null },
+    ]);
+  });
+
+  it('does not let an unmerged or unchanged later dream steal a published journal association', async () => {
+    saveDream(dream('published'));
+    saveDream({ ...dream('failed-later', '2026-01-03T00:00:00.000Z'), status: 'failed', mergeSha: null, error: 'Journal validation failed' });
+    saveDream({ ...dream('unchanged-later', '2026-01-04T00:00:00.000Z'), changedPaths: ['wiki/route.md'] });
+    expect(await activity.journal()).toEqual([
+      { date: '2026-01-02', path: 'journal/2026-01-02.md', dreamRunId: 'published' },
+      { date: '2026-01-01', path: 'journal/2026-01-01.md', dreamRunId: null },
+    ]);
+  });
+
+  it('reports admin queue states with sanitized failures and rejects viewer operations', async () => {
+    jobRows.enqueue('queued', 1, 'queued private prompt', stamp, 'web');
+    jobRows.enqueue('running', 1, 'running private prompt', stamp, 'web');
+    jobRows.markRunning('running', stamp);
+    jobRows.enqueue('merging', 2, 'merging private prompt', stamp, 'chat');
+    jobRows.markMerging('merging', 'Merge summary', []);
+    jobRows.enqueue('failed', 2, 'failed private prompt', stamp, 'mcp');
+    jobRows.markFailed('failed', 'Provider failed', stamp);
+    const http = await server();
+    await request(http).get('/api/admin/ops').expect(403);
+    await request(http).post('/api/admin/dreams/run').expect(403);
+    const response = await request(http).get('/api/admin/ops').set('x-admin', '1').expect(200);
+    expect(response.body.queue).toEqual({ queued: 1, running: 2, oldestQueuedAt: stamp });
+    expect(response.body.failedJobs).toMatchObject([{ id: 'failed', error: 'Provider failed' }]);
+    expect(JSON.stringify(response.body.failedJobs)).not.toContain('private prompt');
+    expect(response.body.index).toEqual({ indexedSha: 'main', syncing: false });
+    const feed = await request(http).get('/api/activity?type=job&limit=2').expect(200);
+    expect(feed.body.items.map((item: { id: string }) => item.id)).toEqual(['running', 'queued']);
+  });
+
+  it('audits manual run outcomes and propagates operational failures', async () => {
+    const http = await server();
+    const ok = await request(http).post('/api/admin/dreams/run').set('x-admin', '1').expect(201);
+    expect(ok.body.status).toBe('succeeded');
+    manual.mockResolvedValueOnce({ ...dream('failed-run'), status: 'failed', error: 'Luna failed' });
+    const failedRun = await request(http).post('/api/admin/dreams/run').set('x-admin', '1').expect(201);
+    expect(failedRun.body.status).toBe('failed');
+    manual.mockRejectedValueOnce(new ApiError(503, 'unavailable', 'Luna unavailable'));
+    await request(http).post('/api/admin/dreams/run').set('x-admin', '1').expect(503);
+    const records = new AuditService(db).list({ limit: 10 }).events;
+    expect(records.map((record) => [record.actorId, record.action, record.target, record.outcome])).toEqual([
+      [3, 'dream.run', 'dreaming', 'failed'], [3, 'dream.run', 'failed-run', 'failed'], [3, 'dream.run', 'manual-run', 'succeeded'],
+    ]);
+  });
+
+  it('audits retry, cancel and reindex successes and failures without suppressing errors', async () => {
+    jobRows.enqueue('failed', 1, 'retry original', stamp, 'web');
+    jobRows.markFailed('failed', 'Provider failed', stamp);
+    jobRows.enqueue('queued', 1, 'cancel original', stamp, 'mcp');
+    const http = await server();
+    const retried = await request(http).post('/api/admin/jobs/failed/retry').set('x-admin', '1').expect(201);
+    expect(retried.body.job).toMatchObject({ id: 'retried', status: 'queued' });
+    const canceled = await request(http).post('/api/admin/jobs/queued/cancel').set('x-admin', '1').expect(201);
+    expect(canceled.body.job).toMatchObject({ id: 'queued', status: 'failed', error: 'canceled' });
+    await request(http).post('/api/admin/jobs/queued/cancel').set('x-admin', '1').expect(409);
+    await request(http).post('/api/admin/jobs/missing/retry').set('x-admin', '1').expect(404);
+    await request(http).post('/api/admin/index/reindex').set('x-admin', '1').send({ full: true }).expect(201);
+    index.reindex.mockRejectedValueOnce(new ApiError(503, 'index_unavailable', 'Embedding failed'));
+    await request(http).post('/api/admin/index/reindex').set('x-admin', '1').send({ full: false }).expect(503);
+    await request(http).post('/api/admin/index/reindex').set('x-admin', '1').send({ full: 'yes' }).expect(400);
+    expect(new AuditService(db).list({ limit: 10 }).events.map((row) => [row.action, row.outcome])).toEqual([
+      ['index.reindex', 'failed'], ['index.reindex', 'succeeded'], ['job.retry', 'failed'],
+      ['job.cancel', 'failed'], ['job.cancel', 'succeeded'], ['job.retry', 'succeeded'],
+    ]);
+  });
+});

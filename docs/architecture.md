@@ -58,11 +58,12 @@ flowchart TB
 - MCP 엔드포인트는 [MCP](mcp.md)의 클라이언트 접점이며, OAuth 인가 서버 엔드포인트는 [인증](auth.md)의 로그인과 인가를 담당한다.
 - 쓰기 작업 큐는 [쓰기 흐름](write-flow.md)을 처리하고, 스케줄러는 [dreaming](dreaming.md)을 실행한다.
 - 인덱서는 [RAG](rag.md)에 필요한 검색 인덱스를 관리한다.
+- 전역 `EventsModule`은 대상별 변경 신호를 발행하고 `OpsModule`은 활동 조회, 준비 상태와 운영 지표를 제공한다. [실시간 이벤트](events.md)와 [운영](operations.md)에 전달·인증 계약을 기록한다.
 
 ### NestJS와 Next.js의 MVC 경계
 모델은 `*.repository.ts`의 SQL·git 데이터 접근과 `*.entity.ts` 또는 `*.types.ts`의 데이터 형식으로 구성한다. 서비스는 `*.service.ts`에서 업무 규칙을 수행하며 Nest의 `@Injectable()` 제공자로 등록한다. 컨트롤러는 `*.controller.ts`에서 요청을 해석·검증하고 서비스를 호출해 응답을 만든다. DTO의 Zod 스키마와 공용 `ZodValidationPipe`가 입력 검증을 담당한다. 기능별 `*.module.ts`는 제공자와 컨트롤러를 묶고 모듈 간 의존성을 DI로 연결한다. 뷰는 `web/`의 Next.js App Router 앱이다.
 
-Nest가 Express 어댑터의 HTTP 서버와 수신 포트를 소유한다. `src/main.ts`는 Next custom server에 개발 모드 여부, `web` 디렉터리, `PUBLIC_URL`의 호스트 이름과 설정된 `PORT`를 전달해 준비하고 Nest 라우트보다 앞에 Express 미들웨어를 등록한다. 개발 origin과 HMR의 호스트 설정은 [개발 환경과 실행](development.md#로컬-실행과-첫-관리자)에 기록한다. 경로가 `^/(api|auth|oauth|mcp|\.well-known|healthz)(/|$)`와 일치하면 Nest가 처리하고, 나머지 경로는 Next 요청 핸들러로 전달한다. 따라서 `/api`, 인증·OAuth, MCP, 상태 확인은 서버 컨트롤러에 남고 화면과 Next 자산은 같은 주소에서 제공된다.
+Nest가 Express 어댑터의 HTTP 서버와 수신 포트를 소유한다. `src/main.ts`는 Next custom server에 개발 모드 여부, `web` 디렉터리, `PUBLIC_URL`의 호스트 이름과 설정된 `PORT`를 전달해 준비하고 Nest 라우트보다 앞에 Express 미들웨어를 등록한다. 개발 origin과 HMR의 호스트 설정은 [개발 환경과 실행](development.md#로컬-실행과-첫-관리자)에 기록한다. 경로가 `^/(api|auth|oauth|mcp|\.well-known|healthz|readyz|metrics)(/|$)`와 일치하면 Nest가 처리하고, 나머지 경로는 Next 요청 핸들러로 전달한다. 따라서 `/api`, 인증·OAuth, MCP, 상태 확인과 지표는 서버 컨트롤러에 남고 화면과 Next 자산은 같은 주소에서 제공된다. SSE 응답은 이 경계에서 Next의 렌더링이나 버퍼링을 거치지 않는다.
 
 Next custom server를 선택한 이유는 Nest의 MVC·DI 구조를 사용하면서도 프로세스와 컨테이너를 하나로 유지하기 위해서다. 별도 Next 서버나 개발용 UI 포트를 두지 않으며 Next의 standalone 출력도 사용하지 않는다. 개발 시에도 한 진입점이 Nest와 Next 개발 모드를 함께 실행한다. 빌드·메타데이터 설정과 컨테이너에 필요한 자산은 [개발 환경과 실행](development.md)에 기록한다.
 
