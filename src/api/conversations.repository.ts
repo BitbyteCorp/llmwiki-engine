@@ -82,13 +82,6 @@ export class ConversationsRepository {
   edit(mid: string, content: string): void {
     this.db.prepare('UPDATE messages SET content=?,learned_at=NULL WHERE id=?').run(content,mid);
   }
-  summary(id: string): { text:string; through:string|null } {
-    const row = this.db.prepare('SELECT summary AS text,summary_through AS through FROM conversations WHERE id=?').get(id) as {text:string;through:string|null};
-    return row;
-  }
-  setSummary(id: string, text: string, through: string): void {
-    this.db.prepare('UPDATE conversations SET summary=?,summary_through=? WHERE id=?').run(text,through,id);
-  }
   members(id: string): Array<{userId:number;email:string;name:string|null;role:'owner'|'editor'|'viewer'}> {
     return this.db.prepare('SELECT cm.user_id AS userId,u.email,u.name,cm.role FROM conversation_members cm JOIN users u ON u.id=cm.user_id WHERE cm.conversation_id=? ORDER BY cm.role,u.id').all(id) as Array<{userId:number;email:string;name:string|null;role:'owner'|'editor'|'viewer'}>;
   }

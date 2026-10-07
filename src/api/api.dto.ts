@@ -18,6 +18,11 @@ export const userIdSchema = z.coerce.number().int().positive();
 
 export const refSchema = z.string().min(1).max(200).refine((ref) => !ref.includes('\0'), 'Invalid reference');
 export const noteContentQuerySchema = z.object({ path: notePathSchema, ref: refSchema.optional() });
+export const noteRawQuerySchema = z.object({
+  path: repositoryPathSchema.refine((path) => path.startsWith('assets/') && !/[\u0000-\u001f\u007f]/u.test(path),
+    'Expected a repository-relative asset path under assets/'),
+  ref: refSchema.optional(),
+});
 export const noteResolveQuerySchema = z.object({ name: z.string().trim().min(1).max(4096) });
 export const searchLimitSchema = z.coerce.number().int().min(1).max(100).default(20);
 const searchDateSchema = z.union([z.iso.date(), z.iso.datetime({ offset: true })]);
@@ -75,6 +80,20 @@ export const settingsSchema = z.object({
   allowedDomains: z.array(z.string().trim().toLowerCase().min(1).max(253)
     .regex(/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/)).max(1000).optional(),
 });
+
+export const aclAccessSchema = z.enum(['none', 'read', 'write']);
+export const aclPrefixSchema = z.string().min(1).max(4096).refine((prefix) => {
+  if (prefix === '/') return true;
+  const path = prefix.endsWith('/') ? prefix.slice(0, -1) : prefix;
+  return repositoryPathSchema.safeParse(path).success;
+}, 'Expected /, a repository-relative folder ending in /, or an exact file path');
+export const aclCreateSchema = z.discriminatedUnion('subjectType', [
+  z.object({ prefix: aclPrefixSchema, subjectType: z.literal('user'), subject: userIdSchema.transform(String), access: aclAccessSchema }).strict(),
+  z.object({ prefix: aclPrefixSchema, subjectType: z.literal('role'), subject: roleSchema, access: aclAccessSchema }).strict(),
+  z.object({ prefix: aclPrefixSchema, subjectType: z.literal('everyone'), subject: z.literal('').default(''), access: aclAccessSchema }).strict(),
+]);
+export const aclRuleIdSchema = userIdSchema;
+export const aclCheckQuerySchema = z.object({ userId: userIdSchema, path: aclPrefixSchema });
 
 export const dreamsQuerySchema = z.object({ before: idSchema.optional(), limit: limitSchema });
 export const activityQuerySchema = z.object({

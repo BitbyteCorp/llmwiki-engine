@@ -1,4 +1,4 @@
-export type GenerationEvent = 'generation' | 'status' | 'tool' | 'citation' | 'delta' | 'usage' | 'done' | 'error';
+export type GenerationEvent = 'generation' | 'status' | 'tool' | 'citation' | 'delta' | 'usage' | 'done' | 'error' | 'sources';
 export type GenerationStatus = 'running' | 'succeeded' | 'failed' | 'cancelled' | 'interrupted';
 
 export interface Generation {
