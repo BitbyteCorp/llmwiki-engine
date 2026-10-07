@@ -30,6 +30,8 @@ Node.js 기반으로 LLM Wiki를 관리하는 도구다.
 - [Luna](docs/luna.md) — 엔진이 쓰는 LLM과 그 도구, 임베딩을 별도 모델로 두는 이유다.
 - [지식 저장소](docs/knowledge-repository.md) — `main`이 진실 원천이고 GitHub는 하루 한 번 push되는 백업이며, LLM Wiki 표준을 따른 레이아웃을 쓴다.
 - [개발 환경](docs/development.md) — 기술 스택, 디렉터리와 모듈 소유, 스크립트, 환경변수, 로컬 실행과 Docker 실행, 첫 관리자 등록 방법이다.
+- [백업과 복원](docs/backup.md) — 일관된 SQLite 스냅샷과 지식 git bundle의 체크섬 검증, 오프라인 복원과 main 내보내기를 설명한다.
+- [운영](docs/operations.md) — 준비 상태, 요청 식별자, 인증된 지표 수집과 관리자 운영 API를 설명한다.
 
 ### 흐름
 
@@ -37,6 +39,7 @@ Node.js 기반으로 LLM Wiki를 관리하는 도구다.
 - [dreaming](docs/dreaming.md) — 매일 03:00 KST에 충돌·중복을 정리하고 일기를 쓴 뒤 GitHub에 push한다.
 - [작성 규칙](docs/writing-rules.md) — Luna가 지식 저장소에 쓸 때 따르는 Obsidian 기반 규칙이다.
 - [RAG](docs/rag.md) — SQLite 하나에 키워드·벡터·링크 인덱스를 두고 하이브리드 검색을 한다.
+- [원문 수집](docs/ingestion.md) — URL·PDF·텍스트·Obsidian·Notion 원문을 불변 raw 소스로 보관하고 Luna 통합 작업으로 연결한다.
 
 ### 접점
 
@@ -44,3 +47,4 @@ Node.js 기반으로 LLM Wiki를 관리하는 도구다.
 - [MCP](docs/mcp.md) — 지식 저장소의 모든 읽기·쓰기·검색을 제공하는 MCP 서버다.
 - [설치형 Skills](docs/skills.md) — Claude Code, Codex, Hermes에 MCP 연결과 사용 프롬프트를 설치한다.
 - [웹](docs/web.md) — 위키 탐색과 Luna 질의응답을 제공하며 shadcn/ui로 만든다.
+- [실시간 이벤트](docs/events.md) — 대상별 SSE 변경 신호와 웹 조회 캐시의 재연결 갱신 계약을 설명한다.

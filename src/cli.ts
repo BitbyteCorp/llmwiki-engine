@@ -7,6 +7,9 @@ import { AppModule } from './app.module.js';
 import { registerAuthCommands } from './auth/auth.commands.js';
 import { registerRagCommands } from './rag/rag.commands.js';
 import { registerDreamCommands } from './dreaming/dreaming.commands.js';
+import { registerExportCommands } from './export/export.commands.js';
+import { registerBackupCommands } from './backup/backup.commands.js';
+import { registerSkillCommands } from './skill/skill.commands.js';
 import { logger } from './log.js';
 
 const program = new Command();
@@ -18,6 +21,9 @@ try {
   registerAuthCommands(program, getApp);
   registerRagCommands(program, getApp);
   registerDreamCommands(program, getApp);
+  registerExportCommands(program);
+  registerBackupCommands(program);
+  registerSkillCommands(program);
   await program.parseAsync(process.argv);
 } catch (error) {
   logger.error({ err: error }, 'llmwiki command failed');

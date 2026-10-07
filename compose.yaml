@@ -1,0 +1,26 @@
+services:
+  llmwiki:
+    profiles: [dev]
+    build:
+      context: .
+    image: llmwiki-engine:local
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      DATA_DIR: /data
+      PORT: 3000
+      DEV_LOGIN_EMAIL: ""
+    ports:
+      - "127.0.0.1:${PORT:-3000}:3000"
+    volumes:
+      - llmwiki-dev-data:/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/readyz').then(r => { if (!r.ok) process.exit(1); }).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+
+volumes:
+  llmwiki-dev-data:

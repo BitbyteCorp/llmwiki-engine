@@ -11,18 +11,30 @@ import { AuthModule } from './auth/auth.module.js';
 import { McpModule } from './mcp/mcp.module.js';
 import { ApiModule } from './api/api.module.js';
 import { DreamingModule } from './dreaming/dreaming.module.js';
+import { EventsModule } from './events/events.module.js';
+import { AuditModule } from './audit/audit.module.js';
+import { HttpRateLimitModule } from './common/http/rate-limit.module.js';
+import { IngestModule } from './ingest/ingest.module.js';
+import { ExportModule } from './export/export.module.js';
 
+import { OpsModule } from './ops/ops.module.js';
 @Module({
   imports: [
     CommonModule,
+    EventsModule,
     KnowledgeModule,
     RagModule,
     LunaModule,
     JobsModule,
     AuthModule,
+    AuditModule,
+    HttpRateLimitModule,
     McpModule,
     ApiModule,
     DreamingModule,
+    IngestModule,
+    ExportModule,
+    OpsModule,
   ],
 })
 export class AppModule implements OnApplicationBootstrap, BeforeApplicationShutdown {
