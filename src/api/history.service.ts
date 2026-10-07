@@ -46,7 +46,7 @@ export class HistoryService {
     const job = this.jobs.get(id);
     if (!job || (user.role !== 'admin' && job.userId !== user.id)) notFound('Write job not found');
     const shas = [...new Set([...job.commits, ...(job.mergeSha ? [job.mergeSha] : [])])];
-    const commits = await Promise.all(shas.map(async (sha) => (await this.repo.show(sha)).commit));
+    const commits = await Promise.all(shas.map(async (sha) => (await this.repo.log({ ref: sha, limit: 1 }))[0]!));
     return { job, user: this.requester(job), commits, events: this.jobs.events(id) };
   }
 

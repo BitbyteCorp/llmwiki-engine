@@ -178,3 +178,22 @@ it('checks binary object identity from immutable tree metadata and distinguishes
   expect(await repo.fileObjectId('raw/hash/original.bin')).toBeNull();
   expect(await repo.fileObjectId('raw/hash/original.bin', original)).toBe(expected);
 });
+
+it('retains interrupted committed work before boot recovery removes its branch and edits', async () => {
+  const { repo, dir } = await fixture();
+  const main = await repo.headSha();
+  const interrupted = await repo.createWorktree('interrupted-job');
+  interrupted.setCommitMetadata({ ...metadata, jobId: 'interrupted-job' });
+  await interrupted.write('wiki/interrupted.md', 'committed intent\n');
+  const sha = (await interrupted.commit('Interrupted', author))!;
+  await interrupted.write('wiki/interrupted.md', 'uncommitted draft\n');
+  const reopened = await KnowledgeRepo.open(loadConfig({ NODE_ENV: 'test', DATA_DIR: dir }), pino({ level: 'silent' }));
+  expect(await reopened.headSha()).toBe(main);
+  expect(await reopened.resolveRef('refs/wiki/failed/interrupted-job')).toBe(sha);
+  expect((await reopened.show('refs/wiki/failed/interrupted-job')).commit.trailers['Wiki-Job']).toBe('interrupted-job');
+  expect(await reopened.readFile('wiki/interrupted.md', 'refs/wiki/failed/interrupted-job')).toBe('committed intent\n');
+  const replacement = await reopened.createWorktree('interrupted-job');
+  expect(await replacement.read('wiki/interrupted.md')).toBeNull();
+  await replacement.dispose();
+  expect(await reopened.resolveRef('refs/wiki/failed/interrupted-job')).toBe(sha);
+});

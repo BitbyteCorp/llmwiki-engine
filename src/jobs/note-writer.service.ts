@@ -117,7 +117,10 @@ export class NoteWriterService {
               // Without create:true, put is an upsert.
               if ((op.content === undefined) === (op.contentBase64 === undefined)) throw new ApiError(400, 'invalid_note', 'Provide exactly one of content or contentBase64');
               if (op.contentBase64 !== undefined) {
-                if ((!path.startsWith('assets/') && !(input.source === 'import' && path.startsWith('raw/'))) || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(op.contentBase64)) {
+                const encoded = op.contentBase64;
+                const padding = encoded.indexOf('=');
+                const validPadding = padding === -1 || padding === encoded.length - 1 || (padding === encoded.length - 2 && encoded.endsWith('=='));
+                if ((!path.startsWith('assets/') && !(input.source === 'import' && path.startsWith('raw/'))) || encoded.length % 4 !== 0 || /[^A-Za-z0-9+/=]/.test(encoded) || !validPadding) {
                   throw new ApiError(400, 'invalid_note', 'Binary content must be valid base64 under assets/ or import raw/');
                 }
                 await wt.write(path, Buffer.from(op.contentBase64, 'base64'));

@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -249,4 +250,16 @@ it('records both conflict attempts and their verified outcomes through the workt
       { attempt: 2, result: 'resolved', files: [] },
     ]);
   } finally { await wt.dispose(); }
+});
+
+it('preserves multi-megabyte import binaries without regex stack growth and rejects malformed padding', async () => {
+  const f = await fixture();
+  const content = Buffer.alloc(4 * 1024 * 1024, 255);
+  const result = await f.writer.apply({ userId: 1, source: 'import', baseSha: await f.repo.headSha(), ops: [{ op: 'put', path: 'raw/large-original.bin', create: true, contentBase64: content.toString('base64') }] });
+  const stored = await readFile(join(f.dir, 'knowledge/raw/large-original.bin'));
+  expect(createHash('sha256').update(stored).digest('hex')).toBe(createHash('sha256').update(content).digest('hex'));
+  expect(result.changed).toEqual(['raw/large-original.bin']);
+  for (const malformed of ['A', 'A===', 'AB=C', 'AAAA====', 'AA?=']) {
+    await expect(f.writer.apply({ userId: 1, source: 'web', baseSha: await f.repo.headSha(), ops: [{ op: 'put', path: 'assets/invalid.bin', create: true, contentBase64: malformed }] })).rejects.toMatchObject({ status: 400, code: 'invalid_note' });
+  }
 });

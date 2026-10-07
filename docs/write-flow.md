@@ -36,7 +36,7 @@ Luna 편집은 머지 락 밖에서 진행하므로 direct 작업이 느린 모�
 
 잘못된 경로, 허용되지 않은 파일 형식, 내용 인코딩이나 요청은 `400 invalid_note`다. 절대 경로, 상위 디렉터리 접근과 Git 내부 경로는 허용하지 않으며 워크트리의 경로 격리를 유지한다. 여러 연산 중 하나라도 실패하면 main에는 어떤 연산도 반영하지 않는다.
 
-일반 직접 쓰기는 `.md` 노트와 `assets/**` 파일만 허용한다. 바이너리는 `contentBase64`로 전달하고 실제 바이트로 저장한다. **가져오기 예외**로 `source: 'import'`인 요청은 `raw/**`에도 바이너리 원본을 새로 생성할 수 있다. 기존 raw 경로는 출처와 관계없이 불변이며 교체·삭제·이동 시 `409 note_exists`다. raw로의 이동도 금지한다. 가져오기는 원본 생성에 `create: true`를 사용한다.
+일반 직접 쓰기는 `.md` 노트와 `assets/**` 파일만 허용한다. 바이너리는 `contentBase64`로 전달하고 실제 바이트로 저장한다. 큰 원본도 그룹 반복 정규식 없이 길이·문자·패딩을 선형 검사하며, 존재 여부와 신선도에는 파일 내용이나 바이너리 patch를 읽지 않는다. **가져오기 예외**로 `source: 'import'`인 요청은 `raw/**`에도 바이너리 원본을 새로 생성할 수 있다. 기존 raw 경로는 출처와 관계없이 불변이며 교체·삭제·이동 시 `409 note_exists`다. raw로의 이동도 금지한다. 가져오기는 원본 생성에 `create: true`를 사용한다.
 
 ## 이력 조회와 되돌리기
 
@@ -65,7 +65,7 @@ REST 계약은 다음과 같다.
 
 실패하면 main을 바꾸지 않고 오류와 만든 커밋을 기록한다. 워크트리 정리 전에 HEAD를 `refs/wiki/failed/<jobId>`에 보존하므로 작업 브랜치를 제거한 뒤에도 실패 커밋을 조회할 수 있다. 색인 실패는 이미 main에 반영된 쓰기를 실패로 되돌리지 않으며 단계 세부 정보와 로그에 남긴다. 정리 실패 역시 성공한 쓰기를 무효화하지 않는다.
 
-시작할 때 이전 실행의 running·merging 작업은 중단 사유와 failed 이벤트를 남긴다. queued Luna 작업은 워커에서 다시 처리하고, queued direct/revert 재시도는 Luna 큐 밖에서 재개한다. `main.ts`가 명시적으로 `WriteJobsService.start()`를 호출하므로 CLI 컨텍스트 생성만으로 Luna 큐를 소비하지 않는다. 종료는 현재 Luna 실행과 direct/revert 재시도를 기다린다.
+시작할 때 이전 실행의 running·merging 작업은 중단 사유와 failed 이벤트를 남긴다. 저장소 복구는 버려진 작업 브랜치의 커밋된 HEAD를 `refs/wiki/failed/<jobId>`에 먼저 보존하고 워크트리와 브랜치를 제거한다. 따라서 크래시 전에 커밋한 실패 작업은 이후에도 조회할 수 있지만 커밋하지 않은 작업 파일 수정은 복구하지 않는다. queued Luna 작업은 워커에서 다시 처리하고, queued direct/revert 재시도는 Luna 큐 밖에서 재개한다. `main.ts`가 명시적으로 `WriteJobsService.start()`를 호출하므로 CLI 컨텍스트 생성만으로 Luna 큐를 소비하지 않는다. 종료는 현재 Luna 실행과 direct/revert 재시도를 기다린다.
 
 `retry(id)`는 failed 작업의 원래 출처·클라이언트·입력을 유지한 **새 작업**을 만들고 queued 이벤트의 `detail.retryOf`에 원래 ID를 남긴다. Luna는 일반 큐로, direct/revert는 바로 머지 락으로 실행한다. direct 재시도도 원래 baseSha를 사용하므로 충돌한 입력은 다시 stale_note로 실패할 수 있다. 원래 실패 이력은 변경하지 않는다. `cancel(id)`는 queued 상태에서만 원자적으로 상태를 failed, 오류를 `canceled`로 바꾸며 이미 실행 중인 작업은 취소하지 않는다.
 

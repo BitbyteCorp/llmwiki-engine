@@ -174,8 +174,12 @@ export class KnowledgeRepo {
     }
     await this.git.run(this.path, ['worktree', 'prune', '--expire', 'now']);
     for (const entry of await readdir(this.worktrees)) await rm(join(this.worktrees, entry), { recursive: true, force: true });
-    const branches = (await this.git.run(this.path, ['for-each-ref', '--format=%(refname:short)', 'refs/heads/work/'])).trim().split('\n').filter(Boolean);
-    for (const branch of branches) await this.git.run(this.path, ['branch', '-D', '--', branch]);
+    const branches = (await this.git.run(this.path, ['for-each-ref', '--format=%(refname)', 'refs/heads/work/'])).trim().split('\n').filter(Boolean);
+    for (const branch of branches) {
+      const sha = await this.git.sha(this.path, branch);
+      await this.git.run(this.path, ['update-ref', `refs/wiki/failed/${branch.slice('refs/heads/work/'.length)}`, sha]);
+      await this.git.run(this.path, ['branch', '-D', '--', branch.slice('refs/heads/'.length)]);
+    }
     if (branches.length) this.logger.info({ count: branches.length }, 'Removed abandoned knowledge work branches');
   }
   async headSha(): Promise<string> { return this.git.sha(this.path, 'refs/heads/main'); }
