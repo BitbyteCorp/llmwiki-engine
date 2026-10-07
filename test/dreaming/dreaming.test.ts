@@ -14,7 +14,9 @@ import { CONFIG, DB, LOGGER } from '../../src/common/tokens.js';
 import { registerDreamCommands } from '../../src/dreaming/dreaming.commands.js';
 import { DreamRunsRepository } from '../../src/dreaming/dream-runs.repository.js';
 import { DreamingService } from '../../src/dreaming/dreaming.service.js';
+import { EventsService } from '../../src/events/events.service.js';
 import { KnowledgeRepo, type CommitInfo, type FileChange, type Worktree } from '../../src/knowledge/repo.js';
+import { commitTrailers, type CommitMetadata } from '../../src/knowledge/commit-trailers.js';
 import { LunaService } from '../../src/luna/luna.service.js';
 import type { AgentTool, RunAgentOptions } from '../../src/luna/luna.types.js';
 import { IndexerService } from '../../src/rag/indexer.service.js';
@@ -29,6 +31,7 @@ const similarContent = '# Release process\n\nA reviewer approves each release.\n
 const similarHit: SearchHit = {
   path: 'wiki/release.md', title: 'Release process', heading: '',
   snippet: 'A reviewer approves each release.', score: 0.9, kind: 'wiki', related: [],
+  anchor: null, excerpt: 'A reviewer approves each release.', highlights: [], tags: [], updatedAt: null,
 };
 type Author = { name: string; email: string };
 type MessageInput = { id: string; conversation_id: string; content: string; created_at: string };
@@ -111,9 +114,15 @@ class TempRepo {
     return Promise.all(shas.map((sha) => this.commitInfo(sha)));
   }
   private async commitInfo(sha: string): Promise<CommitInfo> {
-    const [hash, parents, authorName, authorEmail, date, subject, body] =
-      (await this.git(['show', '-s', '--format=%H%x00%P%x00%an%x00%ae%x00%aI%x00%s%x00%b', sha])).split('\0');
-    return { sha: hash, parents: parents ? parents.split(' ') : [], authorName, authorEmail, date, subject, body };
+    const [hash, parents, authorName, authorEmail, date, committerName, committerEmail, committedAt, subject, body, trailerText] =
+      (await this.git(['show', '-s', '--format=%H%x00%P%x00%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI%x00%s%x00%b%x00%(trailers:only,unfold)', sha])).split('\0');
+    const trailers: Record<string, string> = {};
+    for (const line of trailerText.split('\n')) {
+      const separator = line.indexOf(':');
+      if (separator > 0) trailers[line.slice(0, separator)] = line.slice(separator + 1).trim();
+    }
+    return { sha: hash, parents: parents ? parents.split(' ') : [], authorName, authorEmail, date,
+      committerName, committerEmail, committedAt, subject, body, trailers };
   }
   async show(sha: string): Promise<{ commit: CommitInfo; files: FileChange[]; patch: string }> {
     const commit = await this.commitInfo(sha);
@@ -149,7 +158,9 @@ class TempRepo {
 }
 
 class TempWorktree {
+  private metadata: CommitMetadata | undefined;
   constructor(readonly repo: TempRepo, readonly path: string, readonly branch: string, readonly baseSha: string) {}
+  setCommitMetadata(metadata: CommitMetadata): void { this.metadata = metadata; }
   async read(path: string): Promise<string | null> {
     try { return await readFile(join(this.path, path), 'utf8'); }
     catch (error) {
@@ -173,7 +184,8 @@ class TempWorktree {
   async commit(message: string, author: Author): Promise<string | null> {
     await this.repo.git(['add', '-A'], this.path);
     if (!(await this.repo.git(['diff', '--cached', '--name-only'], this.path))) return null;
-    await this.repo.git(['commit', '--author', `${author.name} <${author.email}>`, '-m', message], this.path);
+    const fullMessage = this.metadata ? `${message}\n\n${commitTrailers(this.metadata)}` : message;
+    await this.repo.git(['commit', '--author', `${author.name} <${author.email}>`, '-m', fullMessage], this.path);
     return this.repo.git(['rev-parse', 'HEAD'], this.path);
   }
   async mergeMain(): Promise<{ ok: true } | { ok: false; conflicts: string[] }> {
@@ -221,6 +233,7 @@ async function fixture() {
   const db = new Database(':memory:');
   resources.push({ root, db });
   db.exec(await readFile(new URL('../../src/db/migrations/005_dreaming.sql', import.meta.url), 'utf8'));
+  db.exec(await readFile(new URL('../../src/db/migrations/008_ops.sql', import.meta.url), 'utf8'));
   db.exec(`CREATE TABLE messages (
     id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('user', 'assistant')), content TEXT NOT NULL,
@@ -258,6 +271,7 @@ async function fixture() {
       { provide: IndexerService, useValue: indexer },
       { provide: SearchService, useValue: search },
       DreamRunsRepository,
+      EventsService,
       DreamingService,
       { provide: 'otherDreaming', useClass: DreamingService },
     ],

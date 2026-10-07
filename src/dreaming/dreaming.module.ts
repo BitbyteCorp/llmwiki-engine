@@ -8,6 +8,6 @@ import { DreamingService } from './dreaming.service.js';
 @Module({
   imports: [KnowledgeModule, LunaModule, RagModule],
   providers: [DreamRunsRepository, DreamingService],
-  exports: [DreamingService],
+  exports: [DreamingService, DreamRunsRepository],
 })
 export class DreamingModule {}

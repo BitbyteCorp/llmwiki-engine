@@ -12,7 +12,7 @@ dreaming은 매일 변경된 지식을 검토·정리하고 일기를 남기는 
 
 ### Nest 모듈과 실행 수명
 
-`DreamingModule`은 `KnowledgeModule`, `LunaModule`, `RagModule`을 가져오고 `DreamRunsRepository`와 `DreamingService`를 제공한다. 외부 모듈에는 `DreamingService`를 내보낸다. 서비스는 지식 저장소, Luna, 인덱서, 검색 서비스와 `CONFIG`, `LOGGER` 토큰, 실행 기록 저장소를 생성자 DI로 받는다.
+`DreamingModule`은 `KnowledgeModule`, `LunaModule`, `RagModule`을 가져오고 `DreamRunsRepository`와 `DreamingService`를 제공·내보낸다. 서비스는 지식 저장소, Luna, 인덱서, 검색 서비스와 `CONFIG`, `LOGGER` 토큰, 실행 기록 저장소, 전역 `EventsService`를 생성자 DI로 받는다.
 
 `DreamRunsRepository`는 실행 기록 SQL, 성공 체크포인트 조회, 미학습 사용자 메시지 조회와 학습 완료 표시를 담당한다. `DreamRun`과 대화 입력 형식은 `dream-run.types.ts`에 두며, 서비스는 배치·머지·백업 흐름을 담당한다.
 
@@ -22,6 +22,8 @@ HTTP 진입점인 `main.ts`만 스케줄러를 명시적으로 시작한다. `dr
 ### 실행 시각과 입력
 
 기본 실행 시각은 매일 03:00 `Asia/Seoul`이다. Croner가 `DREAM_CRON`과 `TZ_DREAM` 설정을 사용한다. `pnpm cli dream run` 또는 설치된 `llmwiki dream run`으로 즉시 실행할 수도 있다. 같은 프로세스에서 같은 지식 저장소를 대상으로 실행 중인 배치가 있으면 새 배치를 만들지 않고 기존 실행의 결과를 기다린다.
+
+운영 HTTP 진입점은 `runManual()`을 사용한다. 같은 저장소에서 실행 중인 배치가 있으면 기존 결과를 기다리지 않고 HTTP 409, 코드 `dream_running`으로 거절하며 새 실행 기록을 만들지 않는다. CLI와 스케줄러의 `runOnce()`는 기존처럼 실행을 합친다. 서비스 인스턴스가 달라도 같은 `KnowledgeRepo` 객체를 사용하면 이 규칙을 공유한다.
 
 입력 범위는 직전 성공한 `dream_runs.to_sha`를 제외한 이후 커밋부터 실행 시작에 읽은 main HEAD까지다. 첫 실행의 기준점은 저장소의 첫 커밋이다. Luna가 작업하는 동안 main에 추가된 커밋은 이번 학습 체크포인트를 앞당기지 않으며 다음 실행에서 검토한다.
 
@@ -43,11 +45,28 @@ main에서 `dream-YYYY-MM-DD` 작업 워크트리를 파생한다. 날짜는 스
 
 작업 결과는 `GIT_BOT_NAME`과 `GIT_BOT_EMAIL`을 author로 커밋한다. 직렬 머지 락 안에서 main을 워크트리에 머지하고, 충돌이 발생하면 Luna가 해결한 뒤 main을 fast-forward한다. 재인덱싱까지 성공한 뒤 이번 배치에 포함된 사용자 메시지만 `learned_at`으로 표시한다. 머지나 재인덱싱 실패 시에는 미학습 상태를 유지한다. 작업 워크트리 격리와 직렬 머지 방식은 [쓰기 흐름](write-flow.md)을 따른다.
 
+dreaming이 만든 커밋에는 `Wiki-Job: <실행 ID>`, `Wiki-Source: dreaming`, `Wiki-Requester: <봇 이메일>` 트레일러를 붙인다. 성공한 main 머지 직후에는 실제 반영된 경로와 머지 SHA를 담은 `main.updated` 이벤트를 발행한다. 이름이 바뀐 파일은 이전 경로와 새 경로를 모두 포함하며, 후속 인덱싱이 실패해도 이미 반영된 main의 갱신 이벤트는 유지한다.
+
 ### 백업과 실패의 관계
 
 dreaming 후 GitHub에 main을 하루 한 번 push한다. dreaming이 실패하더라도 main push는 시도한다. GitHub는 백업이므로, 정리 작업의 실패가 이미 main에 반영된 지식의 백업까지 막아서는 안 되기 때문이다.
 
-로컬 전용 저장소에서는 push를 건너뛰고 이유를 로그에 남긴다. push 오류는 배치를 실패로 기록하지만 이미 main에 반영하고 학습 완료로 표시한 메시지는 되돌리지 않는다. 모든 실행은 `dream_runs`에 시작·종료 시각, 상태, 입력 커밋 범위, 머지 SHA, push 성공 여부와 오류를 기록한다. 수동 실행 결과는 JSON으로 출력하고 실패 시 종료 코드 1을 설정한다.
+로컬 전용 저장소에서는 push를 건너뛰고 이유를 로그에 남긴다. push 오류는 배치를 실패로 기록하지만 이미 main에 반영하고 학습 완료로 표시한 메시지는 되돌리지 않는다. push는 머지 락 안에서 실행하며 성공 결과에는 실제 원격 이름과 전송한 SHA를 남긴다. 수동 CLI 실행 결과는 JSON으로 출력하고 실패 시 종료 코드 1을 설정한다.
+
+### 실행 기록과 운영 조회
+
+`dream_runs`는 시작·종료 시각, 상태, 입력 커밋 범위, 머지 SHA, 기존 `pushed` 불리언과 오류를 저장한다. 추가 필드는 Luna 최종 응답인 `summary`(없으면 `null`), 이번 머지에서 실제 바뀐 `changedPaths`, 검증된 일기 경로 `journalPath`(정리하지 않은 날은 `null`)다. push 결과는 `push.status`(`pending`, `succeeded`, `skipped`, `failed`), `remote`, `sha`, `at`, `reason`으로 별도 보존한다. 확인할 수 없는 원격과 SHA는 `null`이며 추측하지 않는다.
+
+`DreamRunsRepository.get(id)`는 상세 실행 또는 `null`을 반환한다. `list({ before, limit })`는 시작 시각 내림차순, 같은 시각에서는 ID 내림차순으로 조회한다. `before`는 이전 페이지의 마지막 실행 ID이며 시각 커서도 지원한다. 기본 한도는 50개이고 최대 200개다. `latest()`는 가장 최근 실행, `running()`은 실행 중인 기록을 반환하며 없으면 `null`이다. `backupStatus()`는 push 시도가 끝난 마지막 실행 `lastAttempt`와 성공한 마지막 push 실행 `lastSuccess`를 반환한다. 정리 자체가 실패했어도 push가 성공했다면 `lastSuccess`에 포함한다.
+
+시작 기록을 저장한 뒤와 최종 결과를 저장한 뒤에 `dream.updated` 이벤트를 발행한다. 이벤트는 실행 ID와 상태만 포함하므로 클라이언트는 상세 데이터를 다시 조회한다. push가 끝나기 전에는 완료 상태 이벤트를 보내지 않는다. 기존 DB는 `008_ops.sql`로 확장하며, 과거의 성공 불리언은 성공 상태로 이관하되 기록되지 않은 원격·SHA는 채우지 않는다.
+
+### Slack 완료 알림
+
+선택 환경변수 `SLACK_WEBHOOK_URL`을 설정하면 실행 결과를 DB에 최종 저장한 뒤 성공·실패 알림을 한 번 보낸다. 알림은 상태, 실행 시간(밀리초), 머지 SHA, push 상태와 push SHA만 포함한다. `summary`, 일기·노트 본문, 사용자 입력, 경로, 오류 문자열과 push 이유는 포함하지 않는다. 실행 기록에 남은 민감한 내용이 외부 채널로 넘어가지 않도록 허용된 메타데이터만 새 메시지로 구성한다.
+
+전송에는 5초 제한을 적용한다. HTTP 오류, 네트워크 오류와 시간 초과는 경고 로그만 남기며 완료된 실행의 성공·실패, 학습 여부, push 결과를 바꾸지 않는다. Slack 응답을 읽거나 실행 실패 원인으로 합치지 않는다.
+
 
 ## 관련 문서
 

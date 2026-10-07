@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { Inject, Injectable, type OnApplicationShutdown } from '@nestjs/common';
 import { Cron } from 'croner';
+import { ApiError } from '../api/api-error.js';
 import { CONFIG, LOGGER } from '../common/tokens.js';
 import type { Config } from '../config.js';
+import { EventsService } from '../events/events.service.js';
 import { KnowledgeRepo, type CommitInfo, type Worktree } from '../knowledge/repo.js';
 import type { Logger } from '../log.js';
 import { LunaService } from '../luna/luna.service.js';
@@ -51,6 +53,7 @@ export class DreamingService implements OnApplicationShutdown {
     @Inject(CONFIG) private readonly config: Config,
     @Inject(LOGGER) private readonly log: Logger,
     private readonly runs: DreamRunsRepository,
+    private readonly events: EventsService,
   ) {}
 
   start(): void {
@@ -75,9 +78,17 @@ export class DreamingService implements OnApplicationShutdown {
   runOnce(): Promise<DreamRun> {
     const existing = activeRuns.get(this.repo);
     if (existing) return existing;
-    const running = this.execute().finally(() => activeRuns.delete(this.repo));
+    // Register before execution publishes its synchronous start event.
+    const running = Promise.resolve().then(() => this.execute()).finally(() => activeRuns.delete(this.repo));
     activeRuns.set(this.repo, running);
     return running;
+  }
+
+  runManual(): Promise<DreamRun> {
+    if (activeRuns.has(this.repo)) {
+      return Promise.reject(new ApiError(409, 'dream_running', 'Dreaming is already running'));
+    }
+    return this.runOnce();
   }
 
   private async execute(): Promise<DreamRun> {
@@ -85,6 +96,8 @@ export class DreamingService implements OnApplicationShutdown {
     const run: DreamRun = {
       id: randomUUID(), startedAt: new Date().toISOString(), finishedAt: null,
       status: 'running', fromSha: null, toSha: null, mergeSha: null, pushed: false, error: null,
+      summary: null, changedPaths: [], journalPath: null,
+      push: { status: 'pending', remote: null, sha: null, at: null, reason: null },
     };
     let worktree: Worktree | undefined;
     let recorded = false;
@@ -96,6 +109,7 @@ export class DreamingService implements OnApplicationShutdown {
     try {
       runs.create(run);
       recorded = true;
+      this.events.publish({ type: 'dream.updated', runId: run.id, status: run.status }, 'all');
       run.toSha = await repo.headSha();
       const checkpoint = runs.lastSuccessfulCheckpoint();
       // Pin incremental history to the sampled HEAD even if main advances
@@ -126,16 +140,19 @@ export class DreamingService implements OnApplicationShutdown {
           return { change, content, similarNotes };
         }));
         worktree = await repo.createWorktree(`dream-${date}`);
+        worktree.setCommitMetadata({ jobId: run.id, source: 'dreaming', requester: config.gitBotEmail });
         const author = { name: config.gitBotName, email: config.gitBotEmail };
         const journalPath = `journal/${date}.md`;
-        await luna.runAgent({
+        const result = await luna.runAgent({
           instructions: `${await luna.baseInstructions()}\n\n${dreamInstructions(date, journalPath)}`,
           input: JSON.stringify({ date, fromSha: run.fromSha, toSha: run.toSha, commits, changedNotes, userMessages: messages }),
           tools: luna.worktreeTools(worktree, author),
         });
+        run.summary = result.text || null;
         if (!(await worktree.read(journalPath))?.trim()) {
           throw new Error(`Dreaming did not write the required journal: ${journalPath}`);
         }
+        run.journalPath = journalPath;
         await worktree.commit(`dreaming: ${date}`, author);
         const wt = worktree;
         await repo.withMergeLock(async () => {
@@ -144,7 +161,12 @@ export class DreamingService implements OnApplicationShutdown {
             await luna.resolveConflicts(wt, merge.conflicts);
             await wt.finishMerge(author);
           }
+          const previousHead = await repo.headSha();
           run.mergeSha = await wt.fastForwardMain();
+          const changes = await repo.diffNames(previousHead, run.mergeSha);
+          run.changedPaths = [...new Set(changes.flatMap((change) => change.oldPath
+            ? [change.oldPath, change.path] : [change.path]))];
+          this.events.publish({ type: 'main.updated', sha: run.mergeSha, paths: run.changedPaths }, 'all');
           await indexer.syncToHead();
           runs.markLearned(messages, new Date().toISOString());
         });
@@ -159,18 +181,47 @@ export class DreamingService implements OnApplicationShutdown {
       // Backup is independent of maintenance: even failures and idle days
       // must attempt to preserve already-merged main changes remotely.
       try {
-        const result = await repo.pushMain();
+        const result = await repo.withMergeLock(() => repo.pushMain());
         run.pushed = result.pushed;
+        run.push = {
+          status: result.pushed ? 'succeeded' : 'skipped',
+          remote: result.remote ?? null, sha: result.sha ?? null,
+          at: new Date().toISOString(), reason: result.reason ?? null,
+        };
         if (!result.pushed) log.info({ reason: result.reason }, 'Dreaming backup push skipped');
       } catch (error) {
+        run.push = { status: 'failed', remote: null, sha: null, at: new Date().toISOString(), reason: errorText(error) };
         fail(error);
       }
       run.finishedAt = new Date().toISOString();
-      if (recorded) runs.finish(run);
+      if (recorded) {
+        runs.finish(run);
+        this.events.publish({ type: 'dream.updated', runId: run.id, status: run.status }, 'all');
+        await this.notify(run);
+      }
     }
     if (run.status === 'failed') log.error({ runId: run.id, error: run.error }, 'Dreaming failed');
     else log.info({ runId: run.id, mergeSha: run.mergeSha, pushed: run.pushed }, 'Dreaming completed');
     return run;
+  }
+
+  private async notify(run: DreamRun): Promise<void> {
+    if (!this.config.slackWebhookUrl) return;
+    // Deliberate allowlist: neither the summary, note contents, input nor
+    // error/reason strings may leave the engine through a webhook.
+    const durationMs = Date.parse(run.finishedAt!) - Date.parse(run.startedAt);
+    const text = `Dreaming ${run.status}; duration_ms=${durationMs}; merge_sha=${run.mergeSha ?? 'none'}; `
+      + `push=${run.push.status}; push_sha=${run.push.sha ?? 'none'}`;
+    try {
+      const response = await fetch(this.config.slackWebhookUrl, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ text }), signal: AbortSignal.timeout(5_000),
+      });
+      if (!response.ok) throw new Error(`Slack returned HTTP ${response.status}`);
+      await response.body?.cancel();
+    } catch (error) {
+      this.log.warn({ runId: run.id, err: error }, 'Dreaming Slack notification failed');
+    }
   }
 }
 

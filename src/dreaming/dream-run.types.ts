@@ -7,6 +7,16 @@ export interface DreamRun {
   toSha: string | null;
   mergeSha: string | null;
   pushed: boolean;
+  summary: string | null;
+  changedPaths: string[];
+  journalPath: string | null;
+  push: {
+    status: 'pending' | 'succeeded' | 'skipped' | 'failed';
+    remote: string | null;
+    sha: string | null;
+    at: string | null;
+    reason: string | null;
+  };
   error: string | null;
 }
 
