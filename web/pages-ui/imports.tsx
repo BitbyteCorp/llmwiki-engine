@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { Suspense, useEffect, useMemo, useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowRight, Plus, RefreshCw } from 'lucide-react'
 import { api, importsApi, importKeys, type User } from '@/lib/api'
@@ -16,13 +17,25 @@ export function ImportsPage() {
   const me = useQuery({ queryKey: ['me'], queryFn: api.me })
   if (me.isPending) return <Loading label="가져오기 권한을 확인하는 중…" />
   if (me.error) return <div className="space-y-3"><ErrorNotice error={me.error} /><Button variant="outline" onClick={() => void me.refetch()}>다시 시도</Button></div>
-  return <ImportsList user={me.data.user} />
+  return <Suspense fallback={<Loading label="가져오기 화면을 불러오는 중…" />}><ImportsList user={me.data.user} /></Suspense>
 }
 
 function ImportsList({ user }: { user: User }) {
   const client = useQueryClient()
+  const router = useRouter()
+  const searchParams = useSearchParams()
   const [creating, setCreating] = useState(false)
   const [selected, setSelected] = useState<string | null>(null)
+  const dialogOpen = user.role !== 'viewer' && (creating || searchParams.get('new') === '1')
+  function closeImport() {
+    setCreating(false)
+    if (searchParams.has('new')) {
+      const params = new URLSearchParams(searchParams.toString())
+      params.delete('new')
+      const query = params.toString()
+      router.replace(`/imports${query ? `?${query}` : ''}`, { scroll: false })
+    }
+  }
   const list = useInfiniteQuery({
     queryKey: importKeys.list(user.id),
     initialPageParam: undefined as string | undefined,
@@ -40,7 +53,7 @@ function ImportsList({ user }: { user: User }) {
   useEffect(() => onLiveEvent('job.updated', (event) => {
     if (records.some((record) => record.jobId === event.jobId)) void client.invalidateQueries({ queryKey: importKeys.lists })
   }), [client, records])
-  return <div className="space-y-5">
+  return <div className="space-y-3">
     <PageHeader title="원문 가져오기" description={user.role === 'admin' ? '전체 사용자의 수집 기록과 Luna 통합 진행 상태를 확인합니다.' : '내가 가져온 원문과 Luna 통합 진행 상태를 확인합니다.'} actions={<>
       <Button variant="outline" disabled={list.isFetching} onClick={() => void list.refetch()}><RefreshCw className={list.isFetching ? 'animate-spin motion-reduce:animate-none' : ''} />새로고침</Button>
       {user.role !== 'viewer' && <Button onClick={() => setCreating(true)}><Plus />새 가져오기</Button>}
@@ -49,10 +62,10 @@ function ImportsList({ user }: { user: User }) {
     {list.isPending && <Loading label="가져오기 기록을 불러오는 중…" />}
     {list.error && <div className="space-y-3"><ErrorNotice error={list.error} /><Button variant="outline" disabled={list.isFetching} onClick={() => void (list.isFetchNextPageError ? list.fetchNextPage() : list.refetch())}>다시 시도</Button></div>}
     {list.data && records.length === 0 && !list.isError && <EmptyState title="가져온 원문이 없습니다" description={user.role === 'viewer' ? '아직 이 계정의 가져오기 기록이 없습니다.' : 'URL, 텍스트, 문서 파일 또는 Obsidian·Notion ZIP을 가져와 위키와 연결하세요.'} />}
-    {records.length > 0 && <section aria-label="가져오기 기록" className="overflow-hidden rounded-xl border">
-      <div className="hidden grid-cols-[minmax(0,1fr)_9rem_11rem_2rem] gap-4 border-b bg-muted/30 px-4 py-3 text-xs font-medium text-muted-foreground md:grid"><span>원문 / 종류</span><span>진행 상태</span><span>생성 시각</span><span className="sr-only">상세</span></div>
+    {records.length > 0 && <section aria-label="가져오기 기록" className="overflow-hidden rounded-lg border bg-card p-4">
+      <div className="hidden grid-cols-[minmax(0,1fr)_9rem_11rem_2rem] gap-3 border-b bg-muted/30 px-4 py-3 text-xs font-medium text-muted-foreground md:grid"><span>원문 / 종류</span><span>진행 상태</span><span>생성 시각</span><span className="sr-only">상세</span></div>
       <ul className="divide-y">{records.map((record) => <li key={record.id}>
-        <button type="button" onClick={() => setSelected(record.id)} aria-label={`${record.source || record.id} 가져오기 상세`} className="grid w-full gap-3 px-4 py-4 text-left outline-none transition-colors hover:bg-muted/30 focus-visible:bg-muted/40 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring md:grid-cols-[minmax(0,1fr)_9rem_11rem_2rem] md:items-center md:gap-4">
+        <button type="button" onClick={() => setSelected(record.id)} aria-label={`${record.source || record.id} 가져오기 상세`} className="grid w-full gap-3 px-4 py-3 text-left outline-none transition-colors hover:bg-muted/30 focus-visible:bg-muted/40 focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring md:grid-cols-[minmax(0,1fr)_9rem_11rem_2rem] md:items-center">
           <div className="min-w-0"><p className="truncate text-sm font-medium">{record.source || record.id}</p><p className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-xs text-muted-foreground"><span>{importKindLabels[record.kind]}</span>{user.role === 'admin' && <span>요청자 #{record.userId}</span>}<span className="font-mono">{record.id.slice(0, 8)}</span></p>{record.error && <p className="mt-2 line-clamp-2 break-all text-xs text-destructive">{record.error}</p>}</div>
           <div><ImportStatusBadge status={record.status} /></div>
           <time dateTime={record.createdAt} className="text-xs text-muted-foreground">{formatDate(record.createdAt)}</time>
@@ -62,7 +75,7 @@ function ImportsList({ user }: { user: User }) {
     </section>}
     {list.hasNextPage && <div className="flex justify-center"><Button variant="outline" disabled={list.isFetching} onClick={() => void list.fetchNextPage()}>{list.isFetchingNextPage ? '이전 기록을 불러오는 중…' : '이전 기록 더 보기'}</Button></div>}
     {records.length > 0 && !list.hasNextPage && <p className="text-center text-xs text-muted-foreground">모든 가져오기 기록을 확인했습니다.</p>}
-    {creating && <ImportDialog onClose={() => setCreating(false)} onFailure={() => { void client.invalidateQueries({ queryKey: importKeys.lists }) }} onCreated={({ importId }) => { setCreating(false); setSelected(importId); void client.invalidateQueries({ queryKey: importKeys.lists }) }} />}
-    {selected && !creating && <ImportDetail key={selected} id={selected} onClose={() => setSelected(null)} />}
+    {dialogOpen && <ImportDialog onClose={closeImport} onFailure={() => { void client.invalidateQueries({ queryKey: importKeys.lists }) }} onCreated={({ importId }) => { closeImport(); setSelected(importId); void client.invalidateQueries({ queryKey: importKeys.lists }) }} />}
+    {selected && !dialogOpen && <ImportDetail key={selected} id={selected} onClose={() => setSelected(null)} />}
   </div>
 }

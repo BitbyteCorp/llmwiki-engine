@@ -15,7 +15,7 @@ const statusLabels: Record<ImportStatus, string> = { extracting: '원문 추출 
 
 export function ImportStatusBadge({ status }: { status: ImportStatus }) {
   const Icon = status === 'succeeded' ? CheckCircle2 : status === 'failed' || status === 'cancelled' ? CircleX : status === 'queued' ? Clock3 : LoaderCircle
-  return <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${status === 'succeeded' ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400' : status === 'failed' || status === 'cancelled' ? 'border-destructive/20 bg-destructive/5 text-destructive' : 'border-border bg-muted/40 text-muted-foreground'}`}><Icon className={`size-3.5 ${status === 'extracting' || status === 'running' ? 'animate-spin motion-reduce:animate-none' : ''}`} />{statusLabels[status]}</span>
+  return <span className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${status === 'succeeded' ? 'border-success/20 bg-success/10 text-success' : status === 'failed' || status === 'cancelled' ? 'border-destructive/20 bg-destructive/5 text-destructive' : 'border-border bg-muted/40 text-muted-foreground'}`}><Icon className={`size-3.5 ${status === 'extracting' || status === 'running' ? 'animate-spin motion-reduce:animate-none' : ''}`} />{statusLabels[status]}</span>
 }
 
 function DetailField({ title, children }: { title: string; children: ReactNode }) {
@@ -34,13 +34,13 @@ export function ImportDetail({ id, onClose }: { id: string; onClose: () => void 
   }), [client, id, record?.jobId])
   const sourceLink = record && /^https?:\/\//i.test(record.source) ? record.source : null
   return <ImportModal drawer title="가져오기 상세" description="원문 보관 상태와 연결된 Luna 통합 작업을 확인합니다." onClose={onClose}>
-    <div className="space-y-5">
+    <div className="space-y-3">
       {detail.isPending && <Loading label="가져오기 정보를 불러오는 중…" />}
       {detail.error && <div className="space-y-3"><ErrorNotice error={detail.error} /><Button variant="outline" onClick={() => void detail.refetch()}>다시 시도</Button></div>}
       {record && <>
         <div className="flex flex-wrap items-center justify-between gap-3"><ImportStatusBadge status={record.status} /><Button variant="ghost" size="sm" disabled={detail.isFetching} onClick={() => void detail.refetch()}>{detail.isFetching ? '갱신 중…' : '새로고침'}</Button></div>
         {record.error && <ErrorNotice error={record.error} />}
-        <dl className="space-y-3">
+        <dl className="space-y-3 rounded-lg border bg-card p-4">
           <DetailField title="가져오기 ID"><code>{record.id}</code></DetailField>
           <DetailField title="요청자 ID">{record.userId}</DetailField>
           <DetailField title="종류">{importKindLabels[record.kind]} <span className="text-muted-foreground">({record.kind})</span></DetailField>
@@ -53,7 +53,7 @@ export function ImportDetail({ id, onClose }: { id: string; onClose: () => void 
           <DetailField title="완료 시각">{record.finishedAt ? <time dateTime={record.finishedAt}>{formatDate(record.finishedAt)}</time> : '—'}</DetailField>
           <DetailField title="오류">{record.error ?? '없음'}</DetailField>
         </dl>
-        <section aria-labelledby="import-raw-heading" className="space-y-3"><h3 id="import-raw-heading" className="font-semibold">보관된 원문 경로</h3>{record.rawPaths.length ? <ul className="divide-y rounded-lg border">{record.rawPaths.map((path) => <li key={path}><Link href={noteHref(path)} className="flex items-start justify-between gap-2 p-3 text-sm underline-offset-4 hover:bg-muted/40 hover:underline"><span className="break-all font-mono text-xs leading-5">{path}</span><ArrowUpRight className="mt-0.5 size-4 shrink-0" /></Link></li>)}</ul> : <EmptyState title="아직 보관된 원문이 없습니다" description="원문 추출 중이거나 보관 전에 실패한 기록입니다." />}</section>
+        <section aria-labelledby="import-raw-heading" className="space-y-3 rounded-lg border bg-card p-4"><h3 id="import-raw-heading" className="text-sm font-semibold">보관된 원문 경로</h3>{record.rawPaths.length ? <ul className="divide-y rounded-lg border">{record.rawPaths.map((path) => <li key={path}><Link href={noteHref(path)} className="flex items-start justify-between gap-3 p-3 text-sm underline-offset-4 hover:bg-muted/40 hover:underline"><span className="break-all font-mono text-xs leading-5">{path}</span><ArrowUpRight className="mt-0.5 size-4 shrink-0" /></Link></li>)}</ul> : <EmptyState title="아직 보관된 원문이 없습니다" description="원문 추출 중이거나 보관 전에 실패한 기록입니다." />}</section>
         <p className="rounded-lg bg-muted/40 p-3 text-xs leading-5 text-muted-foreground">통합이 실패해도 이미 보관된 원문은 유지됩니다. 작업 상세에서 오류와 변경 내역을 확인할 수 있습니다.</p>
       </>}
     </div>
