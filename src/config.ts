@@ -15,6 +15,9 @@ const envSchema = z.object({
   LUNA_REASONING_EFFORT: z.string().min(1).default('medium'),
   EMBEDDING_MODEL: z.string().min(1).default('text-embedding-3-small'),
   EMBEDDING_DIMENSIONS: z.coerce.number().int().positive().default(1536),
+  SEARCH_RERANK: z.enum(['off', 'llm']).default('off'),
+  SEARCH_EXPAND: z.enum(['off', 'llm']).default('off'),
+  INDEX_POLL_SECONDS: z.coerce.number().int().min(1).max(86400).default(60),
   GOOGLE_CLIENT_ID: optionalText,
   GOOGLE_CLIENT_SECRET: optionalText,
   KNOWLEDGE_REPO_URL: optionalText,
@@ -23,7 +26,14 @@ const envSchema = z.object({
   GIT_BOT_EMAIL: z.email().default('luna@llmwiki.local'),
   DREAM_CRON: z.string().min(1).default('0 3 * * *'),
   TZ_DREAM: z.string().min(1).default('Asia/Seoul'),
+  SLACK_WEBHOOK_URL: z.preprocess((value) => value === '' ? undefined : value, z.url().optional()),
   DEV_LOGIN_EMAIL: z.preprocess((value) => value === '' ? undefined : value, z.email().optional()),
+  TRUST_PROXY: z.enum(['true', 'false']).default('false'),
+  RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
+  RATE_LIMIT_AUTH: z.coerce.number().int().positive().default(30),
+  RATE_LIMIT_USER: z.coerce.number().int().positive().default(60),
+  AUTH_CLEANUP_INTERVAL_MS: z.coerce.number().int().positive().default(300_000),
+  METRICS_TOKEN: optionalText,
 }).superRefine((env, ctx) => {
   if (env.NODE_ENV === 'production') {
     if (!env.SESSION_SECRET) ctx.addIssue({ code: 'custom', path: ['SESSION_SECRET'], message: 'SESSION_SECRET is required in production' });
@@ -37,10 +47,16 @@ export interface Config {
   openaiApiKey?: string; openaiBaseUrl?: string;
   lunaModel: string; lunaReasoningEffort: string;
   embeddingModel: string; embeddingDimensions: number;
+  searchRerank?: 'off' | 'llm'; searchExpand?: 'off' | 'llm'; indexPollSeconds?: number;
   googleClientId?: string; googleClientSecret?: string;
   knowledgeRepoUrl?: string; gitSshKeyPath?: string;
   gitBotName: string; gitBotEmail: string;
   dreamCron: string; tzDream: string; devLoginEmail?: string;
+  slackWebhookUrl?: string;
+  trustProxy?: boolean;
+  rateLimitWindowMs?: number; rateLimitAuth?: number; rateLimitUser?: number;
+  authCleanupIntervalMs?: number;
+  metricsToken?: string;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -51,9 +67,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     openaiApiKey: parsed.OPENAI_API_KEY, openaiBaseUrl: parsed.OPENAI_BASE_URL,
     lunaModel: parsed.LUNA_MODEL, lunaReasoningEffort: parsed.LUNA_REASONING_EFFORT,
     embeddingModel: parsed.EMBEDDING_MODEL, embeddingDimensions: parsed.EMBEDDING_DIMENSIONS,
+    searchRerank: parsed.SEARCH_RERANK, searchExpand: parsed.SEARCH_EXPAND, indexPollSeconds: parsed.INDEX_POLL_SECONDS,
     googleClientId: parsed.GOOGLE_CLIENT_ID, googleClientSecret: parsed.GOOGLE_CLIENT_SECRET,
     knowledgeRepoUrl: parsed.KNOWLEDGE_REPO_URL, gitSshKeyPath: parsed.GIT_SSH_KEY_PATH,
     gitBotName: parsed.GIT_BOT_NAME, gitBotEmail: parsed.GIT_BOT_EMAIL,
     dreamCron: parsed.DREAM_CRON, tzDream: parsed.TZ_DREAM, devLoginEmail: parsed.DEV_LOGIN_EMAIL,
+    slackWebhookUrl: parsed.SLACK_WEBHOOK_URL,
+    trustProxy: parsed.TRUST_PROXY === 'true',
+    rateLimitWindowMs: parsed.RATE_LIMIT_WINDOW_MS,
+    rateLimitAuth: parsed.RATE_LIMIT_AUTH,
+    rateLimitUser: parsed.RATE_LIMIT_USER,
+    authCleanupIntervalMs: parsed.AUTH_CLEANUP_INTERVAL_MS,
+    metricsToken: parsed.METRICS_TOKEN,
   };
 }

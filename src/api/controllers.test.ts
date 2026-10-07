@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import type { Role, User } from '../auth/users.types.js';
 import { UsersService } from '../auth/users.service.js';
 import { SessionsService } from '../auth/sessions.service.js';
@@ -83,7 +83,7 @@ describe('web REST API', () => {
     headSha: ReturnType<typeof vi.fn<() => Promise<string>>>;
     readFile: ReturnType<typeof vi.fn<(path: string, ref?: string) => Promise<string | null>>>;
     listFiles: ReturnType<typeof vi.fn<(prefix?: string, ref?: string) => Promise<string[]>>>;
-    log: ReturnType<typeof vi.fn<(opts?: { path?: string; limit?: number; sinceSha?: string; beforeSha?: string }) => Promise<CommitInfo[]>>>;
+    log: Mock<(opts?: { path?: string; ref?: string; limit?: number; sinceSha?: string; beforeSha?: string }) => Promise<CommitInfo[]>>;
     show: ReturnType<typeof vi.fn<(sha: string) => Promise<{ commit: CommitInfo; files: Array<{ status: 'M'; path: string }>; patch: string }>>>;
   };
   let answer: ReturnType<typeof vi.fn<Answer>>;
@@ -117,7 +117,7 @@ describe('web REST API', () => {
         path === 'wiki/Navigation.md' && (ref === 'main' || ref === head) ? note : null),
       listFiles: vi.fn(async (_prefix, ref = 'main') =>
         ref === 'main' ? ['index.md', 'wiki/Navigation.md', 'journal/2026-01-01.md'] : ['wiki/Unmerged.md']),
-      log: vi.fn(async () => [commit(head)]),
+      log: vi.fn(async (opts) => [commit(opts?.ref ?? head)]),
       show: vi.fn(async (sha) => ({ commit: commit(sha), files: [{ status: 'M' as const, path: 'wiki/Navigation.md' }], patch: '+Main branch content' })),
     };
     answer = vi.fn(async (_messages, delta, _signal, options) => {
