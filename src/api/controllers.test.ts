@@ -6,10 +6,12 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Role, User } from '../auth/users.types.js';
 import { UsersService } from '../auth/users.service.js';
 import { SessionsService } from '../auth/sessions.service.js';
+import { ApiTokensService } from '../auth/api-tokens.service.js';
+import { assertSameOrigin } from '../auth/csrf.js';
 import { SessionGuard } from '../auth/guards/session.guard.js';
 import { RolesGuard } from '../auth/guards/roles.guard.js';
 import { HttpExceptionFilter } from '../common/filters/http-exception.filter.js';
@@ -18,18 +20,21 @@ import { DB, LOGGER } from '../common/tokens.js';
 import { openDb, runMigrations, type Db } from '../db/index.js';
 import type { WriteJob } from '../jobs/write-job.types.js';
 import { WriteJobsService } from '../jobs/write-jobs.service.js';
+import { NoteWriterService } from '../jobs/note-writer.service.js';
 import { KnowledgeRepo, type CommitInfo } from '../knowledge/repo.js';
-import { SearchService } from '../rag/search.service.js';
 import { LunaService } from '../luna/luna.service.js';
+import { EventsService } from '../events/events.service.js';
+import { UploadsService } from '../uploads/uploads.service.js';
 import { MeController } from './me.controller.js';
 import { NotesController } from './notes.controller.js';
-import { SearchController } from './search.controller.js';
 import { HistoryController } from './history.controller.js';
 import { JobsController } from './jobs.controller.js';
 import { ConversationsController } from './conversations.controller.js';
 import { AdminController } from './admin.controller.js';
 import { ConversationsRepository } from './conversations.repository.js';
 import { ConversationsService } from './conversations.service.js';
+import { GenerationsService } from './generations.service.js';
+import type { Conversation, Message } from './conversations.types.js';
 import { NotesService } from './notes.service.js';
 import { HistoryService } from './history.service.js';
 
@@ -42,22 +47,15 @@ const note = '---\ntitle: Navigation\ntags:\n  - maps\n---\n# Navigation\n\nMain
 const commit = (sha: string): CommitInfo => ({
   sha, parents: [], authorName: 'Requester', authorEmail: 'requester@example.com',
   date: stamp, subject: `Change ${sha.slice(0, 7)}`, body: '',
+  committerName: 'Luna', committerEmail: 'luna@example.com', committedAt: stamp, trailers: {},
 });
 const makeJob = (id: string, userId: number, commits: string[] = [], merged: string | null = null): WriteJob => ({
-  id, userId, source: 'mcp', input: 'Update navigation', status: 'succeeded',
+  id, userId, kind: 'luna', source: 'mcp', client: null, conflicts: [], input: 'Update navigation', status: 'succeeded',
   summary: 'Updated navigation', commits, mergeSha: merged, error: null,
   createdAt: stamp, startedAt: stamp, finishedAt: stamp,
 });
-interface Message {
-  id: string; role: 'user' | 'assistant'; content: string; citations: string[]; createdAt: string;
-}
-interface Conversation { id: string; title: string; createdAt: string; updatedAt: string }
+type Answer = LunaService['answer'];
 interface ConversationDetail { conversation: Conversation; messages: Message[] }
-type Answer = (
-  messages: Array<{ role: 'user' | 'assistant'; content: string }>,
-  onTextDelta: (text: string) => void,
-  signal?: AbortSignal,
-) => Promise<{ text: string; citations: string[] }>;
 
 function parseEvents(text: string): Array<{ event: string; data: Record<string, unknown> }> {
   return text.split(/\r?\n\r?\n/).filter((block) => block.trim()).map((block) => {
@@ -88,7 +86,6 @@ describe('web REST API', () => {
     log: ReturnType<typeof vi.fn<(opts?: { path?: string; limit?: number; sinceSha?: string; beforeSha?: string }) => Promise<CommitInfo[]>>>;
     show: ReturnType<typeof vi.fn<(sha: string) => Promise<{ commit: CommitInfo; files: Array<{ status: 'M'; path: string }>; patch: string }>>>;
   };
-  let search: Mock<SearchService['search']>;
   let answer: ReturnType<typeof vi.fn<Answer>>;
   let users: {
     getById: ReturnType<typeof vi.fn<(id: number) => User | null>>;
@@ -123,14 +120,13 @@ describe('web REST API', () => {
       log: vi.fn(async () => [commit(head)]),
       show: vi.fn(async (sha) => ({ commit: commit(sha), files: [{ status: 'M' as const, path: 'wiki/Navigation.md' }], patch: '+Main branch content' })),
     };
-    search = vi.fn(async () => [{
-      path: 'wiki/Navigation.md', title: 'Navigation', heading: 'Navigation',
-      snippet: 'Main branch content.', score: 0.9, kind: 'wiki' as const, related: ['index.md'],
-    }]);
-    answer = vi.fn(async (_messages, delta) => {
+    answer = vi.fn(async (_messages, delta, _signal, options) => {
       delta('Read ');
       delta('Navigation.');
-      return { text: 'Read Navigation.', citations: ['wiki/Navigation.md'] };
+      const usage = { inputTokens: 10, outputTokens: 4, reasoningTokens: 1 };
+      options?.onEvent?.('citation', { path: 'wiki/Navigation.md' });
+      options?.onEvent?.('usage', usage);
+      return { text: 'Read Navigation.', citations: [{ path: 'wiki/Navigation.md' }], usage };
     });
     let settings = { allowlistEnabled: true, allowedDomains: ['example.com'] };
     users = {
@@ -161,19 +157,23 @@ describe('web REST API', () => {
     const log = { error: vi.fn() };
     const module = await Test.createTestingModule({
       controllers: [
-        MeController, NotesController, SearchController, HistoryController,
+        MeController, NotesController, HistoryController,
         JobsController, ConversationsController, AdminController,
       ],
       providers: [
-        ConversationsRepository, ConversationsService, NotesService, HistoryService,
+        ConversationsRepository, ConversationsService, GenerationsService, NotesService, HistoryService,
         SessionGuard, RolesGuard,
         { provide: DB, useValue: db },
         { provide: LOGGER, useValue: log },
         { provide: KnowledgeRepo, useValue: repo },
-        { provide: SearchService, useValue: { search } },
-        { provide: LunaService, useValue: { answer } },
+        { provide: NoteWriterService, useValue: {} },
+        { provide: LunaService, useValue: { answer, validateModel: () => 'gpt-6-luna', validateEffort: (effort?: string) => effort ?? 'medium', summarize: async () => 'Summary', proposal: vi.fn() } },
+        { provide: UploadsService, useValue: { parts: async () => [], get: vi.fn() } },
+        { provide: EventsService, useValue: { publish: vi.fn() } },
         { provide: UsersService, useValue: users },
+        { provide: ApiTokensService, useValue: { authenticate: vi.fn() } },
         { provide: SessionsService, useValue: {
+          assertSameOrigin: (req: Request) => assertSameOrigin(req, new URL(origin).origin),
           sessionUser: (req: Request): User | null => {
             const id = req.get('x-user-id');
             if (!id) return null;
@@ -186,6 +186,7 @@ describe('web REST API', () => {
         } },
         { provide: WriteJobsService, useValue: {
           get: (id: string) => jobRows.get(id) ?? null,
+          events: () => [],
           list: (opts?: { userId?: number; limit?: number; before?: string }) => [...jobRows.values()]
             .filter((job) => opts?.userId === undefined || job.userId === opts.userId)
             .filter((job) => !opts?.before || job.createdAt < opts.before)
@@ -214,6 +215,7 @@ describe('web REST API', () => {
 
   function request(path: string, init: RequestInit = {}, userId: number | null = 1, role: Role = 'viewer'): Promise<Response> {
     const headers = new Headers(init.headers);
+    headers.set('origin', new URL(origin).origin);
     if (userId !== null) {
       headers.set('x-user-id', String(userId));
       headers.set('x-role', role);
@@ -256,71 +258,59 @@ describe('web REST API', () => {
     expect(await response.json()).toEqual({
       path: 'wiki/Navigation.md', content: note,
       frontmatter: { title: 'Navigation', tags: ['maps'] },
-      body: '# Navigation\n\nMain branch content.\n', updatedSha: head,
+      body: '# Navigation\n\nMain branch content.\n', updatedSha: head, ref: head,
     });
-    expect(await (await request('/notes/resolve?name=nAvIgAtIoN')).json()).toEqual({ path: 'wiki/Navigation.md' });
-    expect(await (await request('/notes/resolve?name=NAVIGATION.md')).json()).toEqual({ path: 'wiki/Navigation.md' });
+    expect(await (await request('/notes/resolve?name=nAvIgAtIoN')).json()).toEqual({ path: 'wiki/Navigation.md', candidates: ['wiki/Navigation.md'] });
+    expect(await (await request('/notes/resolve?name=NAVIGATION.md')).json()).toEqual({ path: 'wiki/Navigation.md', candidates: ['wiki/Navigation.md'] });
     await expectError(await request('/notes/content?path=wiki%2FUnmerged.md'), 404, 'not_found');
     await expectError(await request('/notes/resolve?name=Missing'), 404, 'not_found');
   });
 
-  it('returns search hits and passes requested query and result bound to search', async () => {
-    const response = await request('/search?q=navigation&limit=3');
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ hits: [{
-      path: 'wiki/Navigation.md', title: 'Navigation', heading: 'Navigation',
-      snippet: 'Main branch content.', score: 0.9, kind: 'wiki', related: ['index.md'],
-    }] });
-    expect(search).toHaveBeenCalledWith('navigation', { limit: 3 });
-  });
-
   it.each([
-    '/search', '/search?q=%20%20', '/search?q=term&limit=0', '/search?q=term&limit=101', '/search?q=term&limit=1.5',
     '/notes/content', '/notes/content?path=..%2Fsecret.md', '/notes/content?path=%2Fsecret.md',
     '/notes/content?path=.git%2Fsecret.md', '/notes/content?path=wiki%5Csecret.md', '/notes/content?path=notes.txt',
     '/notes/content?path=.GIT%2Fsecret.md', '/notes/content?path=C%3A%2Fsecret.md',
-    '/notes/resolve?name=%20', '/history?before=not-a-sha', '/history?limit=NaN', '/commits/not-a-sha',
+    '/notes/resolve?name=%20', '/history?before=not-a-sha', '/history?limit=NaN', '/history/commits/not-a-sha',
     '/jobs?mine=2', '/jobs?before=not-a-date',
   ])('rejects invalid query input at %s', async (path) => {
     await expectError(await request(path), 400, 'invalid_input');
   });
 
-  it('uses history before as an older-commit cursor, distinct from incremental sinceSha', async () => {
-    const response = await request(`/history?path=wiki%2FNavigation.md&limit=2&before=${writeSha}`);
-    expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ commits: [commit(head)] });
-    expect(repo.log).toHaveBeenCalledWith({ path: 'wiki/Navigation.md', limit: 2, beforeSha: writeSha });
-  });
 
   it.each(['commits', 'mergeSha'] as const)('links commit details to a write job through %s', async (source) => {
     const job = makeJob(`job-${source}`, 2, source === 'commits' ? [writeSha] : [], source === 'mergeSha' ? writeSha : null);
     seedJob(job);
-    const response = await request(`/commits/${writeSha}`);
+    const response = await request(`/history/commits/${writeSha}`, {}, 3, 'admin');
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
       commit: commit(writeSha), files: [{ status: 'M', path: 'wiki/Navigation.md' }], patch: '+Main branch content', job,
     });
-    expect(await (await request(`/commits/${head}`)).json()).toMatchObject({ job: null });
+    expect(await (await request(`/history/commits/${head}`)).json()).toMatchObject({ job: null });
   });
 
-  it('lists jobs with requester identity, filters mine, and returns commit details including the merge', async () => {
+  it('isolates job lists and details to owners while allowing administrators', async () => {
     const own = makeJob('own', 1, [writeSha], mergeSha);
     const other = makeJob('other', 2, [head]);
     seedJob(own);
     seedJob(other);
     expect(await (await request('/jobs?limit=2')).json()).toEqual({ jobs: [
       { ...own, user: { email: 'user1@example.com', name: 'User 1' } },
+    ] });
+    expect(await (await request('/jobs?limit=2', {}, 3, 'admin')).json()).toEqual({ jobs: [
+      { ...own, user: { email: 'user1@example.com', name: 'User 1' } },
       { ...other, user: { email: 'user2@example.com', name: 'User 2' } },
     ] });
+    await expectError(await request('/jobs/other'), 404, 'not_found');
+    expect(await (await request('/jobs/other', {}, 3, 'admin')).json()).toMatchObject({ job: other });
     expect(await (await request('/jobs?mine=1')).json()).toEqual({ jobs: [{ ...own, user: { email: 'user1@example.com', name: 'User 1' } }] });
     expect(await (await request('/jobs/own')).json()).toEqual({
-      job: own, user: { email: 'user1@example.com', name: 'User 1' }, commits: [commit(writeSha), commit(mergeSha)],
+      job: own, user: { email: 'user1@example.com', name: 'User 1' }, commits: [commit(writeSha), commit(mergeSha)], events: [],
     });
     expect(await (await request(`/jobs?before=${encodeURIComponent(stamp)}`)).json()).toEqual({ jobs: [] });
     await expectError(await request('/jobs/missing'), 404, 'not_found');
   });
 
-  it('isolates conversation list, read, send, and deletion to the owner even from administrators', async () => {
+  it('isolates conversation list, read, send, and deletion from nonmembers even administrators', async () => {
     const owned = await createConversation('Private discussion');
     const other = await createConversation('Other discussion', 2);
     expect(await (await request('/conversations')).json()).toEqual({ conversations: [owned] });
@@ -339,75 +329,78 @@ describe('web REST API', () => {
     expect(await (await request('/conversations')).json()).toEqual({ conversations: [] });
   });
 
-  it('streams delta and done, persists user/assistant/citations, and supplies prior turns to the next answer', async () => {
+  it('streams answers and persists turns, citation objects, and usage', async () => {
     const conversation = await createConversation();
     const response = await request(`/conversations/${conversation.id}/messages`, { method: 'POST', body: '{"content":"Where should I start?"}' });
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toMatch(/^text\/event-stream/);
     const events = parseEvents(await response.text());
-    expect(events.map(({ event }) => event)).toEqual(['delta', 'delta', 'done']);
-    expect(events.slice(0, 2).map(({ data }) => data)).toEqual([{ text: 'Read ' }, { text: 'Navigation.' }]);
-    const done = events[2]!.data.message as Message;
-    expect(done).toMatchObject({ role: 'assistant', content: 'Read Navigation.', citations: ['wiki/Navigation.md'] });
+    expect(events.filter(({ event }) => event === 'delta').map(({ data }) => data)).toEqual([{ text: 'Read ' }, { text: 'Navigation.' }]);
+    expect(events[0]?.event).toBe('generation');
+    expect(events.at(-1)?.event).toBe('done');
+    const done = events.at(-1)!.data.message as Message;
+    expect(done).toMatchObject({ role: 'assistant', content: 'Read Navigation.', status: 'completed', citations: [{ path: 'wiki/Navigation.md' }], usage: { inputTokens: 10, outputTokens: 4, reasoningTokens: 1 } });
     const detail = await (await request(`/conversations/${conversation.id}`)).json() as ConversationDetail;
     expect(detail.conversation.title).toBe('Where should I start?');
     expect(detail.messages).toEqual([
-      { id: expect.any(String), role: 'user', content: 'Where should I start?', citations: [], createdAt: expect.any(String) }, done,
+      expect.objectContaining({ id: expect.any(String), role: 'user', content: 'Where should I start?', citations: [], createdAt: expect.any(String) }), done,
     ]);
     const followup = await request(`/conversations/${conversation.id}/messages`, { method: 'POST', body: '{"content":"What next?"}' });
     await followup.text();
-    expect(answer.mock.calls[1]?.[0]).toEqual([
-      { role: 'user', content: 'Where should I start?' },
-      { role: 'assistant', content: 'Read Navigation.' },
-      { role: 'user', content: 'What next?' },
-    ]);
     const after = await (await request(`/conversations/${conversation.id}`)).json() as ConversationDetail;
     expect(after.messages.map(({ role, content, citations }) => ({ role, content, citations }))).toEqual([
       { role: 'user', content: 'Where should I start?', citations: [] },
-      { role: 'assistant', content: 'Read Navigation.', citations: ['wiki/Navigation.md'] },
+      { role: 'assistant', content: 'Read Navigation.', citations: [{ path: 'wiki/Navigation.md' }] },
       { role: 'user', content: 'What next?', citations: [] },
-      { role: 'assistant', content: 'Read Navigation.', citations: ['wiki/Navigation.md'] },
+      { role: 'assistant', content: 'Read Navigation.', citations: [{ path: 'wiki/Navigation.md' }] },
     ]);
     expect(after.conversation.title).toBe('Where should I start?');
   });
 
-  it('aborts Luna when the client disconnects and does not persist an incomplete assistant answer', async () => {
-    const conversation = await createConversation('Interrupted answer');
+  it('continues generation after disconnect and replays its completed answer without another user turn', async () => {
+    const conversation = await createConversation('Detached answer');
     let signal: AbortSignal | undefined;
-    const aborted = Promise.withResolvers<void>();
+    const pending = Promise.withResolvers<{ text: string; citations: Message['citations'] }>();
+    const started = Promise.withResolvers<void>();
     answer.mockImplementation((_messages, delta, incomingSignal) => {
-      const pending = Promise.withResolvers<{ text: string; citations: string[] }>();
       signal = incomingSignal;
-      incomingSignal?.addEventListener('abort', () => {
-        aborted.resolve();
-        pending.reject(new DOMException('Cancelled', 'AbortError'));
-      }, { once: true });
       delta('Starting');
+      started.resolve();
       return pending.promise;
     });
     const controller = new AbortController();
     const response = await request(`/conversations/${conversation.id}/messages`, {
-      method: 'POST', body: '{"content":"Slow question"}', signal: controller.signal,
+      method: 'POST', body: '{"content":"Slow question","clientId":"detached-turn"}', signal: controller.signal,
     });
     const reader = response.body!.getReader();
-    const chunk = await reader.read();
-    expect(new TextDecoder().decode(chunk.value)).toContain('event: delta');
+    await reader.read();
+    await started.promise;
     controller.abort();
-    await aborted.promise;
-    expect(signal?.aborted).toBe(true);
+    pending.resolve({ text: 'Finished answer', citations: [] });
+    const replay = await request(`/conversations/${conversation.id}/messages`, {
+      method: 'POST', body: '{"content":"Slow question","clientId":"detached-turn"}',
+    });
+    expect(parseEvents(await replay.text()).at(-1)).toMatchObject({ event: 'done', data: { message: { content: 'Finished answer' } } });
+    expect(signal?.aborted).toBe(false);
     const detail = await (await request(`/conversations/${conversation.id}`)).json() as ConversationDetail;
-    expect(detail.messages.map(({ role, content }) => ({ role, content }))).toEqual([{ role: 'user', content: 'Slow question' }]);
+    expect(detail.messages.map(({ role, content, status }) => ({ role, content, status }))).toEqual([
+      { role: 'user', content: 'Slow question', status: 'completed' },
+      { role: 'assistant', content: 'Finished answer', status: 'completed' },
+    ]);
   });
 
-  it('emits an SSE error without done on answer failure and keeps the submitted user turn', async () => {
+  it('emits a generic SSE error without done and stores a failed assistant on answer failure', async () => {
     const conversation = await createConversation('Failed answer');
     answer.mockRejectedValueOnce(new Error('Model unavailable'));
     const response = await request(`/conversations/${conversation.id}/messages`, { method: 'POST', body: '{"content":"Question"}' });
     const events = parseEvents(await response.text());
-    expect(events.map(({ event }) => event)).toEqual(['error']);
-    expect(events[0]?.data).toMatchObject({ message: expect.any(String) });
+    expect(events.at(-1)).toMatchObject({ event: 'error', data: { code: 'generation_failed', message: expect.any(String) } });
+    expect(events.some(({ event }) => event === 'done')).toBe(false);
     const detail = await (await request(`/conversations/${conversation.id}`)).json() as ConversationDetail;
-    expect(detail.messages.map(({ role, content }) => ({ role, content }))).toEqual([{ role: 'user', content: 'Question' }]);
+    expect(detail.messages.map(({ role, content, status }) => ({ role, content, status }))).toEqual([
+      { role: 'user', content: 'Question', status: 'completed' },
+      { role: 'assistant', content: '', status: 'failed' },
+    ]);
   });
 
   it('rejects malformed chat input before starting an answer', async () => {
@@ -455,8 +448,8 @@ describe('web REST API', () => {
   });
 
   it('returns a structured internal error when a read service fails', async () => {
-    search.mockRejectedValueOnce(new Error('Private upstream credentials'));
-    const response = await request('/search?q=term');
+    repo.readFile.mockRejectedValueOnce(new Error('Private upstream credentials'));
+    const response = await request('/notes/content?path=wiki%2FNavigation.md');
     const leaked = await response.clone().text();
     expect(leaked).not.toContain('Private upstream credentials');
     await expectError(response, 500, 'internal_error');

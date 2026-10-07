@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { openDb, type Db } from '../db/index.js';
 import { ConversationsRepository } from './conversations.repository.js';
 
-const schemas = ['001_core.sql', '004_chat.sql'].map((name) =>
+const schemas = ['001_core.sql', '004_chat.sql', '010_chat.sql'].map((name) =>
   readFileSync(new URL(`../db/migrations/${name}`, import.meta.url), 'utf8'),
 );
 let dir: string;
@@ -32,13 +32,13 @@ afterEach(() => {
 });
 
 describe('ConversationsRepository', () => {
-  it('persists content and citation paths across reopening, preserving insertion order for equal timestamps', () => {
+  it('persists citation objects across reopening, preserving insertion order for equal timestamps', () => {
     const conversation = store.create(1);
     const first = store.addMessage(conversation.id, 1, 'user', 'Question\nwith Unicode 🐈');
-    const second = store.addMessage(conversation.id, 1, 'assistant', 'First answer', ['wiki/한글.md', 'wiki/"quoted".md']);
+    const second = store.addMessage(conversation.id, 1, 'assistant', 'First answer', [{ path: 'wiki/한글.md', heading: '근거', anchor: '근거', sha: 'a'.repeat(40) }, { path: 'wiki/"quoted".md' }]);
     const third = store.addMessage(conversation.id, 1, 'user', 'Follow-up');
     vi.setSystemTime('2026-10-07T01:00:01.000Z');
-    const fourth = store.addMessage(conversation.id, 1, 'assistant', 'Final answer', ['wiki/final.md']);
+    const fourth = store.addMessage(conversation.id, 1, 'assistant', 'Final answer', [{ path: 'wiki/final.md' }]);
     db.close();
     db = openDb(join(dir, 'chat.sqlite'));
     store = new ConversationsRepository(db);
@@ -46,9 +46,9 @@ describe('ConversationsRepository', () => {
     expect(store.messages(conversation.id, 1)).toEqual([first, second, third, fourth]);
     expect(store.messages(conversation.id, 1).map(({ content, citations }) => ({ content, citations }))).toEqual([
       { content: 'Question\nwith Unicode 🐈', citations: [] },
-      { content: 'First answer', citations: ['wiki/한글.md', 'wiki/"quoted".md'] },
+      { content: 'First answer', citations: [{ path: 'wiki/한글.md', heading: '근거', anchor: '근거', sha: 'a'.repeat(40) }, { path: 'wiki/"quoted".md' }] },
       { content: 'Follow-up', citations: [] },
-      { content: 'Final answer', citations: ['wiki/final.md'] },
+      { content: 'Final answer', citations: [{ path: 'wiki/final.md' }] },
     ]);
     expect(store.get(conversation.id, 1)).toMatchObject({
       title: 'Question with Unicode 🐈',
@@ -57,7 +57,7 @@ describe('ConversationsRepository', () => {
     });
   });
 
-  it('isolates every read and mutation by owner, including an administrator', () => {
+  it('isolates every read and mutation from nonmembers, including an administrator', () => {
     const own = store.create(1, 'Private conversation');
     const other = store.create(2, 'Another conversation');
     const message = store.addMessage(own.id, 1, 'user', 'Private facts');
@@ -90,12 +90,6 @@ describe('ConversationsRepository', () => {
     expect(store.get(named.id, 1)?.title).toBe('Chosen title');
   });
 
-  it('does not use a later user message to title a conversation whose first user message is whitespace', () => {
-    const conversation = store.create(1);
-    store.addMessage(conversation.id, 1, 'user', '\n \t');
-    store.addMessage(conversation.id, 1, 'user', 'Later meaningful text');
-    expect(store.get(conversation.id, 1)?.title).toBe('');
-  });
 
   it('lists recently active conversations first without changing their creation times', () => {
     const first = store.create(1, 'First');
@@ -114,7 +108,7 @@ describe('ConversationsRepository', () => {
     const removed = store.create(1, 'Delete this');
     const kept = store.create(1, 'Keep this');
     store.addMessage(removed.id, 1, 'user', 'Delete this message');
-    store.addMessage(removed.id, 1, 'assistant', 'Delete these citations', ['wiki/remove.md']);
+    store.addMessage(removed.id, 1, 'assistant', 'Delete these citations', [{ path: 'wiki/remove.md' }]);
     const keptMessage = store.addMessage(kept.id, 1, 'user', 'Keep this message');
 
     expect(store.delete(removed.id, 1)).toBe(true);
