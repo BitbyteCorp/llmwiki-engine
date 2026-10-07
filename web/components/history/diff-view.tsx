@@ -16,8 +16,14 @@ function rowsFor(hunk: StructuredPatch["hunks"][number]): Row[] {
     if (line.startsWith("\\")) { i++; continue }
     if (line.startsWith(" ")) { rows.push({ old: old++, next: next++, left: line.slice(1), right: line.slice(1), kind: "context" }); i++; continue }
     const removed: string[] = [], added: string[] = []
-    while (i < hunk.lines.length && hunk.lines[i].startsWith("-")) removed.push(hunk.lines[i++].slice(1))
-    while (i < hunk.lines.length && hunk.lines[i].startsWith("+")) added.push(hunk.lines[i++].slice(1))
+    while (i < hunk.lines.length && (hunk.lines[i].startsWith("-") || hunk.lines[i].startsWith("\\"))) {
+      const removedLine = hunk.lines[i++]
+      if (removedLine.startsWith("-")) removed.push(removedLine.slice(1))
+    }
+    while (i < hunk.lines.length && (hunk.lines[i].startsWith("+") || hunk.lines[i].startsWith("\\"))) {
+      const addedLine = hunk.lines[i++]
+      if (addedLine.startsWith("+")) added.push(addedLine.slice(1))
+    }
     if (!removed.length && !added.length) { i++; continue }
     for (let n = 0; n < Math.max(removed.length, added.length); n++) rows.push({ old: n < removed.length ? old++ : undefined, next: n < added.length ? next++ : undefined, left: removed[n], right: added[n], kind: "change" })
   }
