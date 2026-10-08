@@ -11,6 +11,7 @@ import { UsersService } from '../auth/users.service.js';
 import { HealthController } from '../common/health.controller.js';
 import { HttpExceptionFilter } from '../common/filters/http-exception.filter.js';
 import { CONFIG, DB } from '../common/tokens.js';
+import { newId, toStorageId } from '../common/ids.js';
 import { loadConfig, type Config } from '../config.js';
 import { openDb, runMigrations, type Db } from '../db/index.js';
 import { KnowledgeRepo } from '../knowledge/repo.js';
@@ -114,9 +115,9 @@ describe('operations HTTP boundary', () => {
   });
 
   it('exports persisted queue, outcome, dream duration and index metrics without scrape double counting', async () => {
-    db.prepare('INSERT INTO write_jobs (id,user_id,source,input,status,created_at) VALUES (?,?,?,?,?,?)').run('queued', 1, 'web', 'secret raw prompt', 'queued', '2026-01-01');
-    db.prepare('INSERT INTO write_jobs (id,user_id,source,input,status,created_at) VALUES (?,?,?,?,?,?)').run('finished', 1, 'web', 'private note path', 'succeeded', '2026-01-01');
-    db.prepare('INSERT INTO dream_runs (id,started_at,finished_at,status) VALUES (?,?,?,?)').run('dream', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:12.000Z', 'succeeded');
+    db.prepare('INSERT INTO write_jobs (id,user_id,source,input,status,created_at) VALUES (?,?,?,?,?,?)').run(toStorageId(newId()), 1, 'web', 'secret raw prompt', 'queued', '2026-01-01');
+    db.prepare('INSERT INTO write_jobs (id,user_id,source,input,status,created_at) VALUES (?,?,?,?,?,?)').run(toStorageId(newId()), 1, 'web', 'private note path', 'succeeded', '2026-01-01');
+    db.prepare('INSERT INTO dream_runs (id,started_at,finished_at,status) VALUES (?,?,?,?)').run(toStorageId(newId()), '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:12.000Z', 'succeeded');
     index.indexedSha = 'b'.repeat(40);
     index.pendingVectors = 3;
     for (let i = 0; i < 2; i++) {
@@ -137,7 +138,7 @@ describe('operations HTTP boundary', () => {
     const known = await request(app.getHttpServer()).get('/healthz?token=private-token').set('X-Request-ID', 'client:request-1').expect(200);
     expect(known.headers['x-request-id']).toBe('client:request-1');
     const invalid = await request(app.getHttpServer()).get('/api/private-note-one?token=private-token').set('X-Request-ID', 'invalid id').expect(404);
-    expect(invalid.headers['x-request-id']).toMatch(/^[a-f0-9-]{36}$/);
+    expect(invalid.headers['x-request-id']).toMatch(/^[0-9A-Za-z]{22}$/);
     await request(app.getHttpServer()).get('/api/private-note-two').expect(404);
     const metrics = await request(app.getHttpServer()).get('/metrics').set('Authorization', 'Bearer scrape-secret').expect(200);
     expect(metrics.text).toContain('llmwiki_http_requests_total{method="GET",route="unmatched_backend",status="404"} 2');

@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import type Database from 'better-sqlite3';
+import { fromStorageId, toStorageId } from '../common/ids.js';
 import { DB } from '../common/tokens.js';
 import type { DreamRun, DreamUserMessage } from './dream-run.types.js';
 
@@ -14,7 +15,7 @@ interface DreamRunRow {
 
 function toRun(row: DreamRunRow): DreamRun {
   return {
-    id: row.id, startedAt: row.started_at, finishedAt: row.finished_at, status: row.status,
+    id: fromStorageId(row.id), startedAt: row.started_at, finishedAt: row.finished_at, status: row.status,
     fromSha: row.from_sha, toSha: row.to_sha, mergeSha: row.merge_sha,
     pushed: Boolean(row.pushed), error: row.error, summary: row.summary,
     changedPaths: JSON.parse(row.changed_paths) as string[], journalPath: row.journal_path,
@@ -29,11 +30,11 @@ export class DreamRunsRepository {
 
   create(run: DreamRun): void {
     this.db.prepare('INSERT INTO dream_runs (id, started_at, status) VALUES (?, ?, ?)')
-      .run(run.id, run.startedAt, run.status);
+      .run(toStorageId(run.id), run.startedAt, run.status);
   }
 
   get(id: string): DreamRun | null {
-    const row = this.db.prepare('SELECT * FROM dream_runs WHERE id = ?').get(id) as DreamRunRow | undefined;
+    const row = this.db.prepare('SELECT * FROM dream_runs WHERE id = ?').get(toStorageId(id)) as DreamRunRow | undefined;
     return row ? toRun(row) : null;
   }
 
@@ -44,8 +45,9 @@ export class DreamRunsRepository {
       const cursor = this.get(opts.before);
       if (cursor) {
         where = 'WHERE (started_at < ? OR (started_at = ? AND id < ?))';
-        params.push(cursor.startedAt, cursor.startedAt, cursor.id);
+        params.push(cursor.startedAt, cursor.startedAt, toStorageId(cursor.id)!);
       } else {
+        if (toStorageId(opts.before) !== null || Number.isNaN(Date.parse(opts.before))) return [];
         where = 'WHERE started_at < ?';
         params.push(opts.before);
       }
@@ -83,20 +85,21 @@ export class DreamRunsRepository {
 
   setInputRange(run: DreamRun): void {
     this.db.prepare('UPDATE dream_runs SET from_sha = ?, to_sha = ? WHERE id = ?')
-      .run(run.fromSha, run.toSha, run.id);
+      .run(run.fromSha, run.toSha, toStorageId(run.id));
   }
 
   unlearnedUserMessages(startedAt: string): DreamUserMessage[] {
-    return this.db.prepare(`SELECT id, conversation_id, content, created_at FROM messages
+    const rows = this.db.prepare(`SELECT id, conversation_id, content, created_at FROM messages
       WHERE role = 'user' AND learned_at IS NULL AND created_at <= ?
       ORDER BY created_at, id`).all(startedAt) as DreamUserMessage[];
+    return rows.map((row) => ({ ...row, id: fromStorageId(row.id), conversation_id: fromStorageId(row.conversation_id) }));
   }
 
   markLearned(messages: readonly DreamUserMessage[], learnedAt: string): void {
     const mark = this.db.prepare(`UPDATE messages SET learned_at = ?
       WHERE id = ? AND content = ? AND role = 'user' AND learned_at IS NULL`);
     this.db.transaction(() => {
-      for (const message of messages) mark.run(learnedAt, message.id, message.content);
+      for (const message of messages) mark.run(learnedAt, toStorageId(message.id), message.content);
     })();
   }
 
@@ -106,6 +109,6 @@ export class DreamRunsRepository {
       push_status = ?, push_remote = ?, push_sha = ?, push_at = ?, push_reason = ? WHERE id = ?`)
       .run(run.finishedAt, run.status, run.fromSha, run.toSha, run.mergeSha, Number(run.pushed), run.error,
         run.summary, JSON.stringify(run.changedPaths), run.journalPath, run.push.status, run.push.remote,
-        run.push.sha, run.push.at, run.push.reason, run.id);
+        run.push.sha, run.push.at, run.push.reason, toStorageId(run.id));
   }
 }

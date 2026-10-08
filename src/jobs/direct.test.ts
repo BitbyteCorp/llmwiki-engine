@@ -11,6 +11,7 @@ import { AuditService } from '../audit/audit.service.js';
 import { UsersRepository } from '../auth/users.repository.js';
 import { UsersService } from '../auth/users.service.js';
 import { loadConfig } from '../config.js';
+import { newId, toStorageId } from '../common/ids.js';
 import { openDb, runMigrations } from '../db/index.js';
 import { EventsService } from '../events/events.service.js';
 import type { WikiEvent } from '../events/events.types.js';
@@ -209,14 +210,15 @@ it('preserves legacy rows through history and agent migrations and accepts legac
   const db = openDb(':memory:');
   try {
     for (const name of ['001_core', '003_jobs']) db.exec(await readFile(new URL(`../db/migrations/${name}.sql`, import.meta.url), 'utf8'));
-    db.prepare("INSERT INTO write_jobs(id,user_id,source,input,status,summary,commits,error,created_at,finished_at) VALUES ('legacy',99,'mcp','original input','failed','original summary','[\"abc\"]','original error','2026-01-01T00:00:00.000Z','2026-01-02T00:00:00.000Z')").run();
+    const legacyId = newId();
+    db.prepare("INSERT INTO write_jobs(id,user_id,source,input,status,summary,commits,error,created_at,finished_at) VALUES (?,99,'mcp','original input','failed','original summary','[\"abc\"]','original error','2026-01-01T00:00:00.000Z','2026-01-02T00:00:00.000Z')").run(toStorageId(legacyId));
     db.exec(await readFile(new URL('../db/migrations/007_history.sql', import.meta.url), 'utf8'));
     db.exec(await readFile(new URL('../db/migrations/016_agent_job_kind.sql', import.meta.url), 'utf8'));
     db.exec(await readFile(new URL('../db/migrations/017_write_job_dedupe.sql', import.meta.url), 'utf8'));
     const repository = new WriteJobsRepository(db);
-    expect(repository.get('legacy')).toMatchObject({ userId: 99, kind: 'agent', source: 'mcp', client: null, input: 'original input', status: 'failed', summary: 'original summary', commits: ['abc'], conflicts: [], error: 'original error' });
-    repository.enqueue('new', 99, 'new input', '2026-02-01T00:00:00.000Z', 'web');
-    expect(repository.list({ before: '2026-02-01T00:00:00.000Z' }).map((job) => job.id)).toEqual(['legacy']);
+    expect(repository.get(legacyId)).toMatchObject({ userId: 99, kind: 'agent', source: 'mcp', client: null, input: 'original input', status: 'failed', summary: 'original summary', commits: ['abc'], conflicts: [], error: 'original error' });
+    repository.enqueue(newId(), 99, 'new input', '2026-02-01T00:00:00.000Z', 'web');
+    expect(repository.list({ before: '2026-02-01T00:00:00.000Z' }).map((job) => job.id)).toEqual([legacyId]);
   } finally { db.close(); }
 });
 

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { newId } from '../common/ids.js';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { Logger } from 'pino';
 import { ApiError } from '../api/api-error.js';
@@ -51,11 +51,11 @@ export class NoteWriterService {
   private phase(id: string, phase: JobPhase, detail: Record<string, unknown> | null = null): void {
     this.repository.addEvent(id, phase, detail);
     const job = this.repository.get(id)!;
-    this.events.publish({ type: 'job.updated', jobId: id, userId: job.userId, status: job.status, phase }, { userIds: [job.userId], admins: true });
+    this.events.publish({ type: 'job.updated', jobId: job.id, userId: job.userId, status: job.status, phase }, { userIds: [job.userId], admins: true });
   }
 
   retry(original: WriteJob): WriteJob {
-    const id = randomUUID();
+    const id = newId();
     this.repository.enqueue(id, original.userId, original.input, new Date().toISOString(), original.source, original.client ?? undefined, original.kind);
     this.phase(id, 'queued', { retryOf: original.id });
     const job = this.repository.get(id)!;
@@ -178,7 +178,7 @@ export class NoteWriterService {
         if (!input.preview) return this.run({ ...input, source: 'revert' }, 'revert', `Revert ${input.sha}`, async (wt) => {
           await wt.revert(input.sha, paths);
         }, jobId);
-        const wt = await this.repo.createWorktree(`preview-${randomUUID()}`);
+        const wt = await this.repo.createWorktree(`preview-${newId()}`);
         try {
           await wt.revert(input.sha, paths);
           const diff = await wt.diff();
@@ -198,7 +198,7 @@ export class NoteWriterService {
 
   // Caller holds the global merge lock from freshness check through indexing.
   private async run(input: { userId: number; source: JobSource; client?: string; ops?: NoteOp[]; sha?: string; paths?: string[] }, kind: JobKind, message: string, edit: (wt: Worktree) => Promise<void>, jobId?: string): Promise<WriteResult> {
-    const id = jobId ?? randomUUID();
+    const id = jobId ?? newId();
     if (!jobId) {
       this.repository.enqueue(id, input.userId, JSON.stringify(input), new Date().toISOString(), input.source, input.client, kind);
       this.phase(id, 'queued');

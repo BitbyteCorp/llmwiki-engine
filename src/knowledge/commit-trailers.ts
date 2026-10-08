@@ -1,3 +1,5 @@
+import { legacyUuidToApi } from '../common/ids.js';
+
 export interface CommitMetadata {
   jobId: string;
   source: string;
@@ -8,7 +10,7 @@ export interface CommitMetadata {
 /** A Git trailer block; callers separate it from the message with a blank line. */
 export function commitTrailers(input: CommitMetadata): string {
   const fields = [
-    ['Wiki-Job', input.jobId],
+    ['Wiki-Job', legacyUuidToApi(input.jobId)],
     ['Wiki-Source', input.source],
     ['Wiki-Requester', input.requester],
     ...(input.client === undefined ? [] : [['Wiki-Client', input.client]]),

@@ -97,18 +97,18 @@ describe('public operations, live events and archives obey folder ACL', () => {
     await writeFile(join(path, hidden), `# Secret\n${secret}\n`);
     await writeFile(join(path, 'journal/2026-01-02.md'), `# Journal\n${secret}\n`);
     await git(path, ['add', '.']);
-    await git(path, ['commit', '-m', `${secret}\n\nWiki-Source: web\nWiki-Job: hidden-job`]);
+    await git(path, ['commit', '-m', `${secret}\n\nWiki-Source: web\nWiki-Job: 000000000000000000000I`]);
     hiddenSha = (await git(path, ['rev-parse', 'HEAD'])).trim();
     await writeFile(join(path, publicPath), '# Public\nAllowed revised fact\n');
     await writeFile(join(path, hidden), `# Secret\n${secret} revised\n`);
     await git(path, ['add', '.']);
-    await git(path, ['commit', '-m', `${secret} mixed update\n\nWiki-Source: web\nWiki-Job: mixed-job`]);
+    await git(path, ['commit', '-m', `${secret} mixed update\n\nWiki-Source: web\nWiki-Job: 000000000000000000000J`]);
     mixedSha = (await git(path, ['rev-parse', 'HEAD'])).trim();
     const repo = await KnowledgeRepo.open(config, log);
     const dreams = new DreamRunsRepository(db);
     for (const [id, changedPaths, journalPath] of [
-      ['hidden-dream', [hidden, 'journal/2026-01-02.md'], 'journal/2026-01-02.md'],
-      ['mixed-dream', [hidden, publicPath], null],
+      ['000000000000000000000G', [hidden, 'journal/2026-01-02.md'], 'journal/2026-01-02.md'],
+      ['000000000000000000000H', [hidden, publicPath], null],
     ] as const) {
       const run: DreamRun = { id, startedAt: stamp, finishedAt: stamp, status: 'succeeded', fromSha: null,
         toSha: mixedSha, mergeSha: mixedSha, pushed: true, summary: secret, changedPaths: [...changedPaths], journalPath,
@@ -117,14 +117,14 @@ describe('public operations, live events and archives obey folder ACL', () => {
       dreams.finish(run);
     }
     const jobs = new WriteJobsRepository(db);
-    jobs.enqueue('hidden-job', viewer.id, secret, stamp, 'web');
-    jobs.addEvent('hidden-job', 'queued', { sourceProvenanceComplete: true });
-    jobs.markMerging('hidden-job', secret, [hiddenSha]);
-    jobs.recordConflicts('hidden-job', [hidden]);
-    jobs.enqueue('mixed-job', viewer.id, secret, stamp, 'web');
-    jobs.addEvent('mixed-job', 'queued', { sourceProvenanceComplete: true });
-    jobs.markMerging('mixed-job', secret, [mixedSha]);
-    jobs.recordConflicts('mixed-job', [hidden, publicPath]);
+    jobs.enqueue('000000000000000000000I', viewer.id, secret, stamp, 'web');
+    jobs.addEvent('000000000000000000000I', 'queued', { sourceProvenanceComplete: true });
+    jobs.markMerging('000000000000000000000I', secret, [hiddenSha]);
+    jobs.recordConflicts('000000000000000000000I', [hidden]);
+    jobs.enqueue('000000000000000000000J', viewer.id, secret, stamp, 'web');
+    jobs.addEvent('000000000000000000000J', 'queued', { sourceProvenanceComplete: true });
+    jobs.markMerging('000000000000000000000J', secret, [mixedSha]);
+    jobs.recordConflicts('000000000000000000000J', [hidden, publicPath]);
     events = new EventsService();
     const module = await Test.createTestingModule({
       controllers: [OpsController, EventsController, ExportController],
@@ -134,7 +134,7 @@ describe('public operations, live events and archives obey folder ACL', () => {
         { provide: AuditService, useValue: audit }, { provide: ApiTokensService, useValue: auth },
         { provide: SessionsService, useValue: new SessionsService(config, db, users) },
         { provide: KnowledgeRepo, useValue: repo }, { provide: DreamRunsRepository, useValue: dreams },
-        { provide: DreamingService, useValue: { runManual: async () => dreams.get('mixed-dream')! } },
+        { provide: DreamingService, useValue: { runManual: async () => dreams.get('000000000000000000000H')! } },
         { provide: WriteJobsService, useValue: {} }, { provide: IndexerService, useValue: {} },
         { provide: EventsService, useValue: events }],
     }).compile();
@@ -157,23 +157,23 @@ describe('public operations, live events and archives obey folder ACL', () => {
   }
 
   it('projects dream details, backup status, journal and activity without hidden summaries or paths and pages visible items', async () => {
-    for (const path of ['/api/dreams', '/api/dreams/hidden-dream', '/api/dreams/mixed-dream', '/api/backup/status', '/api/activity']) {
+    for (const path of ['/api/dreams', '/api/dreams/000000000000000000000G', '/api/dreams/000000000000000000000H', '/api/backup/status', '/api/activity']) {
       const response = await get(path).expect(200);
       expect(JSON.stringify(response.body)).not.toContain(hidden);
       expect(JSON.stringify(response.body)).not.toContain('journal/2026-01-02.md');
       expect(JSON.stringify(response.body)).not.toContain(secret);
     }
-    const dream = await get('/api/dreams/hidden-dream').expect(200);
+    const dream = await get('/api/dreams/000000000000000000000G').expect(200);
     expect(dream.body).toMatchObject({ changedPaths: [], journalPath: null, summary: null, error: null, push: { reason: null } });
-    const mixed = await get('/api/dreams/mixed-dream').expect(200);
+    const mixed = await get('/api/dreams/000000000000000000000H').expect(200);
     expect(mixed.body).toMatchObject({ changedPaths: [publicPath], summary: null });
     const journal = await get('/api/journal').expect(200);
     expect(journal.body).toEqual([{ date: '2026-01-01', path: 'journal/2026-01-01.md', dreamRunId: null }]);
     const denied = await get(`/api/activity?path=${hidden}`).expect(404);
     expect(denied.body.error.code).toBe('not_found');
     const full = await get('/api/activity?limit=100').expect(200);
-    expect(full.body.items.some((item: ActivityItem) => item.id === hiddenSha || item.id === 'hidden-job')).toBe(false);
-    expect(full.body.items.find((item: ActivityItem) => item.id === 'mixed-job')).toMatchObject({ paths: [publicPath], summary: null, job: { conflicts: [publicPath], commits: [] } });
+    expect(full.body.items.some((item: ActivityItem) => item.id === hiddenSha || item.id === '000000000000000000000I')).toBe(false);
+    expect(full.body.items.find((item: ActivityItem) => item.id === '000000000000000000000J')).toMatchObject({ paths: [publicPath], summary: null, job: { conflicts: [publicPath], commits: [] } });
     const ids: string[] = [];
     let before: string | null = null;
     do {
@@ -188,13 +188,13 @@ describe('public operations, live events and archives obey folder ACL', () => {
     await get(`/api/activity?limit=1&before=${first.body.nextCursor}`).expect(400);
     const allowed = await get('/api/activity?type=commit', collaborator).expect(200);
     expect(allowed.body.items.find((item: ActivityItem) => item.id === mixedSha).summary).toContain(secret);
-    const sharedDream = await get('/api/dreams/mixed-dream', collaborator).expect(200);
+    const sharedDream = await get('/api/dreams/000000000000000000000H', collaborator).expect(200);
     expect(sharedDream.body).toMatchObject({ changedPaths: [hidden, publicPath], summary: secret });
     const firstDream = await get('/api/dreams?limit=1').expect(200);
-    expect(firstDream.body.runs.map((run: DreamRun) => run.id)).toEqual(['mixed-dream']);
+    expect(firstDream.body.runs.map((run: DreamRun) => run.id)).toEqual(['000000000000000000000H']);
     const secondDream = await get(`/api/dreams?limit=1&before=${firstDream.body.nextCursor}`).expect(200);
-    expect(secondDream.body).toMatchObject({ runs: [{ id: 'hidden-dream', changedPaths: [], summary: null }], nextCursor: null });
-    const bypass = await get('/api/dreams/hidden-dream', admin).expect(200);
+    expect(secondDream.body).toMatchObject({ runs: [{ id: '000000000000000000000G', changedPaths: [], summary: null }], nextCursor: null });
+    const bypass = await get('/api/dreams/000000000000000000000G', admin).expect(200);
     expect(bypass.body.changedPaths).toContain(hidden);
     expect(bypass.body.summary).toBe(secret);
     await request(app.getHttpServer()).post('/api/admin/dreams/run').auth(tokens[String(collaborator.id)], { type: 'bearer' }).expect(403);
@@ -376,8 +376,8 @@ describe('public operations, live events and archives obey folder ACL', () => {
     const publicCommit = (await repo.log({ limit: null })).find((commit) => commit.subject === 'Public notes')!;
     const jobs = new WriteJobsRepository(db);
     for (const [id, detail] of [
-      ['source-single', { sourcePath: hidden }],
-      ['source-array', { sourcePaths: [hidden] }],
+      ['000000000000000000000P', { sourcePath: hidden }],
+      ['000000000000000000000Q', { sourcePaths: [hidden] }],
     ] as const) {
       jobs.enqueue(id, viewer.id, secret, stamp, 'web');
       jobs.addEvent(id, 'queued', { sourceProvenanceComplete: true });
@@ -386,16 +386,16 @@ describe('public operations, live events and archives obey folder ACL', () => {
       jobs.recordConflicts(id, [publicPath]);
       jobs.markFailed(id, `Error includes ${secret}`, stamp);
     }
-    jobs.enqueue('legacy-source', viewer.id, secret, stamp, 'web');
-    jobs.markMerging('legacy-source', secret, [publicCommit.sha]);
-    jobs.enqueue('verified-public-source', viewer.id, 'Known public request', stamp, 'web');
-    jobs.addEvent('verified-public-source', 'queued', { sourceProvenanceComplete: true });
-    jobs.markMerging('verified-public-source', 'Public summary', [publicCommit.sha]);
+    jobs.enqueue('000000000000000000000R', viewer.id, secret, stamp, 'web');
+    jobs.markMerging('000000000000000000000R', secret, [publicCommit.sha]);
+    jobs.enqueue('000000000000000000000S', viewer.id, 'Known public request', stamp, 'web');
+    jobs.addEvent('000000000000000000000S', 'queued', { sourceProvenanceComplete: true });
+    jobs.markMerging('000000000000000000000S', 'Public summary', [publicCommit.sha]);
     const beforeRevocation = await get('/api/activity?type=job&limit=100').expect(200);
-    expect(beforeRevocation.body.items.find((item: ActivityItem) => item.id === 'source-single').job.input).toBe(secret);
+    expect(beforeRevocation.body.items.find((item: ActivityItem) => item.id === '000000000000000000000P').job.input).toBe(secret);
     acl.delete(grant.id, admin);
     const response = await get('/api/activity?type=job&limit=100').expect(200);
-    for (const id of ['source-single', 'source-array', 'legacy-source']) {
+    for (const id of ['000000000000000000000P', '000000000000000000000Q', '000000000000000000000R']) {
       const item = response.body.items.find((item: ActivityItem) => item.id === id);
       expect(item).toMatchObject({ summary: null, job: { summary: null, commits: [], conflicts: [], mergeSha: null } });
       expect(item.paths).toContain(publicPath);
@@ -404,11 +404,11 @@ describe('public operations, live events and archives obey folder ACL', () => {
       expect(JSON.stringify(item)).not.toContain(secret);
       expect(JSON.stringify(item)).not.toContain(hidden);
     }
-    expect(response.body.items.find((item: ActivityItem) => item.id === 'verified-public-source'))
+    expect(response.body.items.find((item: ActivityItem) => item.id === '000000000000000000000S'))
       .toMatchObject({ summary: 'Public summary', job: { input: 'Known public request', summary: 'Public summary' } });
     for (const reader of [collaborator, admin]) {
       const allowed = await get('/api/activity?type=job&limit=100', reader).expect(200);
-      expect(allowed.body.items.find((item: ActivityItem) => item.id === 'source-single').summary).toBe(secret);
+      expect(allowed.body.items.find((item: ActivityItem) => item.id === '000000000000000000000P').summary).toBe(secret);
     }
   });
 });

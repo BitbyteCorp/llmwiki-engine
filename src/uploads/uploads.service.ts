@@ -1,9 +1,9 @@
 import { Inject, Injectable, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
-import { randomUUID } from 'node:crypto';
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ResponseInputContent } from 'openai/resources/responses/responses.js';
 import { ApiError, notFound } from '../api/api-error.js';
+import { fromStorageId, legacyUuidToApi, newId, toStorageId } from '../common/ids.js';
 import { CONFIG, DB, LOGGER } from '../common/tokens.js';
 import type { Config } from '../config.js';
 import type { Db } from '../db/index.js';
@@ -67,6 +67,11 @@ export class UploadsService implements OnModuleInit, OnModuleDestroy {
   }
 
   onModuleInit(): void {
+    for (const entry of readdirSync(this.directory, { withFileTypes: true })) {
+      if (!entry.isFile()) continue;
+      const id = legacyUuidToApi(entry.name);
+      if (id !== entry.name) renameSync(join(this.directory, entry.name), join(this.directory, id));
+    }
     this.cleanup();
     this.timer = setInterval(() => {
       try { this.cleanup(); } catch (err) { this.logger.error({ err }, 'Upload cleanup failed'); }
@@ -85,12 +90,12 @@ export class UploadsService implements OnModuleInit, OnModuleDestroy {
     if (input.buffer.length > limit) throw new ApiError(413, 'upload_too_large', `Upload exceeds ${limit / 1024 / 1024} MiB`);
     const name = safeName(input.name);
     const mediaType = detectMedia(input.buffer, name, input.mediaType, purpose);
-    const upload: Upload = { id: randomUUID(), userId, name, mediaType, size: input.buffer.length, createdAt: new Date().toISOString(), purpose };
+    const upload: Upload = { id: newId(), userId, name, mediaType, size: input.buffer.length, createdAt: new Date().toISOString(), purpose };
     const path = join(this.directory, upload.id);
     writeFileSync(path, input.buffer, { flag: 'wx', mode: 0o600 });
     try {
       this.db.prepare('INSERT INTO uploads (id, user_id, name, media_type, size, created_at, purpose) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(upload.id, userId, name, mediaType, upload.size, upload.createdAt, purpose);
+        .run(toStorageId(upload.id), userId, name, mediaType, upload.size, upload.createdAt, purpose);
     } catch (error) {
       unlinkSync(path);
       throw error;
@@ -99,11 +104,12 @@ export class UploadsService implements OnModuleInit, OnModuleDestroy {
   }
 
   get(userId: number, id: string): { upload: Upload; path: string } {
-    const row = this.db.prepare('SELECT * FROM uploads WHERE id = ? AND user_id = ?').get(id, userId) as UploadRow | undefined;
+    const row = this.db.prepare('SELECT * FROM uploads WHERE id = ? AND user_id = ?').get(toStorageId(id), userId) as UploadRow | undefined;
     if (!row) notFound('Upload not found');
-    const path = join(this.directory, row.id);
+    const apiId = fromStorageId(row.id);
+    const path = join(this.directory, apiId);
     if (!existsSync(path)) notFound('Upload file not found');
-    return { upload: { id: row.id, userId: row.user_id, name: row.name, mediaType: row.media_type, size: row.size, createdAt: row.created_at, purpose: row.purpose }, path };
+    return { upload: { id: apiId, userId: row.user_id, name: row.name, mediaType: row.media_type, size: row.size, createdAt: row.created_at, purpose: row.purpose }, path };
   }
 
   async saveAsset(userId: number, id: string, path: string, baseSha: string): Promise<{ jobId: string; mergeSha: string }> {
@@ -111,12 +117,12 @@ export class UploadsService implements OnModuleInit, OnModuleDestroy {
     if (segments[0] !== 'assets' || segments.length < 2 || segments.some((segment) => !segment || segment === '.' || segment === '..')
       || /[\\\u0000-\u001f\u007f]/u.test(path)) throw new ApiError(400, 'invalid_path', 'Upload assets must use a relative path under assets/');
     const stored = this.get(userId, id);
-    this.saving.add(id);
+    this.saving.add(stored.upload.id);
     try {
       const result = await this.writer.apply({ userId, source: 'web', baseSha, ops: [{ op: 'put', path, contentBase64: readFileSync(stored.path).toString('base64') }] });
-      this.db.prepare('UPDATE uploads SET saved_at = ? WHERE id = ?').run(new Date().toISOString(), id);
+      this.db.prepare('UPDATE uploads SET saved_at = ? WHERE id = ?').run(new Date().toISOString(), toStorageId(stored.upload.id));
       return { jobId: result.jobId, mergeSha: result.mergeSha };
-    } finally { this.saving.delete(id); }
+    } finally { this.saving.delete(stored.upload.id); }
   }
 
   async parts(userId: number, ids: string[], budget = REPLAY_BUDGET): Promise<ResponseInputContent[]> {
@@ -155,14 +161,15 @@ export class UploadsService implements OnModuleInit, OnModuleDestroy {
       AND NOT EXISTS (SELECT 1 FROM messages m, json_each(m.attachments) a WHERE a.value = u.id)`).all(cutoff) as Array<{ id: string }>;
     let removed = 0;
     for (const { id } of rows) {
-      if (this.saving.has(id)) continue;
-      const path = join(this.directory, id);
+      const apiId = fromStorageId(id);
+      if (this.saving.has(apiId)) continue;
+      const path = join(this.directory, apiId);
       if (existsSync(path)) unlinkSync(path);
       this.db.prepare('DELETE FROM uploads WHERE id = ?').run(id);
       removed++;
     }
     // A crash between creating the file and inserting its row can leave an orphan.
-    const known = new Set((this.db.prepare('SELECT id FROM uploads').all() as Array<{ id: string }>).map(({ id }) => id));
+    const known = new Set((this.db.prepare('SELECT id FROM uploads').all() as Array<{ id: string }>).map(({ id }) => fromStorageId(id)));
     for (const entry of readdirSync(this.directory, { withFileTypes: true })) {
       if (!entry.isFile() || known.has(entry.name)) continue;
       const path = join(this.directory, entry.name);

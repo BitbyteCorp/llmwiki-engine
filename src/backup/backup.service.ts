@@ -8,6 +8,7 @@ import Database from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
 import { z } from 'zod';
 import { AuditService } from '../audit/audit.service.js';
+import { fromStorageId } from '../common/ids.js';
 import type { Config } from '../config.js';
 import { bundleMain, git } from '../export/git.js';
 import { archivePath, pack, unpack } from './archive.js';
@@ -34,11 +35,11 @@ function migrations(db: Database.Database): string[] {
 }
 function uploadPaths(db: Database.Database): string[] {
   if (!hasTable(db, 'uploads')) return [];
-  return (db.prepare('SELECT id FROM uploads ORDER BY id').all() as Array<{ id: string }>).map(({ id }) => {
-    const path = `uploads/${id}`;
+  return (db.prepare('SELECT id FROM uploads').all() as Array<{ id: string }>).map(({ id }) => {
+    const path = `uploads/${fromStorageId(id)}`;
     if (!archivePath(path)) throw new Error(`Unsafe upload id: ${id}`);
     return path;
-  });
+  }).sort();
 }
 async function checksum(path: string): Promise<string> {
   const hash = createHash('sha256');

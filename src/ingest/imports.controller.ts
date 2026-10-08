@@ -9,7 +9,7 @@ import type { User } from '../auth/users.types.js';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe.js';
 import { IngestService } from './ingest.service.js';
 import { ingestSchema } from './ingest.types.js';
-const listSchema = z.object({ limit: limitSchema, before: z.uuid().optional() });
+const listSchema = z.object({ limit: limitSchema, before: idSchema.optional() });
 @Controller('api/imports')
 @UseGuards(SessionGuard, RolesGuard)
 export class ImportsController {

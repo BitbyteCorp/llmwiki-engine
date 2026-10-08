@@ -1,9 +1,10 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import type Database from 'better-sqlite3';
 import type { Logger } from 'pino';
 import OpenAI from 'openai';
 import type { Config } from '../config.js';
+import { newId } from '../common/ids.js';
 import { CONFIG, DB, LOGGER } from '../common/tokens.js';
 import { KnowledgeRepo } from '../knowledge/repo.js';
 import { AclService } from '../acl/acl.service.js';
@@ -83,7 +84,7 @@ export class SearchService {
     signal?.throwIfAborted();
     this.assertPolicy(opts, policyKey);
     if (result.hits.length <= limit) return result;
-    const id = randomUUID();
+    const id = newId();
     this.snapshots.set(id, { fingerprint, expires: Date.now() + 300_000, result });
     while (this.snapshots.size > 200) this.snapshots.delete(this.snapshots.keys().next().value!);
     return this.page(result, id, 0, limit);

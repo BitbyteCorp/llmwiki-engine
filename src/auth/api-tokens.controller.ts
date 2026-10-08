@@ -1,5 +1,6 @@
 import { Body, Controller, Delete, Get, HttpCode, Param, Post, Query, UseGuards } from '@nestjs/common';
 import { z } from 'zod';
+import { idSchema } from '../common/ids.js';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe.js';
 import { ApiTokensService, createApiTokenSchema } from './api-tokens.service.js';
 import { CurrentUser } from './decorators/current-user.decorator.js';
@@ -8,7 +9,6 @@ import { SessionOnlyGuard } from './guards/session-only.guard.js';
 import type { User } from './users.types.js';
 
 const listSchema = z.object({ all: z.literal('1').optional() }).strict();
-const tokenIdSchema = z.uuid();
 
 @Controller('api/tokens')
 export class ApiTokensController {
@@ -29,7 +29,7 @@ export class ApiTokensController {
   @Delete(':id')
   @HttpCode(204)
   @UseGuards(SessionGuard)
-  revoke(@CurrentUser() user: User, @Param('id', new ZodValidationPipe(tokenIdSchema)) id: string): void {
+  revoke(@CurrentUser() user: User, @Param('id', new ZodValidationPipe(idSchema)) id: string): void {
     this.tokens.revoke(user, id);
   }
 }

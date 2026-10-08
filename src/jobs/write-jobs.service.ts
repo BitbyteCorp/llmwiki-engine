@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { newId } from '../common/ids.js';
 import { promisify } from 'node:util';
 import { Inject, Injectable, Optional, type OnApplicationShutdown } from '@nestjs/common';
 import type { Logger } from 'pino';
@@ -44,7 +44,7 @@ export class WriteJobsService implements OnApplicationShutdown {
   }
 
   private enqueue(input: SubmitWriteJob, retryOf?: string): WriteJob {
-    const id = randomUUID();
+    const id = newId();
     this.repository.enqueue(id, input.userId, input.input, new Date().toISOString(), input.source, input.client, 'agent', input.dedupeKey);
     this.phase(id, 'queued', { sourceProvenanceComplete: true, ...(input.sourcePaths?.length ? { sourcePaths: input.sourcePaths } : {}), ...(retryOf ? { retryOf } : {}) });
     const job = this.get(id)!;
@@ -65,7 +65,7 @@ export class WriteJobsService implements OnApplicationShutdown {
     if (requester.role !== 'admin' && this.acl.list().length && !this.repository.events(job.id).some(event => event.phase === 'queued' && event.detail?.sourceProvenanceComplete === true)) {
       throw new ApiError(404, 'not_found', 'Legacy job source permissions cannot be verified; submit a new request');
     }
-    return this.enqueue({ userId: job.userId, input: job.input, source: job.source, sourcePaths: this.sourcePaths(job.id), ...(job.client === null ? {} : { client: job.client }) }, id);
+    return this.enqueue({ userId: job.userId, input: job.input, source: job.source, sourcePaths: this.sourcePaths(job.id), ...(job.client === null ? {} : { client: job.client }) }, job.id);
   }
 
   cancel(id: string): WriteJob {
@@ -86,7 +86,7 @@ export class WriteJobsService implements OnApplicationShutdown {
 
   private publishPhase(id: string, phase: JobPhase): void {
     const job = this.get(id)!;
-    this.eventsService.publish({ type: 'job.updated', jobId: id, userId: job.userId, status: job.status, phase }, { userIds: [job.userId], admins: true });
+    this.eventsService.publish({ type: 'job.updated', jobId: job.id, userId: job.userId, status: job.status, phase }, { userIds: [job.userId], admins: true });
   }
 
   get(id: string): WriteJob | null {

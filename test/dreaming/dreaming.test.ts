@@ -11,6 +11,7 @@ import pino from 'pino';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig, type Config } from '../../src/config.js';
 import { CONFIG, DB, LOGGER } from '../../src/common/tokens.js';
+import { newId, toStorageId } from '../../src/common/ids.js';
 import { registerDreamCommands } from '../../src/dreaming/dreaming.commands.js';
 import { DreamRunsRepository } from '../../src/dreaming/dream-runs.repository.js';
 import { DreamingService } from '../../src/dreaming/dreaming.service.js';
@@ -285,12 +286,15 @@ async function fixture() {
   resources[resources.length - 1].app = app;
   const dreaming = app.get(DreamingService);
   const otherDreaming = app.get<DreamingService>('otherDreaming');
-  const addMessage = (id: string, role: 'user' | 'assistant' = 'user', createdAt = '2020-01-01T00:00:00.000Z', learnedAt: string | null = null) => {
+  const conversationId = newId();
+  const addMessage = (role: 'user' | 'assistant' = 'user', createdAt = '2020-01-01T00:00:00.000Z', learnedAt: string | null = null) => {
+    const id = newId();
     db.prepare('INSERT INTO messages (id, conversation_id, role, content, created_at, learned_at) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(id, 'conversation-1', role, role === 'user' ? userContent : 'Assistant-only unsupported claim.', createdAt, learnedAt);
+      .run(toStorageId(id), toStorageId(conversationId), role, role === 'user' ? userContent : 'Assistant-only unsupported claim.', createdAt, learnedAt);
+    return id;
   };
   const learnedAt = (id: string): string | null => {
-    const row = db.prepare('SELECT learned_at FROM messages WHERE id = ?').get(id);
+    const row = db.prepare('SELECT learned_at FROM messages WHERE id = ?').get(toStorageId(id));
     if (!row || typeof row !== 'object' || !('learned_at' in row)
       || (row.learned_at !== null && typeof row.learned_at !== 'string')) {
       throw new Error(`Invalid message row: ${id}`);
@@ -299,9 +303,9 @@ async function fixture() {
   };
   const checkpoint = (sha: string) => db.prepare(`INSERT INTO dream_runs
     (id, started_at, finished_at, status, from_sha, to_sha, merge_sha, pushed)
-    VALUES ('previous-success', '2020-01-01T00:00:00.000Z', '2020-01-01T00:01:00.000Z', 'succeeded', ?, ?, ?, 1)`)
-    .run(baseSha, sha, sha);
-  return { app, dreaming, otherDreaming, db, repo, baseSha, runAgent, indexer, search, addMessage, learnedAt, checkpoint };
+    VALUES (?, '2020-01-01T00:00:00.000Z', '2020-01-01T00:01:00.000Z', 'succeeded', ?, ?, ?, 1)`)
+    .run(toStorageId(newId()), baseSha, sha, sha);
+  return { app, dreaming, otherDreaming, db, repo, baseSha, runAgent, indexer, search, addMessage, learnedAt, checkpoint, conversationId };
 }
 
 afterEach(async () => {
@@ -341,7 +345,7 @@ describe('DreamingService.runOnce', () => {
   it('keeps main untouched when Dony fails, but still pushes main', async () => {
     const f = await fixture();
     const head = await f.repo.change();
-    f.addMessage('pending');
+    const messageId = f.addMessage();
     f.runAgent.mockImplementationOnce(async (options) => {
       await writeJournal(options);
       throw new Error('Dony unavailable');
@@ -351,7 +355,7 @@ describe('DreamingService.runOnce', () => {
     expect(run.error).toContain('Dony unavailable');
     expect(await f.repo.headSha()).toBe(head);
     expect(await f.repo.listFiles('journal/')).toEqual([]);
-    expect(f.learnedAt('pending')).toBeNull();
+    expect(f.learnedAt(messageId)).toBeNull();
     expect(f.indexer.syncToHead).not.toHaveBeenCalled();
     expect(f.repo.pushCount).toBe(1);
     expect(await f.repo.git(['rev-parse', 'main'], f.repo.origin)).toBe(head);
@@ -359,10 +363,10 @@ describe('DreamingService.runOnce', () => {
 
   it('supplies only eligible user backlog and marks it learned after merge and indexing complete', async () => {
     const f = await fixture();
-    f.addMessage('backlog');
-    f.addMessage('assistant', 'assistant');
-    f.addMessage('future', 'user', '2999-01-01T00:00:00.000Z');
-    f.addMessage('already-learned', 'user', '2020-01-01T00:00:00.000Z', '2020-01-02T00:00:00.000Z');
+    const backlog = f.addMessage();
+    const assistant = f.addMessage('assistant');
+    const future = f.addMessage('user', '2999-01-01T00:00:00.000Z');
+    const alreadyLearned = f.addMessage('user', '2020-01-01T00:00:00.000Z', '2020-01-02T00:00:00.000Z');
     const entered = deferred();
     const release = deferred();
     f.indexer.syncToHead.mockImplementationOnce(async () => {
@@ -374,24 +378,24 @@ describe('DreamingService.runOnce', () => {
     await entered.promise;
     try {
       expect(await f.repo.listFiles('journal/')).toEqual([`journal/${inputOf(f.runAgent.mock.calls[0][0]).date}.md`]);
-      expect(f.learnedAt('backlog')).toBeNull();
+      expect(f.learnedAt(backlog)).toBeNull();
     } finally {
       release.resolve();
     }
     const run = await pending;
     expect(run.status).toBe('succeeded');
     const input = inputOf(f.runAgent.mock.calls[0][0]);
-    expect(input.userMessages).toEqual([{ id: 'backlog', conversation_id: 'conversation-1', content: userContent, created_at: '2020-01-01T00:00:00.000Z' }]);
+    expect(input.userMessages).toEqual([{ id: backlog, conversation_id: f.conversationId, content: userContent, created_at: '2020-01-01T00:00:00.000Z' }]);
     expect(JSON.stringify(input)).not.toContain('Assistant-only unsupported claim.');
-    expect(f.learnedAt('backlog')).toEqual(expect.any(String));
-    expect(f.learnedAt('assistant')).toBeNull();
-    expect(f.learnedAt('future')).toBeNull();
-    expect(f.learnedAt('already-learned')).toBe('2020-01-02T00:00:00.000Z');
+    expect(f.learnedAt(backlog)).toEqual(expect.any(String));
+    expect(f.learnedAt(assistant)).toBeNull();
+    expect(f.learnedAt(future)).toBeNull();
+    expect(f.learnedAt(alreadyLearned)).toBe('2020-01-02T00:00:00.000Z');
   });
 
   it('joins concurrent callers across service instances sharing one repo', async () => {
     const f = await fixture();
-    f.addMessage('pending');
+    f.addMessage();
     const entered = deferred();
     const release = deferred();
     f.runAgent.mockImplementationOnce(async (options) => {
@@ -410,7 +414,7 @@ describe('DreamingService.runOnce', () => {
     expect(f.runAgent).toHaveBeenCalledTimes(1);
     expect(f.repo.worktreeCount).toBe(1);
     expect(await f.repo.listFiles('journal/')).toEqual([`journal/${inputOf(f.runAgent.mock.calls[0][0]).date}.md`]);
-    expect(f.db.prepare('SELECT id FROM dream_runs').all()).toEqual([{ id: a.id }]);
+    expect(f.db.prepare('SELECT id FROM dream_runs').all()).toEqual([{ id: toStorageId(a.id) }]);
     expect(f.repo.pushCount).toBe(1);
   });
 
@@ -431,42 +435,42 @@ describe('DreamingService.runOnce', () => {
     const f = await fixture();
     const head = await f.repo.change();
     f.checkpoint(f.baseSha);
-    f.addMessage('retry-me');
+    const messageId = f.addMessage();
     f.runAgent.mockRejectedValueOnce(new Error('Temporary Dony failure'));
     const dreaming = f.dreaming;
     const failed = await dreaming.runOnce();
     expect(failed.status).toBe('failed');
-    expect(f.learnedAt('retry-me')).toBeNull();
+    expect(f.learnedAt(messageId)).toBeNull();
     const retried = await dreaming.runOnce();
     expect(retried).toMatchObject({ status: 'succeeded', fromSha: f.baseSha, toSha: head });
     for (const [options] of f.runAgent.mock.calls) {
-      expect(inputOf(options).userMessages.map((message) => message.id)).toEqual(['retry-me']);
+      expect(inputOf(options).userMessages.map((message) => message.id)).toEqual([messageId]);
     }
-    expect(f.learnedAt('retry-me')).toEqual(expect.any(String));
+    expect(f.learnedAt(messageId)).toEqual(expect.any(String));
     expect(f.repo.pushCount).toBe(2);
   });
 
   it('does not learn messages if indexing fails after their journal reaches main', async () => {
     const f = await fixture();
-    f.addMessage('pending-index');
+    const messageId = f.addMessage();
     f.indexer.syncToHead.mockRejectedValueOnce(new Error('Index unavailable'));
     const run = await f.dreaming.runOnce();
     expect(run.status).toBe('failed');
     expect(run.error).toContain('Index unavailable');
     expect(await f.repo.readFile(`journal/${inputOf(f.runAgent.mock.calls[0][0]).date}.md`)).toBe(journalContent);
-    expect(f.learnedAt('pending-index')).toBeNull();
+    expect(f.learnedAt(messageId)).toBeNull();
     expect(f.repo.pushCount).toBe(1);
   });
 
   it('leaves merged messages learned even if the backup push fails', async () => {
     const f = await fixture();
-    f.addMessage('merged-before-push');
+    const messageId = f.addMessage();
     f.repo.pushError = new Error('Backup unavailable');
     const run = await f.dreaming.runOnce();
     expect(run).toMatchObject({ status: 'failed', pushed: false });
     expect(run.error).toContain('Backup unavailable');
     expect(await f.repo.readFile(`journal/${inputOf(f.runAgent.mock.calls[0][0]).date}.md`)).toBe(journalContent);
-    expect(f.learnedAt('merged-before-push')).toEqual(expect.any(String));
+    expect(f.learnedAt(messageId)).toEqual(expect.any(String));
     expect(f.repo.pushCount).toBe(1);
   });
 
@@ -500,7 +504,7 @@ describe('DreamingService.runOnce', () => {
 
   it.each([null, ' \n\t'])('rejects a missing or empty journal before changing main (%j)', async (content) => {
     const f = await fixture();
-    f.addMessage('no-journal');
+    const messageId = f.addMessage();
     const head = await f.repo.headSha();
     f.runAgent.mockImplementationOnce(async (options) => {
       const tool = options.tools.find((candidate) => candidate.name === 'write_file')!;
@@ -512,7 +516,7 @@ describe('DreamingService.runOnce', () => {
     expect(run).toMatchObject({ status: 'failed', mergeSha: null, pushed: true });
     expect(await f.repo.headSha()).toBe(head);
     expect(await f.repo.readFile('wiki/partial.md')).toBeNull();
-    expect(f.learnedAt('no-journal')).toBeNull();
+    expect(f.learnedAt(messageId)).toBeNull();
     expect(f.indexer.syncToHead).not.toHaveBeenCalled();
     expect(f.repo.pushCount).toBe(1);
   });
@@ -521,7 +525,7 @@ describe('DreamingService.runOnce', () => {
 describe('DreamingService shutdown', () => {
   it('waits for an in-flight run to finish indexing, learning, backup, and recording', async () => {
     const f = await fixture();
-    f.addMessage('shutdown-pending');
+    const messageId = f.addMessage();
     const entered = deferred();
     const release = deferred();
     f.indexer.syncToHead.mockImplementationOnce(async () => {
@@ -537,16 +541,16 @@ describe('DreamingService shutdown', () => {
     try {
       await Promise.resolve();
       expect(closed).toBe(false);
-      expect(f.learnedAt('shutdown-pending')).toBeNull();
+      expect(f.learnedAt(messageId)).toBeNull();
     } finally {
       release.resolve();
     }
     await closing;
     const run = await pending;
     expect(run.status).toBe('succeeded');
-    expect(f.learnedAt('shutdown-pending')).toEqual(expect.any(String));
+    expect(f.learnedAt(messageId)).toEqual(expect.any(String));
     expect(await f.repo.git(['rev-parse', 'main'], f.repo.origin)).toBe(run.mergeSha);
-    expect(f.db.prepare('SELECT status, finished_at FROM dream_runs WHERE id = ?').get(run.id))
+    expect(f.db.prepare('SELECT status, finished_at FROM dream_runs WHERE id = ?').get(toStorageId(run.id)))
       .toEqual({ status: 'succeeded', finished_at: run.finishedAt });
   });
 });
@@ -554,7 +558,7 @@ describe('DreamingService shutdown', () => {
 describe('registerDreamCommands', () => {
   it.each(['succeeded', 'failed'] as const)('prints the %s run from a real Nest context and sets failure exit status', async (status) => {
     const f = await fixture();
-    f.addMessage('cli-pending');
+    const messageId = f.addMessage();
     if (status === 'failed') f.runAgent.mockRejectedValueOnce(new Error('CLI Dony unavailable'));
     const printed = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     const previousExitCode = process.exitCode;
@@ -568,8 +572,8 @@ describe('registerDreamCommands', () => {
         status, pushed: true, error: status === 'failed' ? 'CLI Dony unavailable' : null,
       });
       expect(process.exitCode).toBe(status === 'failed' ? 1 : undefined);
-      expect(f.db.prepare('SELECT status FROM dream_runs WHERE id = ?').get(output.id)).toEqual({ status });
-      expect(f.learnedAt('cli-pending')).toEqual(status === 'failed' ? null : expect.any(String));
+      expect(f.db.prepare('SELECT status FROM dream_runs WHERE id = ?').get(toStorageId(output.id))).toEqual({ status });
+      expect(f.learnedAt(messageId)).toEqual(status === 'failed' ? null : expect.any(String));
     } finally {
       process.exitCode = previousExitCode;
       printed.mockRestore();

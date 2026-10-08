@@ -2,7 +2,7 @@ import 'reflect-metadata';
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import type { Request } from 'express';
-import { mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pino from 'pino';
@@ -14,6 +14,7 @@ import { SessionGuard } from '../src/auth/guards/session.guard.js';
 import { UsersRepository } from '../src/auth/users.repository.js';
 import { UsersService } from '../src/auth/users.service.js';
 import { HttpExceptionFilter } from '../src/common/filters/http-exception.filter.js';
+import { newId, toStorageId } from '../src/common/ids.js';
 import { CONFIG, DB, LOGGER } from '../src/common/tokens.js';
 import { loadConfig } from '../src/config.js';
 import { openDb, type Db } from '../src/db/index.js';
@@ -84,6 +85,8 @@ describe('owner-scoped multipart uploads', () => {
     const posted = await request(app.getHttpServer()).post('/api/uploads').set('x-user', '1')
       .attach('file', png, { filename: 'wrong.txt', contentType: 'text/plain' }).expect(201);
     const upload = posted.body as Upload;
+    expect(upload.id).toMatch(/^[0-9A-Za-z]{22}$/);
+    expect(readFileSync(join(directory, 'uploads', upload.id))).toEqual(png);
     expect(upload.mediaType).toBe('image/png');
     expect(upload.purpose).toBe('chat');
     const downloaded = await request(app.getHttpServer()).get(`/api/uploads/${upload.id}`).set('x-user', '1').expect(200);
@@ -93,6 +96,9 @@ describe('owner-scoped multipart uploads', () => {
     expect(downloaded.headers['x-content-type-options']).toBe('nosniff');
     await request(app.getHttpServer()).get(`/api/uploads/${upload.id}`).set('x-user', '2').expect(404);
     await request(app.getHttpServer()).get(`/api/uploads/${upload.id}`).set('x-user', '3').expect(404);
+    for (const id of ['not-an-id', 'z'.repeat(22), toStorageId(upload.id)!]) {
+      await request(app.getHttpServer()).get(`/api/uploads/${id}`).set('x-user', '1').expect(404);
+    }
   });
 
   it('rejects binary disguised as text and invalid UTF-8, but accepts valid markdown and missing MIME', async () => {
@@ -164,9 +170,10 @@ describe('chat replay and retained assets', () => {
     const saved = await uploads.save(1, { name: 'pixel.png', mediaType: 'image/png', buffer: png });
     const discarded = await uploads.save(1, { name: 'orphan.txt', mediaType: 'text/plain', buffer: Buffer.from('unused') });
     const attached = await uploads.save(1, { name: 'attached.txt', mediaType: 'text/plain', buffer: Buffer.from('used') });
-    db.prepare('INSERT INTO conversations(id,user_id,title,created_at,updated_at) VALUES (?,1,?,?,?)').run('c', 'Conversation', stamp, stamp);
-    db.prepare("INSERT INTO messages(id,conversation_id,role,content,citations,created_at,attachments) VALUES ('m','c','user','Question','[]',?,?)")
-      .run(stamp, JSON.stringify([attached.id]));
+    const conversationId = toStorageId(newId());
+    db.prepare('INSERT INTO conversations(id,user_id,title,created_at,updated_at) VALUES (?,1,?,?,?)').run(conversationId, 'Conversation', stamp, stamp);
+    db.prepare("INSERT INTO messages(id,conversation_id,role,content,citations,created_at,attachments) VALUES (?,?,'user','Question','[]',?,?)")
+      .run(toStorageId(newId()), conversationId, stamp, JSON.stringify([toStorageId(attached.id)]));
     const baseSha = await repo.headSha();
     for (const path of ['../assets/pixel.png', 'assets/../wiki/file.md', 'assets\\pixel.png', 'assets//pixel.png', '/assets/pixel.png']) {
       await request(app.getHttpServer()).post(`/api/uploads/${saved.id}/save`).set('x-user', '1').send({ path, baseSha }).expect(400);
@@ -194,10 +201,51 @@ describe('chat replay and retained assets', () => {
     expect(readFileSync(uploads.get(1, attached.id).path, 'utf8')).toBe('used');
   });
 
+  it('migrates legacy disk filenames idempotently and round-trips legacy lookup, replay and asset retention', async () => {
+    const legacyId = '00112233-4455-4677-8899-aabbccddeeff';
+    const apiId = '007pSo2b8iXeAjheKEVRdv';
+    const storageId = 'ABEiM0RVRneImaq7zN3u_w';
+    const legacyPath = join(directory, 'uploads', legacyId);
+    const apiPath = join(directory, 'uploads', apiId);
+    const untouchedPath = join(directory, 'uploads', 'unrelated-file');
+    db.prepare('INSERT INTO uploads(id,user_id,name,media_type,size,created_at,purpose) VALUES (?,1,?,?,?, ?,?)')
+      .run(storageId, 'legacy.txt', 'text/plain', 6, stamp, 'chat');
+    const conversationId = toStorageId(newId());
+    const messageId = toStorageId(newId());
+    db.prepare('INSERT INTO conversations(id,user_id,title,created_at,updated_at) VALUES (?,1,?,?,?)')
+      .run(conversationId, 'Legacy attachment', stamp, stamp);
+    db.prepare("INSERT INTO messages(id,conversation_id,role,content,citations,created_at,attachments) VALUES (?,?,'user','Question','[]',?,?)")
+      .run(messageId, conversationId, stamp, JSON.stringify([storageId]));
+    writeFileSync(legacyPath, 'legacy');
+    utimesSync(legacyPath, new Date(stamp), new Date(stamp));
+    writeFileSync(untouchedPath, 'untouched');
+    for (let restart = 0; restart < 2; restart++) {
+      uploads.onModuleDestroy();
+      uploads.onModuleInit();
+      expect(existsSync(legacyPath)).toBe(false);
+      expect(readFileSync(apiPath, 'utf8')).toBe('legacy');
+      expect(readFileSync(untouchedPath, 'utf8')).toBe('untouched');
+      expect(uploads.get(1, legacyId)).toEqual({
+        upload: { id: apiId, userId: 1, name: 'legacy.txt', mediaType: 'text/plain', size: 6, createdAt: stamp, purpose: 'chat' },
+        path: apiPath,
+      });
+      expect(uploads.get(1, apiId).path).toBe(apiPath);
+      const downloaded = await request(app.getHttpServer()).get(`/api/uploads/${legacyId}`).set('x-user', '1').expect(200);
+      expect(downloaded.text).toBe('legacy');
+    }
+    expect(await uploads.parts(1, [legacyId])).toEqual([{ type: 'input_text', text: 'Attachment: legacy.txt\nlegacy' }]);
+    await request(app.getHttpServer()).post(`/api/uploads/${legacyId}/save`).set('x-user', '1')
+      .send({ path: 'assets/legacy.txt', baseSha: await repo.headSha() }).expect(201);
+    db.prepare('DELETE FROM messages WHERE id = ?').run(messageId);
+    uploads.cleanup(Date.now() + 8 * 24 * 60 * 60 * 1000);
+    expect(readFileSync(uploads.get(1, apiId).path, 'utf8')).toBe('legacy');
+    expect(readFileSync(join(directory, 'knowledge/assets/legacy.txt'), 'utf8')).toBe('legacy');
+  });
+
   it('runs cleanup on startup and periodically without removing recent uploads', async () => {
     const old = await uploads.save(1, { name: 'old.txt', mediaType: 'text/plain', buffer: Buffer.from('old') });
     const fresh = await uploads.save(1, { name: 'fresh.txt', mediaType: 'text/plain', buffer: Buffer.from('fresh') });
-    db.prepare('UPDATE uploads SET created_at = ? WHERE id = ?').run(stamp, old.id);
+    db.prepare('UPDATE uploads SET created_at = ? WHERE id = ?').run(stamp, toStorageId(old.id));
     uploads.onModuleDestroy();
     vi.useFakeTimers();
     uploads.onModuleInit();

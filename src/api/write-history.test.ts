@@ -2,10 +2,12 @@ import 'reflect-metadata';
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import type { Response as ExpressResponse } from 'express';
+import { execFile } from 'node:child_process';
 import { mkdtemp, rm } from 'node:fs/promises';
 import type { Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import pino from 'pino';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { AclService } from '../acl/acl.service.js';
@@ -21,9 +23,11 @@ import type { User } from '../auth/users.types.js';
 import { HttpExceptionFilter } from '../common/filters/http-exception.filter.js';
 import { configureApp } from '../common/http/configure-app.js';
 import { CONFIG, DB, LOGGER } from '../common/tokens.js';
+import { legacyUuidToApi, newId } from '../common/ids.js';
 import { loadConfig } from '../config.js';
 import { openDb, runMigrations, type Db } from '../db/index.js';
 import { EventsService } from '../events/events.service.js';
+import { DreamRunsRepository } from '../dreaming/dream-runs.repository.js';
 import { NoteWriterService } from '../jobs/note-writer.service.js';
 import type { JobEvent, WriteJob } from '../jobs/write-job.types.js';
 import { WriteJobsRepository } from '../jobs/write-jobs.repository.js';
@@ -31,6 +35,7 @@ import { WriteJobsService } from '../jobs/write-jobs.service.js';
 import { KnowledgeRepo, type BlameRange, type CommitInfo, type FileChange } from '../knowledge/repo.js';
 import { AgentService } from '../agent/agent.service.js';
 import { IndexerService } from '../rag/indexer.service.js';
+import { ActivityService } from '../ops/activity.service.js';
 import { HistoryController } from './history.controller.js';
 import { HistoryService } from './history.service.js';
 import { JobsController } from './jobs.controller.js';
@@ -146,26 +151,58 @@ describe('write and history HTTP acceptance with real Git and SQLite', () => {
     return (await json<{ commits: CommitInfo[] }>(await request(query('/history', values)))).commits;
   }
 
+  it('links migrated jobs to historical UUID Git trailers in history and path activity', async () => {
+    const uuid = '550e8400-e29b-41d4-a716-446655440000';
+    const id = legacyUuidToApi(uuid);
+    const path = 'wiki/legacy-job.md';
+    const at = new Date().toISOString();
+    repository.enqueue(id, editor.id, 'Legacy source', at, 'web');
+    repository.addEvent(id, 'queued', { sourceProvenanceComplete: true });
+    const wt = await repo.createWorktree('legacy-job-link');
+    await wt.write(path, 'Legacy knowledge\n');
+    const git = promisify(execFile);
+    await git('git', ['add', '--all'], { cwd: wt.path });
+    await git('git', ['commit', '-m', `Legacy job\n\nWiki-Job: ${uuid}\nWiki-Source: web\nWiki-Requester: ${editor.email}`], { cwd: wt.path });
+    const sha = (await git('git', ['rev-parse', 'HEAD'], { cwd: wt.path })).stdout.trim();
+    await wt.fastForwardMain();
+    await wt.dispose();
+    const activity = new ActivityService(db, repo, new DreamRunsRepository(db), app.get(AclService), app.get(UsersService));
+    // No merge SHA or recorded commits: this association must come from the legacy trailer.
+    const feed = await activity.list({ limit: 10, type: 'job', path }, editor);
+    expect(feed.items).toMatchObject([{ id, paths: [path], job: { id } }]);
+    repository.markMerging(id, 'Legacy summary', [sha]);
+    repository.recordMerge(id, [sha], sha);
+    repository.markSucceeded(id, at);
+    const detail = await json<CommitDetail>(await request(`/history/commits/${sha}`));
+    expect(detail.commit.trailers['Wiki-Job']).toBe(id);
+    expect(detail.job).toMatchObject({ id, userId: editor.id, mergeSha: sha });
+    const legacyLink = await json<JobDetail>(await request(`/jobs/${uuid}`));
+    expect(legacyLink.job.id).toBe(id);
+    expect(legacyLink.commits).toMatchObject([{ sha, trailers: { 'Wiki-Job': id } }]);
+  });
+
   it('redacts unreadable child claims and results without treating refused claims as accessed sources', async () => {
     app.get(AclService).create({ prefix: 'secret/', subjectType: 'everyone', subject: '', access: 'none' }, admin);
     const submitted = jobs.submit({ userId: editor.id, input: 'Public request', source: 'chat' });
     repository.markMerging(submitted.id, 'Public summary', []);
+    const childId = newId();
+    const publicChildId = newId();
     jobs.phase(submitted.id, 'editing', { subagent: {
-      id: 'child', name: 'Writer', status: 'failed', files: ['wiki/public.md', 'secret/plan.md'],
+      id: childId, name: 'Writer', status: 'failed', files: ['wiki/public.md', 'secret/plan.md'],
       toolCalls: 1, startedAt: submitted.createdAt, result: 'secret/plan.md detail', error: 'Denied secret/plan.md',
     } });
     jobs.phase(submitted.id, 'editing', { subagent: {
-      id: 'public-child', name: 'Public writer', status: 'completed', files: ['wiki/public.md'], toolCalls: 2, result: 'Public result',
+      id: publicChildId, name: 'Public writer', status: 'completed', files: ['wiki/public.md'], toolCalls: 2, result: 'Public result',
     } });
     const detail = await json<JobDetail>(await request(`/jobs/${submitted.id}`));
     expect(detail.job).toMatchObject({ input: 'Public request', summary: 'Public summary' });
-    expect(detail.events.find(event => (event.detail?.subagent as { id?: string } | undefined)?.id === 'child')?.detail?.subagent).toMatchObject({
-      id: 'child', files: ['wiki/public.md'], status: 'failed', toolCalls: 1,
+    expect(detail.events.find(event => (event.detail?.subagent as { id?: string } | undefined)?.id === childId)?.detail?.subagent).toMatchObject({
+      id: childId, files: ['wiki/public.md'], status: 'failed', toolCalls: 1,
     });
     expect(JSON.stringify(detail)).not.toContain('secret/plan.md');
-    expect(detail.events.find(event => (event.detail?.subagent as { id?: string } | undefined)?.id === 'public-child')?.detail?.subagent).toMatchObject({ result: 'Public result' });
+    expect(detail.events.find(event => (event.detail?.subagent as { id?: string } | undefined)?.id === publicChildId)?.detail?.subagent).toMatchObject({ result: 'Public result' });
     const unrestricted = await json<JobDetail>(await request(`/jobs/${submitted.id}`, {}, admin));
-    expect(unrestricted.events.find(event => (event.detail?.subagent as { id?: string } | undefined)?.id === 'child')?.detail?.subagent).toMatchObject({
+    expect(unrestricted.events.find(event => (event.detail?.subagent as { id?: string } | undefined)?.id === childId)?.detail?.subagent).toMatchObject({
       files: ['wiki/public.md', 'secret/plan.md'], error: 'Denied secret/plan.md', result: 'secret/plan.md detail',
     });
   });

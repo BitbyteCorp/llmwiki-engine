@@ -11,6 +11,7 @@ import { AclService } from '../acl/acl.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { UsersService } from '../auth/users.service.js';
 import { UsersRepository } from '../auth/users.repository.js';
+import { newId, toStorageId } from '../common/ids.js';
 import { loadConfig } from '../config.js';
 import { EventsService } from '../events/events.service.js';
 import type { WikiEvent } from '../events/events.types.js';
@@ -55,7 +56,7 @@ async function fixture(slackWebhookUrl?: string) {
   const repo = await KnowledgeRepo.open(config, log);
   const { db, runs } = await database();
   db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, NULL)')
-    .run('private-message', 'conversation', 'user', 'SECRET_USER_INPUT', '2020-01-01T00:00:00.000Z');
+    .run(toStorageId(newId()), toStorageId(newId()), 'user', 'SECRET_USER_INPUT', '2020-01-01T00:00:00.000Z');
   const events = new EventsService();
   const seen: WikiEvent[] = [];
   events.subscribe((event) => seen.push(event));
@@ -98,7 +99,7 @@ it('persists completed details and pages tied timestamps without losing rows', a
   expect(runs.latest()).toBeNull();
   expect(runs.running()).toBeNull();
   expect(runs.backupStatus()).toEqual({ lastAttempt: null, lastSuccess: null });
-  const first = runRecord('a', '2026-10-01T00:00:00.000Z');
+  const first = runRecord('0000000000000000000001', '2026-10-01T00:00:00.000Z');
   runs.create(first);
   expect(runs.running()).toEqual(first);
   Object.assign(first, {
@@ -108,17 +109,19 @@ it('persists completed details and pages tied timestamps without losing rows', a
     push: { status: 'succeeded', remote: 'origin', sha: 'merged', at: '2026-10-01T00:01:00.000Z', reason: null },
   });
   runs.finish(first);
-  const second = runRecord('b', first.startedAt);
+  const second = runRecord('0000000000000000000002', first.startedAt);
   runs.create(second);
   Object.assign(second, { status: 'failed', finishedAt: '2026-10-01T00:02:00.000Z', error: 'offline',
     push: { status: 'failed', remote: null, sha: null, at: '2026-10-01T00:02:00.000Z', reason: 'offline' } });
   runs.finish(second);
-  const third = runRecord('c', '2026-10-02T00:00:00.000Z');
+  const third = runRecord('0000000000000000000003', '2026-10-02T00:00:00.000Z');
   runs.create(third);
   expect(runs.list({ limit: 2 })).toEqual([third, second]);
   expect(runs.list({ before: second.id, limit: 2 })).toEqual([first]);
   expect(runs.list({ before: '2026-10-02T00:00:00.000Z' })).toEqual([second, first]);
   expect(runs.get(first.id)).toEqual(first);
+  expect(runs.get('00000000-0000-0000-0000-000000000001')).toEqual(first);
+  expect(runs.list({ before: 'missing' })).toEqual([]);
   expect(runs.get('missing')).toBeNull();
   expect(runs.latest()).toEqual(third);
   expect(runs.running()).toEqual(third);
@@ -161,8 +164,7 @@ it('merges real files, persists summary and paths, and notifies only safe durabl
   expect(run).toMatchObject({ status: 'succeeded', summary: 'SECRET_SUMMARY', pushed: false,
     changedPaths: [run.journalPath, 'wiki/result.md'], push: { status: 'skipped', sha: null, remote: null } });
   expect(await f.repo.readFile(run.journalPath!)).toBe('# SECRET_NOTE_CONTENT\n');
-  expect((await f.repo.show(run.mergeSha!)).commit.body).toContain(`Wiki-Job: ${run.id}`);
-  expect((await f.repo.show(run.mergeSha!)).commit.body).toContain('Wiki-Source: dreaming');
+  expect((await f.repo.show(run.mergeSha!)).commit.trailers).toMatchObject({ 'Wiki-Job': run.id, 'Wiki-Source': 'dreaming' });
   expect(f.seen).toEqual([
     { type: 'dream.updated', runId: run.id, status: 'running' },
     { type: 'main.updated', sha: run.mergeSha, paths: run.changedPaths },
@@ -247,18 +249,21 @@ it('rejects synchronous manual reentry from the start event without creating a s
 
 it('keeps content edited after capture unlearned while acknowledging unchanged captured messages', async () => {
   const { db, runs } = await database();
+  const edited = '0000000000000000000001';
+  const unchanged = '0000000000000000000002';
+  const conversation = newId();
   const insert = db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, NULL)');
-  insert.run('edited', 'conversation', 'user', 'Captured original', '2026-10-01T00:00:00.000Z');
-  insert.run('unchanged', 'conversation', 'user', 'Unchanged captured fact', '2026-10-01T00:00:00.000Z');
+  insert.run(toStorageId(edited), toStorageId(conversation), 'user', 'Captured original', '2026-10-01T00:00:00.000Z');
+  insert.run(toStorageId(unchanged), toStorageId(conversation), 'user', 'Unchanged captured fact', '2026-10-01T00:00:00.000Z');
   const captured = runs.unlearnedUserMessages('2026-10-01T01:00:00.000Z');
-  db.prepare('UPDATE messages SET content = ? WHERE id = ?').run('New unseen content', 'edited');
+  db.prepare('UPDATE messages SET content = ? WHERE id = ?').run('New unseen content', toStorageId(edited));
   const learnedAt = '2026-10-01T02:00:00.000Z';
   runs.markLearned(captured, learnedAt);
   expect(db.prepare('SELECT id, learned_at FROM messages ORDER BY id').all()).toEqual([
-    { id: 'edited', learned_at: null },
-    { id: 'unchanged', learned_at: learnedAt },
+    { id: toStorageId(edited), learned_at: null },
+    { id: toStorageId(unchanged), learned_at: learnedAt },
   ]);
   expect(runs.unlearnedUserMessages('2026-10-01T03:00:00.000Z')).toEqual([
-    { id: 'edited', conversation_id: 'conversation', content: 'New unseen content', created_at: '2026-10-01T00:00:00.000Z' },
+    { id: edited, conversation_id: conversation, content: 'New unseen content', created_at: '2026-10-01T00:00:00.000Z' },
   ]);
 });

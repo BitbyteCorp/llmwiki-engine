@@ -8,6 +8,7 @@ import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Command } from 'commander';
 import { AuditService } from '../audit/audit.service.js';
+import { apiIdToLegacyUuid, toStorageId } from '../common/ids.js';
 import { CONFIG, DB } from '../common/tokens.js';
 import { HttpExceptionFilter } from '../common/filters/http-exception.filter.js';
 import { loadConfig } from '../config.js';
@@ -100,9 +101,10 @@ async function mint(user: User, scopes: Array<'read' | 'write'>, expiresAt?: str
 describe('REST API tokens', () => {
   it('reveals a random secret once, stores only its hash, and records usage', async () => {
     const issued = await mint(owner, ['read']);
+    expect(issued.id).toMatch(/^[0-9A-Za-z]{22}$/);
     expect(issued.token).toMatch(/^lwk_[A-Za-z0-9_-]{43}$/);
     expect(issued.lastUsedAt).toBeNull();
-    const stored = db.prepare('SELECT token_hash FROM api_tokens WHERE id = ?').get(issued.id) as { token_hash: string };
+    const stored = db.prepare('SELECT token_hash FROM api_tokens WHERE id = ?').get(toStorageId(issued.id)) as { token_hash: string };
     expect(stored.token_hash).toMatch(/^[a-f0-9]{64}$/);
     expect(stored.token_hash).not.toBe(issued.token);
     await request(app.getHttpServer()).get('/policy/read').set('authorization', `Bearer ${issued.token}`).expect(200, { access: 'read' });
@@ -149,7 +151,7 @@ describe('REST API tokens', () => {
     const all = await request(app.getHttpServer()).get('/api/tokens?all=1').set('cookie', cookie(admin)).expect(200);
     expect(all.body.tokens.map((item: { id: string }) => item.id).sort()).toEqual([first.id, second.id].sort());
     await request(app.getHttpServer()).delete(`/api/tokens/${second.id}`).set('cookie', cookie(owner)).set('origin', origin).expect(404);
-    await request(app.getHttpServer()).delete(`/api/tokens/${second.id}`).set('cookie', cookie(admin)).set('origin', origin).expect(204);
+    await request(app.getHttpServer()).delete(`/api/tokens/${apiIdToLegacyUuid(second.id)}`).set('cookie', cookie(admin)).set('origin', origin).expect(204);
     await request(app.getHttpServer()).get('/policy/read').set('authorization', `Bearer ${second.token}`).expect(401);
     await request(app.getHttpServer()).delete(`/api/tokens/${first.id}`).set('authorization', `Bearer ${first.token}`).expect(204);
     await request(app.getHttpServer()).get('/policy/read').set('authorization', `Bearer ${first.token}`).expect(401);

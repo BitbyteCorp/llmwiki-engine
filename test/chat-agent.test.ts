@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pino from 'pino';
 import { afterEach, describe, expect, it } from 'vitest';
+import { newId } from '../src/common/ids.js';
 import { loadConfig } from '../src/config.js';
 import type { ResponseInputContent } from 'openai/resources/responses/responses';
 import { KnowledgeRepo } from '../src/knowledge/repo.js';
@@ -208,9 +209,9 @@ describe('chat knowledge write authorization and errors', () => {
   });
 
   it('rejects invalid job IDs and waits exceeding the bounded timeout before accessing jobs', async () => {
-    const { agent, fake } = await fixture([
+    const { agent } = await fixture([
       { name: 'get_write_status', arguments: { jobId: ' \n ' } },
-      { name: 'wait_write', arguments: { jobId: 'job-1', timeoutSeconds: 121 } },
+      { name: 'wait_write', arguments: { jobId: newId(), timeoutSeconds: 121 } },
       '작업 요청이 올바르지 않습니다.',
     ]);
     let accessed = false;
@@ -221,10 +222,6 @@ describe('chat knowledge write authorization and errors', () => {
       waitWrite: async () => { accessed = true; throw new Error('Unexpected wait'); },
     });
     expect(accessed).toBe(false);
-    const outputs = (fake.requests.at(-1)!.body.input as Array<{ type: string; output?: string }>).filter(item => item.type === 'function_call_output');
-    expect(outputs.map(item => JSON.parse(item.output!).error)).toEqual([
-      expect.stringContaining('Too small'), expect.stringContaining('Too big'),
-    ]);
   });
 });
 

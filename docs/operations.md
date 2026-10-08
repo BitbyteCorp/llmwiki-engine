@@ -37,7 +37,7 @@
 레이블에는 HTTP 메서드, 등록된 라우트 템플릿, 상태 코드와 고정된 결과만 쓴다. 요청 ID, 사용자 ID, SHA, 노트 경로, 작업 ID, 원문 입력은 지표 레이블로 쓰지 않는다. 등록되지 않은 서버 경로는 `unmatched_backend`, Next 자산은 `next_asset`, Next 화면은 `next_page`로 묶는다.
 
 ### 요청 로그와 SSE
-Next로 전달되기 전에 요청 로깅 미들웨어를 실행한다. `x-request-id`가 `[A-Za-z0-9._:-]{1,128}` 형식이면 그대로 쓰고 아니면 UUID를 발급한다. 응답의 `X-Request-ID`에도 같은 값을 넣는다.
+Next로 전달되기 전에 요청 로깅 미들웨어를 실행한다. `x-request-id`가 `[A-Za-z0-9._:-]{1,128}` 형식이면 그대로 쓰고 아니면 [식별자 규칙](identifiers.md)에 따라 새 요청 식별자를 발급한다. 응답의 `X-Request-ID`에도 같은 값을 넣는다.
 
 응답이 끝나면 Pino 구조화 로그에 `{ method, route, status, ms, requestId, userId }`를 남긴다. 인증된 사용자 ID가 없으면 `userId`는 `null`이다. 원문 URL의 쿼리, 요청·응답 본문, Authorization 헤더와 쿠키를 기록하지 않는다. 요청 ID는 로그에서 문제를 연관 짓는 용도이며 지표의 레이블은 아니다.
 

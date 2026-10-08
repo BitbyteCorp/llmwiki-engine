@@ -1,9 +1,10 @@
 import { win32 } from 'node:path';
 import { z } from 'zod';
+import { idSchema } from '../common/ids.js';
 
 export const limitSchema = z.coerce.number().int().min(1).max(100).default(50);
 export const shaSchema = z.string().regex(/^[a-f0-9]{7,64}$/i, 'Invalid commit SHA');
-export const idSchema = z.string().min(1).max(200);
+export { idSchema };
 export const notePathSchema = z.string().min(1).max(4096).refine((path) =>
   !path.startsWith('/') && !win32.isAbsolute(path) && !path.includes('\\') && !path.includes('\0') &&
   !path.split('/').some((part) => part === '..' || part === '.' || part.toLowerCase() === '.git' || part === '') &&
@@ -38,7 +39,7 @@ export const searchSuggestQuerySchema = z.object({ q: z.string().trim().max(200)
 export const searchSimilarQuerySchema = z.object({ path: notePathSchema, limit: searchLimitSchema });
 export const searchDuplicatesQuerySchema = z.object({ limit: searchLimitSchema });
 export const historyQuerySchema = z.object({ path: repositoryPathSchema.optional(), follow: z.literal('1').optional(), limit: limitSchema, before: shaSchema.optional() });
-export const jobsQuerySchema = z.object({ mine: z.literal('1').optional(), limit: limitSchema, before: z.union([z.uuid(), z.iso.datetime()]).optional() });
+export const jobsQuerySchema = z.object({ mine: z.literal('1').optional(), limit: limitSchema, before: z.union([idSchema, z.iso.datetime()]).optional() });
 export const notePutSchema = z.object({
   path: notePathSchema, content: z.string().max(10_000_000), baseSha: shaSchema,
   create: z.boolean().optional(), message: z.string().trim().min(1).max(2000).optional(),
@@ -52,7 +53,7 @@ export const historyRevertSchema = z.object({ sha: shaSchema, paths: z.array(rep
 export const createConversationSchema = z.object({ title: titleSchema.optional() });
 export const messageSchema = z.object({
   content: z.string().min(1).max(100000).refine((value) => value.trim().length > 0, 'Message must not be blank'),
-  attachments: z.array(z.uuid()).max(10).optional(),
+  attachments: z.array(idSchema).max(10).optional(),
   context: z.object({ notePath: notePathSchema, ref: refSchema.optional(), selection: z.string().max(32000).optional() }).strict().optional(),
   clientId: z.string().min(1).max(200).optional(),
   model: z.string().min(1).max(200).optional(),

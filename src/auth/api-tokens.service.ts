@@ -1,8 +1,9 @@
 import { ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { ApiError } from '../api/api-error.js';
 import { AuditService } from '../audit/audit.service.js';
+import { newId } from '../common/ids.js';
 import { ApiTokensRepository, type ApiTokenRow } from './api-tokens.repository.js';
 import { UsersService } from './users.service.js';
 import type { User } from './users.types.js';
@@ -36,7 +37,7 @@ export class ApiTokensService {
       throw new ApiError(400, 'invalid_request', 'Token expiry must be in the future');
     }
     const token = `lwk_${randomBytes(32).toString('base64url')}`;
-    const row: ApiTokenRow = { id: randomUUID(), user_id: user.id, name: value.name,
+    const row: ApiTokenRow = { id: newId(), user_id: user.id, name: value.name,
       token_hash: createHash('sha256').update(token).digest('hex'), scopes: JSON.stringify(value.scopes), created_at: now,
       expires_at: value.expiresAt ? new Date(value.expiresAt).toISOString() : null, last_used_at: null, revoked_at: null };
     this.repository.insert(row);

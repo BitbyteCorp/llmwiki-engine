@@ -13,6 +13,7 @@ import { RolesGuard } from '../src/auth/guards/roles.guard.js';
 import { SessionGuard } from '../src/auth/guards/session.guard.js';
 import { HttpExceptionFilter } from '../src/common/filters/http-exception.filter.js';
 import { DB } from '../src/common/tokens.js';
+import { apiIdToLegacyUuid, newId, parseApiId, toStorageId } from '../src/common/ids.js';
 import { openDb, type Db } from '../src/db/index.js';
 import type { Logger } from '../src/log.js';
 import { AclService } from '../src/acl/acl.service.js';
@@ -23,6 +24,9 @@ import { UsersRepository } from '../src/auth/users.repository.js';
 const schemas = ['001_core.sql', '002_auth.sql', '004_chat.sql', '010_chat.sql', '011_platform.sql', '013_acl.sql'].map((name) =>
   readFileSync(new URL(`../src/db/migrations/${name}`, import.meta.url), 'utf8'));
 const stamp = '2026-10-07T00:00:00.000Z';
+const legacyConversationId = '00000000-0000-4000-8000-000000000001';
+const conversationId = parseApiId(legacyConversationId)!;
+const otherConversationId = parseApiId('00000000-0000-4000-8000-000000000002')!;
 let directory: string;
 let db: Db;
 let service: GenerationsService;
@@ -35,14 +39,13 @@ function deferred() {
   return { promise, resolve };
 }
 
-function input(conversationId = 'conversation') {
-  const n = db.prepare('SELECT count(*) AS n FROM messages').get() as { n: number };
-  const userMessageId = `user-${n.n}`;
-  const assistantMessageId = `assistant-${n.n}`;
+function input(id = conversationId) {
+  const userMessageId = newId();
+  const assistantMessageId = newId();
   const insert = db.prepare("INSERT INTO messages (id,conversation_id,role,content,created_at,status,citations) VALUES (?,?,?,?,?,?,'[]')");
-  insert.run(userMessageId, conversationId, 'user', 'Question', stamp, 'completed');
-  insert.run(assistantMessageId, conversationId, 'assistant', '', stamp, 'streaming');
-  return { conversationId, userMessageId, assistantMessageId, userId: 1 };
+  insert.run(toStorageId(userMessageId), toStorageId(id), 'user', 'Question', stamp, 'completed');
+  insert.run(toStorageId(assistantMessageId), toStorageId(id), 'assistant', '', stamp, 'streaming');
+  return { conversationId: id, userMessageId, assistantMessageId, userId: 1 };
 }
 
 function events(text: string) {
@@ -59,10 +62,10 @@ beforeEach(async () => {
   for (const id of [1, 2, 3, 4]) {
     db.prepare('INSERT INTO users (id,email,role,created_at) VALUES (?,?,?,?)').run(id, `${id}@example.test`, id === 4 ? 'admin' : 'viewer', stamp);
   }
-  for (const id of ['conversation', 'other']) {
-    db.prepare('INSERT INTO conversations (id,user_id,title,created_at,updated_at) VALUES (?,1,?,?,?)').run(id, id, stamp, stamp);
+  for (const id of [conversationId, otherConversationId]) {
+    db.prepare('INSERT INTO conversations (id,user_id,title,created_at,updated_at) VALUES (?,1,?,?,?)').run(toStorageId(id), id, stamp, stamp);
     for (const [userId, role] of [[1, 'owner'], [2, 'editor'], [3, 'viewer']] as const) {
-      db.prepare('INSERT INTO conversation_members VALUES (?,?,?)').run(id, userId, role);
+      db.prepare('INSERT INTO conversation_members VALUES (?,?,?)').run(toStorageId(id), userId, role);
     }
   }
   const module = await Test.createTestingModule({
@@ -102,6 +105,72 @@ async function settle() {
 }
 
 describe('detached replayable generations', () => {
+  it('normalizes legacy identifiers across live streams, cancellation, and client deduplication without rewriting opaque frame data', async () => {
+    const started = input();
+    const aborted = deferred();
+    let emit!: (event: GenerationEvent, data: unknown) => void;
+    let signal!: AbortSignal;
+    const generation = service.start({
+      ...started,
+      conversationId: legacyConversationId,
+      userMessageId: apiIdToLegacyUuid(started.userMessageId)!,
+      assistantMessageId: apiIdToLegacyUuid(started.assistantMessageId)!,
+      clientId: legacyConversationId,
+    }, async (s, send) => {
+      signal = s;
+      emit = send;
+      s.addEventListener('abort', aborted.resolve, { once: true });
+      await aborted.promise;
+    });
+    expect(generation.id).toMatch(/^[0-9A-Za-z]{22}$/);
+    expect(generation).toMatchObject({ ...started, clientId: legacyConversationId });
+    expect(service.findClient(legacyConversationId, legacyConversationId)).toEqual(generation);
+    expect(service.start({ ...started, clientId: legacyConversationId }, async () => {
+      throw new Error('Duplicate must not execute');
+    })).toEqual(generation);
+    expect(service.active(legacyConversationId)).toBe(true);
+    await settle();
+    const legacyGenerationId = apiIdToLegacyUuid(generation.id)!;
+    expect(service.get(legacyGenerationId, 1)).toEqual(generation);
+    const live = await replay(legacyGenerationId);
+    const body = live.text();
+    const tool = {
+      name: 'write_knowledge', state: 'end', summary: legacyConversationId,
+      jobId: newId(), metadata: { request: legacyConversationId },
+    };
+    emit('tool', tool);
+    const response = await fetch(`${origin}/api/generations/${legacyGenerationId}/cancel`, {
+      method: 'POST', headers: { 'x-user': '1' },
+    });
+    expect(response.status).toBe(204);
+    expect(signal.aborted).toBe(true);
+    const expected = [
+      { id: 1, event: 'generation', data: { generationId: generation.id, userMessageId: started.userMessageId } },
+      { id: 2, event: 'status', data: { phase: 'queued' } },
+      { id: 3, event: 'tool', data: tool },
+      { id: 4, event: 'error', data: { code: 'generation_cancelled', message: 'Generation cancelled' } },
+    ];
+    expect(events(await body)).toEqual(expected);
+    expect(events(await (await replay(generation.id)).text())).toEqual(expected);
+    expect(db.prepare('SELECT data FROM generation_frames WHERE generation_id = ? AND seq = 3')
+      .get(toStorageId(generation.id))).toEqual({ data: JSON.stringify(tool) });
+    expect(service.findClient(conversationId, legacyConversationId)).toMatchObject({ id: generation.id, status: 'cancelled' });
+  });
+
+  it.each(['not-an-id', 'ZZZZZZZZZZZZZZZZZZZZZZ', '00000000-0000-4000-8000-invalid-id'])(
+    'returns not found for invalid generation identifier %s',
+    async (id) => {
+      expect((await replay(id)).status).toBe(404);
+      expect((await fetch(`${origin}/api/generations/${id}/cancel`, {
+        method: 'POST', headers: { 'x-user': '1' },
+      })).status).toBe(404);
+      expect(service.findClient(id, 'opaque-request')).toBeNull();
+      expect(service.active(id)).toBe(false);
+      expect(() => service.start({ ...input(), conversationId: id }, async () => {}))
+        .toThrowError('Generation not found');
+    },
+  );
+
   it('runs independently of connections and preserves every missed frame after Last-Event-ID', async () => {
     const gate = deferred();
     let emit!: (event: GenerationEvent, data: unknown) => void;
@@ -112,7 +181,7 @@ describe('detached replayable generations', () => {
       await gate.promise;
       send('done', { message: { content: 'Complete answer' } });
     });
-    expect(service.findClient('conversation', 'request-one')?.id).toBe(generation.id);
+    expect(service.findClient(conversationId, 'request-one')?.id).toBe(generation.id);
     await settle();
     emit('delta', { text: 'Before connection' });
     const connection = await replay(generation.id);
@@ -136,7 +205,7 @@ describe('detached replayable generations', () => {
       { id: 1504, event: 'done' },
     ]);
     expect(service.get(generation.id, 3).status).toBe('succeeded');
-    expect(service.active('conversation')).toBe(false);
+    expect(service.active(conversationId)).toBe(false);
   });
 
   it('serializes each conversation while allowing other conversations to progress and duplicate clients to reconnect', async () => {
@@ -153,7 +222,7 @@ describe('detached replayable generations', () => {
     const duplicate = service.start(firstInput, async () => { throw new Error('Duplicate must not execute'); });
     expect(duplicate.id).toBe(first.id);
     expect(() => service.start(input(), async () => {})).toThrowError('A generation is already running');
-    const other = service.start(input('other'), async (_signal, emit) => {
+    const other = service.start(input(otherConversationId), async (_signal, emit) => {
       secondRuns++;
       await secondGate.promise;
       emit('done', { message: { content: 'Independent answer' } });
@@ -203,7 +272,7 @@ describe('detached replayable generations', () => {
       { id: 4, event: 'error', data: { code: 'generation_cancelled', message: 'Generation cancelled' } },
     ]);
     expect(service.get(generation.id, 2).status).toBe('cancelled');
-    expect(db.prepare('SELECT status FROM messages WHERE id = ?').get(started.assistantMessageId)).toEqual({ status: 'cancelled' });
+    expect(db.prepare('SELECT status FROM messages WHERE id = ?').get(toStorageId(started.assistantMessageId))).toEqual({ status: 'cancelled' });
     const repeat = await fetch(`${origin}/api/generations/${generation.id}/cancel`, { method: 'POST', headers: { 'x-user': '1' } });
     expect(repeat.status).toBe(204);
     expect(events(await (await replay(generation.id, 1, '4')).text())).toEqual([]);
@@ -220,7 +289,7 @@ describe('detached replayable generations', () => {
       id: 4, event: 'error', data: { code: 'generation_failed', message: 'Generation failed' },
     });
     expect(service.get(generation.id, 1).status).toBe('failed');
-    expect(service.active('conversation')).toBe(false);
+    expect(service.active(conversationId)).toBe(false);
   });
 
   it('persists startup interruption after reopening SQLite and preserves already delivered frames', async () => {
@@ -235,8 +304,8 @@ describe('detached replayable generations', () => {
       const restarted = new GenerationsService(reopened, new AclService(reopened, new UsersService(new UsersRepository(reopened)), new AuditService(reopened)));
       restarted.onModuleInit();
       expect(restarted.get(generation.id, 3).status).toBe('interrupted');
-      expect(restarted.active('conversation')).toBe(false);
-      expect(reopened.prepare('SELECT status FROM messages WHERE id = ?').get(started.assistantMessageId)).toEqual({ status: 'interrupted' });
+      expect(restarted.active(conversationId)).toBe(false);
+      expect(reopened.prepare('SELECT status FROM messages WHERE id = ?').get(toStorageId(started.assistantMessageId))).toEqual({ status: 'interrupted' });
       expect(events(await (await replay(generation.id, 3, '2')).text())).toEqual([
         { id: 3, event: 'delta', data: { text: 'Before crash' } },
         { id: 4, event: 'error', data: { code: 'generation_interrupted', message: 'Generation interrupted by server restart' } },
@@ -281,7 +350,7 @@ describe('detached replayable generations', () => {
     await settle();
     const revoked = await replay(generation.id, 3);
     const revokedBody = revoked.text();
-    db.prepare('DELETE FROM conversation_members WHERE conversation_id = ? AND user_id = ?').run('conversation', 3);
+    db.prepare('DELETE FROM conversation_members WHERE conversation_id = ? AND user_id = ?').run(toStorageId(conversationId), 3);
     emit('delta', { text: 'Confidential continuation' });
     expect(events(await revokedBody)).toEqual([]);
     expect(signal.aborted).toBe(false);
@@ -300,12 +369,12 @@ describe('detached replayable generations', () => {
       emit('done', { message: { content: 'Historical answer' } });
     });
     await settle();
-    db.prepare('DELETE FROM messages WHERE id = ?').run(started.assistantMessageId);
-    expect(service.findClient('conversation', 'historical-request')).toMatchObject({
+    db.prepare('DELETE FROM messages WHERE id = ?').run(toStorageId(started.assistantMessageId));
+    expect(service.findClient(conversationId, 'historical-request')).toMatchObject({
       id: generation.id, assistantMessageId: null, status: 'succeeded',
     });
-    db.prepare('DELETE FROM messages WHERE id = ?').run(started.userMessageId);
-    expect(service.findClient('conversation', 'historical-request')).toMatchObject({
+    db.prepare('DELETE FROM messages WHERE id = ?').run(toStorageId(started.userMessageId));
+    expect(service.findClient(conversationId, 'historical-request')).toMatchObject({
       id: generation.id, userMessageId: null, assistantMessageId: null, status: 'succeeded',
     });
     expect(service.start(started, async () => { throw new Error('Old request must not restart'); }).id).toBe(generation.id);

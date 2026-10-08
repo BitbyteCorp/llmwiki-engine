@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { idSchema, newId } from '../common/ids.js';
 import { lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -42,10 +42,10 @@ interface PoolOptions {
 }
 
 const spawnArgs = z.object({ name: z.string().trim().min(1).max(40), task: z.string().trim().min(1), files: z.array(z.string().min(1)).min(1) }).strict();
-const idArgs = z.object({ id: z.string().min(1) }).strict();
-const statusArgs = z.object({ id: z.string().min(1).optional() }).strict();
-const messageArgs = z.object({ id: z.string().min(1), message: z.string().trim().min(1) }).strict();
-const waitArgs = z.object({ ids: z.array(z.string().min(1)).optional(), mode: z.enum(['any', 'all']).default('all'), timeoutSeconds: z.number().int().min(0).max(600).default(300) }).strict();
+const idArgs = z.object({ id: idSchema }).strict();
+const statusArgs = z.object({ id: idSchema.optional() }).strict();
+const messageArgs = z.object({ id: idSchema, message: z.string().trim().min(1) }).strict();
+const waitArgs = z.object({ ids: z.array(idSchema).optional(), mode: z.enum(['any', 'all']).default('all'), timeoutSeconds: z.number().int().min(0).max(600).default(300) }).strict();
 const childToolNames: Record<string, true> = {
   search: true, list_files: true, read_file: true, write_file: true, delete_file: true, move_file: true,
 };
@@ -172,7 +172,7 @@ export class SubagentPool {
         throw new Error(`Files overlap running subagent ${running.snapshot.name} (${running.snapshot.id})`);
       }
     }
-    const id = randomUUID();
+    const id = newId();
     const child: Child = {
       snapshot: { id, name, status: 'running', files, toolCalls: 0, startedAt: new Date().toISOString() },
       controller: new AbortController(), messages: [], active: true, done: Promise.resolve(), lastProgress: Date.now(),

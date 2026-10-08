@@ -3,6 +3,7 @@ import { mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as sqliteVec from 'sqlite-vec';
+import { legacyUuidToApi, legacyUuidToStorage, replaceLegacyUuids } from '../common/ids.js';
 
 export type Db = Database.Database;
 
@@ -25,7 +26,29 @@ export function openDb(path: string): Db {
   }
 }
 
+function legacyJsonIdsToApi(value: string | null): string | null {
+  if (value === null) return null;
+  let changed = false;
+  let document: unknown;
+  try {
+    document = JSON.parse(value, (_key: string, entry: unknown) => {
+      if (typeof entry !== 'string') return entry;
+      const encoded = legacyUuidToApi(entry);
+      if (encoded !== entry) changed = true;
+      return encoded;
+    });
+  } catch {
+    return value;
+  }
+  return changed ? JSON.stringify(document) : value;
+}
+
 export function runMigrations(db: Db): void {
+  db.function('legacy_uuid_to_storage', { deterministic: true }, (value: string | null) =>
+    value === null ? null : legacyUuidToStorage(value));
+  db.function('legacy_uuids_to_api', { deterministic: true }, (value: string | null) =>
+    value === null ? null : replaceLegacyUuids(value, legacyUuidToApi));
+  db.function('legacy_json_ids_to_api', { deterministic: true }, legacyJsonIdsToApi);
   db.exec('CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)');
   const migrationsDir = fileURLToPath(new URL('./migrations/', import.meta.url));
   const applied = db.prepare('SELECT name FROM schema_migrations').all() as Array<{ name: string }>;

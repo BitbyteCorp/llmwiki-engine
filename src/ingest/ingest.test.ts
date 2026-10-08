@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,6 +12,7 @@ import { AuditService } from '../audit/audit.service.js';
 import { AclService } from '../acl/acl.service.js';
 import { UsersRepository } from '../auth/users.repository.js';
 import { UsersService } from '../auth/users.service.js';
+import { apiIdToLegacyUuid, newId } from '../common/ids.js';
 import { loadConfig } from '../config.js';
 import { openDb, runMigrations, type Db } from '../db/index.js';
 import { EventsService } from '../events/events.service.js';
@@ -63,6 +64,8 @@ describe('IngestService with real uploads, SQLite and git', () => {
     const ctx = await fixture();
     const before = await ctx.repo.headSha();
     const result = await ctx.ingest.ingest({ userId: ctx.owner.id, kind: 'text', text: '# Source\nDurable knowledge', filename: 'knowledge.md', instructions: 'Explain the key idea' });
+    expect(result.importId).toMatch(/^[0-9A-Za-z]{22}$/);
+    expect(result.jobId).toMatch(/^[0-9A-Za-z]{22}$/);
     const item = ctx.ingest.get(result.importId, ctx.owner.id);
     const sha = createHash('sha256').update('# Source\nDurable knowledge').digest('hex');
     expect(item.sha).toBe(sha);
@@ -120,7 +123,7 @@ describe('IngestService with real uploads, SQLite and git', () => {
     const buffer = Buffer.from(zipSync({ [`Note${suffix}.md`]: strToU8(`[Other](Other${suffix.replace(' ', '%20')}.md)\n![[asset.png]]`), [`Other${suffix}.md`]: strToU8('# Other'), 'asset.png': new Uint8Array([137,80,78,71,0,255]) }));
     const upload = await ctx.uploads.save(ctx.owner.id, { name: 'vault.zip', mediaType: 'application/zip', purpose: 'import', buffer });
     const before = await ctx.repo.headSha();
-    const result = await ctx.ingest.ingest({ userId: ctx.owner.id, kind, uploadId: upload.id });
+    const result = await ctx.ingest.ingest({ userId: ctx.owner.id, kind, uploadId: kind === 'notion' ? apiIdToLegacyUuid(upload.id)! : upload.id });
     const item = ctx.ingest.get(result.importId, ctx.owner.id);
     const original = await git('git', ['show', `main:${item.rawPaths[0]}`], { cwd: join(ctx.dir, 'knowledge'), encoding: 'buffer' });
     expect(original.stdout).toEqual(buffer);
@@ -146,7 +149,7 @@ describe('IngestService with real uploads, SQLite and git', () => {
     ctx.ingest.onModuleDestroy();
     ctx.repository.markFailed(result.jobId, 'Integration failed', new Date().toISOString());
     expect(ctx.ingest.get(result.importId, ctx.owner.id)).toMatchObject({ status: 'failed', error: 'Integration failed' });
-    const interrupted = randomUUID();
+    const interrupted = newId();
     ctx.imports.create(interrupted, ctx.owner.id, 'text', 'text:source.md');
     ctx.ingest.start();
     expect(ctx.ingest.get(interrupted, ctx.owner.id)).toMatchObject({ status: 'failed', error: 'Engine restarted before source import completed' });

@@ -3,6 +3,7 @@ import { cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, sta
 import { dirname, isAbsolute, join, relative, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { commitTrailers, type CommitMetadata } from './commit-trailers.js';
+import { apiIdToLegacyUuid, legacyUuidToApi } from '../common/ids.js';
 import type { Config } from '../config.js';
 import type { Logger } from 'pino';
 
@@ -122,9 +123,19 @@ function commits(output: string): CommitInfo[] {
     const trailers: Record<string, string> = {};
     for (const line of fields[i + 10]!.split('\n')) {
       const separator = line.indexOf(':');
-      if (separator > 0) trailers[line.slice(0, separator)] = line.slice(separator + 1).trim();
+      if (separator > 0) {
+        const key = line.slice(0, separator);
+        const value = line.slice(separator + 1).trim();
+        // Chat writes record the conversation id as Wiki-Client; other clients are plain names that the helper leaves untouched.
+        trailers[key] = key === 'Wiki-Job' || key === 'Wiki-Client' ? legacyUuidToApi(value) : value;
+      }
     }
-    result.push({ sha, parents: fields[i + 1]!.split(' ').filter(Boolean), authorName: fields[i + 2]!, authorEmail: fields[i + 3]!, date: fields[i + 4]!, committerName: fields[i + 5]!, committerEmail: fields[i + 6]!, committedAt: fields[i + 7]!, subject: fields[i + 8]!, body: fields[i + 9]!.trimEnd(), trailers });
+    // `%b` repeats the trailer block already returned as `trailers`; dropping it keeps raw values
+    // (such as legacy UUID job ids from old commits) out of the body.
+    const trailerBlock = fields[i + 10]!.trim();
+    let body = fields[i + 9]!.trimEnd();
+    if (trailerBlock && body.endsWith(trailerBlock)) body = body.slice(0, -trailerBlock.length).trimEnd();
+    result.push({ sha, parents: fields[i + 1]!.split(' ').filter(Boolean), authorName: fields[i + 2]!, authorEmail: fields[i + 3]!, date: fields[i + 4]!, committerName: fields[i + 5]!, committerEmail: fields[i + 6]!, committedAt: fields[i + 7]!, subject: fields[i + 8]!, body, trailers });
   }
   return result;
 }
@@ -235,7 +246,7 @@ export class KnowledgeRepo {
     const branches = (await this.git.run(this.path, ['for-each-ref', '--format=%(refname)', 'refs/heads/work/'])).trim().split('\n').filter(Boolean);
     for (const branch of branches) {
       const sha = await this.git.sha(this.path, branch);
-      await this.git.run(this.path, ['update-ref', `refs/wiki/failed/${branch.slice('refs/heads/work/'.length)}`, sha]);
+      await this.git.run(this.path, ['update-ref', `refs/wiki/failed/${legacyUuidToApi(branch.slice('refs/heads/work/'.length))}`, sha]);
       await this.git.run(this.path, ['branch', '-D', '--', branch.slice('refs/heads/'.length)]);
     }
     if (branches.length) this.logger.info({ count: branches.length }, 'Removed abandoned knowledge work branches');
@@ -255,7 +266,12 @@ export class KnowledgeRepo {
     }
     const pending = this.resolving.get(ref);
     if (pending) return pending;
-    const promise = this.git.sha(this.path, ref).then((sha) => {
+    const promise = this.git.sha(this.path, ref).catch(async (error: unknown) => {
+      if (!(error instanceof Error) || !('code' in error) || error.code !== 'NOT_FOUND' || !ref.startsWith('refs/wiki/failed/')) throw error;
+      const legacy = apiIdToLegacyUuid(ref.slice('refs/wiki/failed/'.length));
+      if (!legacy) throw error;
+      return this.git.sha(this.path, `refs/wiki/failed/${legacy}`);
+    }).then((sha) => {
       this.rememberSha(sha);
       return sha;
     }).finally(() => { this.resolving.delete(ref); });
@@ -565,7 +581,7 @@ export class Worktree {
   async preserveFailed(jobId: string): Promise<string> {
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(jobId)) throw new Error('Job ID must be a safe identifier');
     const sha = await this.git.sha(this.path, 'HEAD');
-    await this.git.run(this.primary, ['update-ref', `refs/wiki/failed/${jobId}`, sha]);
+    await this.git.run(this.primary, ['update-ref', `refs/wiki/failed/${legacyUuidToApi(jobId)}`, sha]);
     return sha;
   }
   async revert(sha: string, paths?: string[]): Promise<void> {

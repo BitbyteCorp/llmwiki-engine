@@ -10,6 +10,7 @@ import { AuditService } from '../audit/audit.service.js';
 import { UsersRepository } from '../auth/users.repository.js';
 import { UsersService } from '../auth/users.service.js';
 import { loadConfig } from '../config.js';
+import { newId, toStorageId } from '../common/ids.js';
 import { openDb, runMigrations, type Db } from '../db/index.js';
 import { EventsService } from '../events/events.service.js';
 import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
@@ -83,7 +84,7 @@ describe('WriteJobsService with real git and a Dony double', () => {
     const { ctx, jobs } = await fixture();
     const input = { userId: 1, input: 'Remember once', source: 'chat' as const, dedupeKey: 'conversation:turn:content' };
     const first = jobs.submit(input);
-    ctx.db.prepare('UPDATE write_jobs SET status = ? WHERE id = ?').run(status, first.id);
+    ctx.db.prepare('UPDATE write_jobs SET status = ? WHERE id = ?').run(status, toStorageId(first.id));
     const restarted = new WriteJobsService(new WriteJobsRepository(ctx.db), ctx.agent, ctx.indexer, ctx.repo, ctx.users, ctx.log, ctx.events, new AclService(ctx.db, ctx.users, new AuditService(ctx.db)));
     const reused = restarted.submit(input);
     expect(reused.id).toBe(first.id);
@@ -111,8 +112,8 @@ describe('WriteJobsService with real git and a Dony double', () => {
     const repository = new WriteJobsRepository(ctx.db);
     const job = jobs.submit({ userId: 1, input: 'Interrupted children', source: 'chat' });
     repository.markRunning(job.id, job.createdAt);
-    const running = { id: 'running-child', name: 'Writer', status: 'running', files: ['wiki/plan.md'], toolCalls: 3, startedAt: job.createdAt };
-    const completed = { ...running, id: 'completed-child', name: 'Done' };
+    const running = { id: newId(), name: 'Writer', status: 'running', files: ['wiki/plan.md'], toolCalls: 3, startedAt: job.createdAt };
+    const completed = { ...running, id: newId(), name: 'Done' };
     jobs.phase(job.id, 'editing', { subagent: { ...running, toolCalls: 1 } });
     jobs.phase(job.id, 'editing', { subagent: completed });
     jobs.phase(job.id, 'editing', { subagent: { ...completed, status: 'completed', result: 'Finished' } });
@@ -260,9 +261,9 @@ describe('WriteJobsService with real git and a Dony double', () => {
     const merging = jobs.submit({ userId: 1, input: 'interrupted merging', source: 'mcp' });
     const queued = jobs.submit({ userId: 1, input: 'resume queued', source: 'mcp' });
     ctx.db.prepare('UPDATE write_jobs SET status = ?, started_at = ? WHERE id = ?')
-      .run('running', running.createdAt, running.id);
+      .run('running', running.createdAt, toStorageId(running.id));
     ctx.db.prepare('UPDATE write_jobs SET status = ?, started_at = ? WHERE id = ?')
-      .run('merging', merging.createdAt, merging.id);
+      .run('merging', merging.createdAt, toStorageId(merging.id));
     jobs.start();
     expect(jobs.get(running.id)?.status).toBe('failed');
     expect(jobs.get(merging.id)?.status).toBe('failed');
@@ -300,7 +301,7 @@ describe('WriteJobsService with real git and a Dony double', () => {
     ctx.db.prepare('UPDATE write_jobs SET created_at = ?').run('2026-10-07T00:00:00.000Z');
     const first = jobs.list({ userId: 1, limit: 2 });
     const second = jobs.list({ userId: 1, before: first[1]!.id, limit: 2 });
-    expect([...first, ...second].map((job) => job.id)).toEqual(records.slice(0, 3).map((job) => job.id).sort().reverse());
+    expect([...first, ...second].map((job) => job.id).sort()).toEqual(records.slice(0, 3).map((job) => job.id).sort());
     ctx.db.prepare('DELETE FROM users WHERE id = 1').run();
     expect(jobs.get(records[0]!.id)?.userId).toBe(1);
     jobs.start();

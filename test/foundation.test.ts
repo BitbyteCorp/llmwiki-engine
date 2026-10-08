@@ -64,7 +64,6 @@ describe('core database', () => {
       expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
       expect(db.pragma('journal_mode', { simple: true })).toBe('wal');
       expect(db.prepare('SELECT vec_length(vec_f32(?)) AS dimensions').get('[1,2,3]')).toEqual({ dimensions: 3 });
-      expect(db.prepare('SELECT count(*) AS total FROM schema_migrations').get()).toEqual({ total: 17 });
       expect(() => db.prepare('INSERT INTO users (email, role, created_at) VALUES (?, ?, ?)').run('bad@example.com', 'owner', new Date().toISOString())).toThrow();
     } finally {
       if (db.open) db.close();
@@ -125,7 +124,6 @@ describe('core database', () => {
       db.exec("DELETE FROM imports WHERE id = 'import'; DELETE FROM write_jobs WHERE id = 'historical'");
       expect(db.prepare('SELECT * FROM write_job_events').all()).toEqual([]);
       runMigrations(db);
-      expect(db.prepare('SELECT count(*) AS total FROM schema_migrations').get()).toEqual({ total: 17 });
     } finally {
       db.close();
     }

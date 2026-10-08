@@ -12,6 +12,7 @@ import { ComparisonService } from '../rag/comparison.service.js';
 import { IngestService } from '../ingest/ingest.service.js';
 import { AclService } from '../acl/acl.service.js';
 import { visibleBlame, visibleCommit, visibleCompare, visibleLog } from '../api/acl-history.js';
+import { idSchema } from '../common/ids.js';
 
 const maxPatchChars = 32_000;
 const readOnly = { readOnlyHint: true, openWorldHint: false };
@@ -170,7 +171,7 @@ export class McpService {
       inputSchema: {
         kind: z.enum(['url', 'pdf', 'text', 'obsidian', 'notion', 'file']),
         url: z.string().url().optional(),
-        uploadId: z.string().min(1).optional(),
+        uploadId: idSchema.optional(),
         text: z.string().refine(value => value.trim().length > 0, 'Text must not be blank.').optional(),
         filename: z.string().min(1).optional(),
         instructions: z.string().optional(),
@@ -200,7 +201,7 @@ export class McpService {
 
     server.registerTool('get_write_status', {
       description: 'Read an asynchronous write job, including its status, summary, commits, and error. You may view your own jobs; admins may view any job. Poll the jobId returned by write to confirm completion.',
-      inputSchema: { jobId: z.string().min(1).describe('Job identifier returned by write.') },
+      inputSchema: { jobId: idSchema.describe('Job identifier returned by write.') },
       annotations: { readOnlyHint: true, openWorldHint: false },
     }, async ({ jobId }) => {
       const job = this.jobs.get(jobId);

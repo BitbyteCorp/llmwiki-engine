@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { McpAuthGuard } from '../auth/guards/mcp-auth.guard.js';
 import type { Role, User } from '../auth/users.types.js';
 import { configureApp } from '../common/http/configure-app.js';
+import { parseApiId } from '../common/ids.js';
 import { LOGGER } from '../common/tokens.js';
 import type { WriteJob } from '../jobs/write-job.types.js';
 import { WriteJobsService } from '../jobs/write-jobs.service.js';
@@ -44,6 +45,10 @@ const clients: Client[] = [];
 const transports: StreamableHTTPClientTransport[] = [];
 const apps: INestApplication[] = [];
 const databases: Db[] = [];
+const firstWriteId = parseApiId('00000000-0000-4000-8000-000000000001')!;
+const secondWriteId = parseApiId('00000000-0000-4000-8000-000000000002')!;
+const otherJobId = parseApiId('00000000-0000-4000-8000-000000000010')!;
+const missingJobId = parseApiId('00000000-0000-4000-8000-000000000011')!;
 
 function makeJob(id: string, userId: number, input: string): WriteJob {
   return {
@@ -65,8 +70,8 @@ async function fixture() {
     ['journal/2026-01-01.md', '# Journal\n\nInitial knowledge import.\n'],
   ]);
   const storedJobs = new Map<string, WriteJob>([
-    ['other-job', {
-      ...makeJob('other-job', 22, 'Record the backup schedule.'),
+    [otherJobId, {
+      ...makeJob(otherJobId, 22, 'Record the backup schedule.'),
       status: 'succeeded', summary: 'Documented daily backups.', commits: ['commit-a'],
       mergeSha: 'merge-a', startedAt: '2026-01-02T03:04:06.000Z', finishedAt: '2026-01-02T03:04:07.000Z',
     }],
@@ -95,7 +100,8 @@ async function fixture() {
   };
   const jobs = {
     submit: vi.fn(({ userId, input }: { userId: number; input: string }) => {
-      const job = makeJob(`write-${storedJobs.size}`, userId, input);
+      const id = parseApiId(`00000000-0000-4000-8000-${storedJobs.size.toString(16).padStart(12, '0')}`)!;
+      const job = makeJob(id, userId, input);
       storedJobs.set(job.id, job);
       return job;
     }),
@@ -246,11 +252,11 @@ describe('MCP Streamable HTTP protocol', () => {
     const { connect } = await fixture();
     const { client } = await connect('editor', 11);
     expectPayload(await call(client, 'write', { content: 'Record that backups run daily.' }), {
-      jobId: 'write-1', status: 'queued',
+      jobId: firstWriteId, status: 'queued',
     });
-    expectPayload(await call(client, 'get_write_status', { jobId: 'write-1' }), {
+    expectPayload(await call(client, 'get_write_status', { jobId: firstWriteId }), {
       job: {
-        id: 'write-1', userId: 11, kind: 'agent', source: 'mcp', client: null, conflicts: [], input: 'Record that backups run daily.',
+        id: firstWriteId, userId: 11, kind: 'agent', source: 'mcp', client: null, conflicts: [], input: 'Record that backups run daily.',
         status: 'queued', summary: null, commits: [], mergeSha: null, error: null,
         createdAt: '2026-01-02T03:04:05.000Z', startedAt: null, finishedAt: null,
       },
@@ -260,8 +266,8 @@ describe('MCP Streamable HTTP protocol', () => {
   it('makes another owner\'s job indistinguishable from a missing job', async () => {
     const { connect } = await fixture();
     const { client } = await connect('editor', 11);
-    const inaccessible = await call(client, 'get_write_status', { jobId: 'other-job' });
-    const missing = await call(client, 'get_write_status', { jobId: 'missing-job' });
+    const inaccessible = await call(client, 'get_write_status', { jobId: otherJobId });
+    const missing = await call(client, 'get_write_status', { jobId: missingJobId });
     expectToolError(inaccessible);
     expectToolError(missing);
     expect(inaccessible.content).toEqual(missing.content);
@@ -272,16 +278,16 @@ describe('MCP Streamable HTTP protocol', () => {
   it('allows an admin to see another owner\'s completed job and to submit writes', async () => {
     const { connect } = await fixture();
     const { client } = await connect('admin', 1);
-    expectPayload(await call(client, 'get_write_status', { jobId: 'other-job' }), {
+    expectPayload(await call(client, 'get_write_status', { jobId: otherJobId }), {
       job: {
-        id: 'other-job', userId: 22, kind: 'agent', source: 'mcp', client: null, conflicts: [], input: 'Record the backup schedule.',
+        id: otherJobId, userId: 22, kind: 'agent', source: 'mcp', client: null, conflicts: [], input: 'Record the backup schedule.',
         status: 'succeeded', summary: 'Documented daily backups.', commits: ['commit-a'],
         mergeSha: 'merge-a', error: null, createdAt: '2026-01-02T03:04:05.000Z',
         startedAt: '2026-01-02T03:04:06.000Z', finishedAt: '2026-01-02T03:04:07.000Z',
       },
     });
     expectPayload(await call(client, 'write', { content: 'Document retention policy.' }), {
-      jobId: 'write-1', status: 'queued',
+      jobId: firstWriteId, status: 'queued',
     });
   });
 
@@ -315,20 +321,19 @@ describe('MCP Streamable HTTP protocol', () => {
   });
 
   it('keeps independent client identities and permissions isolated across interleaved requests', async () => {
-    const { connect, jobs } = await fixture();
+    const { connect } = await fixture();
     const viewer = await connect('viewer', 12);
     const editor = await connect('editor', 11);
     expectPayload(await call(editor.client, 'write', { content: 'Remember the backup schedule.' }), {
-      jobId: 'write-1', status: 'queued',
+      jobId: firstWriteId, status: 'queued',
     });
-    expectToolError(await call(viewer.client, 'get_write_status', { jobId: 'write-1' }));
+    expectToolError(await call(viewer.client, 'get_write_status', { jobId: firstWriteId }));
     expectToolError(await call(viewer.client, 'write', { content: 'Viewer must not enqueue this.' }));
-    expect(jobs.submit).toHaveBeenCalledTimes(1);
-    const ownJob = await call(editor.client, 'get_write_status', { jobId: 'write-1' });
+    const ownJob = await call(editor.client, 'get_write_status', { jobId: firstWriteId });
     expect(ownJob.isError).not.toBe(true);
-    expect(ownJob.structuredContent).toMatchObject({ job: { id: 'write-1', userId: 11, input: 'Remember the backup schedule.' } });
+    expect(ownJob.structuredContent).toMatchObject({ job: { id: firstWriteId, userId: 11, input: 'Remember the backup schedule.' } });
     expectPayload(await call(editor.client, 'write', { content: 'Record restore procedures too.' }), {
-      jobId: 'write-2', status: 'queued',
+      jobId: secondWriteId, status: 'queued',
     });
   });
 

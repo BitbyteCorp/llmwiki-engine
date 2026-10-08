@@ -19,6 +19,7 @@ import { RolesGuard } from '../auth/guards/roles.guard.js';
 import { HttpExceptionFilter } from '../common/filters/http-exception.filter.js';
 import { configureApp } from '../common/http/configure-app.js';
 import { DB, LOGGER } from '../common/tokens.js';
+import { newId, toStorageId } from '../common/ids.js';
 import { openDb, runMigrations, type Db } from '../db/index.js';
 import type { WriteJob } from '../jobs/write-job.types.js';
 import { WriteJobsService } from '../jobs/write-jobs.service.js';
@@ -247,7 +248,7 @@ describe('web REST API', () => {
     db.prepare(`INSERT INTO write_jobs
       (id, user_id, source, input, status, summary, commits, merge_sha, error, created_at, started_at, finished_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(job.id, job.userId, job.source, job.input, job.status, job.summary, JSON.stringify(job.commits), job.mergeSha,
+      .run(toStorageId(job.id), job.userId, job.source, job.input, job.status, job.summary, JSON.stringify(job.commits), job.mergeSha,
         job.error, job.createdAt, job.startedAt, job.finishedAt);
   }
 
@@ -288,7 +289,7 @@ describe('web REST API', () => {
 
 
   it.each(['commits', 'mergeSha'] as const)('links commit details to a write job through %s', async (source) => {
-    const job = makeJob(`job-${source}`, 2, source === 'commits' ? [writeSha] : [], source === 'mergeSha' ? writeSha : null);
+    const job = makeJob(newId(), 2, source === 'commits' ? [writeSha] : [], source === 'mergeSha' ? writeSha : null);
     seedJob(job);
     const response = await request(`/history/commits/${writeSha}`, {}, 3, 'admin');
     expect(response.status).toBe(200);
@@ -299,8 +300,8 @@ describe('web REST API', () => {
   });
 
   it('isolates job lists and details to owners while allowing administrators', async () => {
-    const own = makeJob('own', 1, [writeSha], mergeSha);
-    const other = makeJob('other', 2, [head]);
+    const own = makeJob(newId(), 1, [writeSha], mergeSha);
+    const other = makeJob(newId(), 2, [head]);
     seedJob(own);
     seedJob(other);
     expect(await (await request('/jobs?limit=2')).json()).toEqual({ jobs: [
@@ -310,14 +311,14 @@ describe('web REST API', () => {
       { ...own, user: { email: 'user1@example.com', name: 'User 1' } },
       { ...other, user: { email: 'user2@example.com', name: 'User 2' } },
     ] });
-    await expectError(await request('/jobs/other'), 404, 'not_found');
-    expect(await (await request('/jobs/other', {}, 3, 'admin')).json()).toMatchObject({ job: other });
+    await expectError(await request(`/jobs/${other.id}`), 404, 'not_found');
+    expect(await (await request(`/jobs/${other.id}`, {}, 3, 'admin')).json()).toMatchObject({ job: other });
     expect(await (await request('/jobs?mine=1')).json()).toEqual({ jobs: [{ ...own, user: { email: 'user1@example.com', name: 'User 1' } }] });
-    expect(await (await request('/jobs/own')).json()).toEqual({
+    expect(await (await request(`/jobs/${own.id}`)).json()).toEqual({
       job: own, user: { email: 'user1@example.com', name: 'User 1' }, commits: [commit(writeSha), commit(mergeSha)], events: [],
     });
     expect(await (await request(`/jobs?before=${encodeURIComponent(stamp)}`)).json()).toEqual({ jobs: [] });
-    await expectError(await request('/jobs/missing'), 404, 'not_found');
+    await expectError(await request(`/jobs/${newId()}`), 404, 'not_found');
   });
 
   it('isolates conversation list, read, send, and deletion from nonmembers even administrators', async () => {

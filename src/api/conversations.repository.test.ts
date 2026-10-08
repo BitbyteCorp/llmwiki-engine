@@ -2,6 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { newId, toStorageId } from '../common/ids.js';
 import { openDb, type Db } from '../db/index.js';
 import { ConversationsRepository } from './conversations.repository.js';
 
@@ -37,18 +38,19 @@ describe('ConversationsRepository', () => {
     const question = store.addMessage(conversation.id, 1, 'user', 'Question')!;
     const assistant = store.addMessage(conversation.id, 1, 'assistant', 'Partial', [], { status: 'running' })!;
     const other = store.addMessage(conversation.id, 1, 'assistant', 'Legacy answer')!;
+    const generationId = newId();
     db.prepare(`INSERT INTO generations(id,conversation_id,user_message_id,assistant_message_id,user_id,status,created_at)
-      VALUES(?,?,?,?,?,'running',?)`).run('active-generation', conversation.id, question.id, assistant.id, 1, '2026-10-07T01:00:00.000Z');
+      VALUES(?,?,?,?,?,'running',?)`).run(toStorageId(generationId), toStorageId(conversation.id), toStorageId(question.id), toStorageId(assistant.id), 1, '2026-10-07T01:00:00.000Z');
     db.close();
     db = openDb(join(dir, 'chat.sqlite'));
     store = new ConversationsRepository(db);
 
     expect(store.messages(conversation.id, 1)).toEqual([
       { ...question, generationId: null },
-      { ...assistant, generationId: 'active-generation' },
+      { ...assistant, generationId },
       { ...other, generationId: null },
     ]);
-    expect(store.message(conversation.id, assistant.id, 1)?.generationId).toBe('active-generation');
+    expect(store.message(conversation.id, assistant.id, 1)?.generationId).toBe(generationId);
     expect(store.messages(conversation.id, 2)).toEqual([]);
     expect(store.message(conversation.id, assistant.id, 2)).toBeNull();
   });
@@ -59,22 +61,41 @@ describe('ConversationsRepository', () => {
     const question = store.addMessage(conversation.id, 1, 'user', 'Question')!;
     const assistant = store.addMessage(conversation.id, 1, 'assistant', 'Answer')!;
     const ungenerated = store.addMessage(conversation.id, 1, 'assistant', 'Unrelated answer')!;
+    const latestGenerationId = newId();
     const insert = db.prepare(`INSERT INTO generations(id,conversation_id,user_message_id,assistant_message_id,user_id,status,created_at)
       VALUES(?,?,?,?,?,?,?)`);
-    insert.run('older-insertion', conversation.id, question.id, assistant.id, 1, 'running', '2026-10-08T00:00:00.000Z');
-    insert.run('latest-insertion', conversation.id, question.id, assistant.id, 1, 'failed', '2026-10-06T00:00:00.000Z');
-    insert.run('different-conversation', otherConversation.id, question.id, assistant.id, 1, 'running', '2026-10-09T00:00:00.000Z');
-    insert.run('detached-generation', conversation.id, question.id, null, 1, 'completed', '2026-10-10T00:00:00.000Z');
+    insert.run(toStorageId(newId()), toStorageId(conversation.id), toStorageId(question.id), toStorageId(assistant.id), 1, 'running', '2026-10-08T00:00:00.000Z');
+    insert.run(toStorageId(latestGenerationId), toStorageId(conversation.id), toStorageId(question.id), toStorageId(assistant.id), 1, 'failed', '2026-10-06T00:00:00.000Z');
+    insert.run(toStorageId(newId()), toStorageId(otherConversation.id), toStorageId(question.id), toStorageId(assistant.id), 1, 'running', '2026-10-09T00:00:00.000Z');
+    insert.run(toStorageId(newId()), toStorageId(conversation.id), toStorageId(question.id), null, 1, 'completed', '2026-10-10T00:00:00.000Z');
 
     expect(store.messages(conversation.id, 1)).toEqual([
       { ...question, generationId: null },
-      { ...assistant, generationId: 'latest-insertion' },
+      { ...assistant, generationId: latestGenerationId },
       { ...ungenerated, generationId: null },
     ]);
-    expect(store.message(conversation.id, assistant.id, 1)?.generationId).toBe('latest-insertion');
+    expect(store.message(conversation.id, assistant.id, 1)?.generationId).toBe(latestGenerationId);
     expect(store.message(otherConversation.id, assistant.id, 1)).toBeNull();
     expect(store.messages(conversation.id, 2)).toEqual([]);
     expect(store.message(conversation.id, assistant.id, 2)).toBeNull();
+  });
+
+  it('stores attachment references in base64url and restores ordered API IDs after reopening', () => {
+    const conversation = store.create(1);
+    const attachments = ['007pSo2b8iXeAjheKEVRdv', '0000000000000000000001'];
+    const question = store.addMessage(conversation.id, 1, 'user', 'Read these files', [], {
+      attachments: [attachments[0], '00000000-0000-0000-0000-000000000001'],
+    })!;
+    expect(question.attachments).toEqual(attachments);
+    const persisted = db.prepare('SELECT attachments FROM messages WHERE id = ?').get(toStorageId(question.id)) as { attachments: string };
+    expect(JSON.parse(persisted.attachments)).toEqual(['ABEiM0RVRneImaq7zN3u_w', 'AAAAAAAAAAAAAAAAAAAAAQ']);
+    db.close();
+    db = openDb(join(dir, 'chat.sqlite'));
+    store = new ConversationsRepository(db);
+
+    expect(store.message(conversation.id, question.id, 1)?.attachments).toEqual(attachments);
+    expect(store.messages(conversation.id, 1)).toEqual([{ ...question, attachments }]);
+    expect(store.messages(conversation.id, 2)).toEqual([]);
   });
 
   it('persists citation objects across reopening, preserving insertion order for equal timestamps', () => {
@@ -160,7 +181,7 @@ describe('ConversationsRepository', () => {
     expect(store.get(removed.id, 1)).toBeNull();
     expect(store.messages(removed.id, 1)).toEqual([]);
     // Query the migration boundary too: ownership filtering alone would hide orphan rows.
-    expect(db.prepare('SELECT id FROM messages WHERE conversation_id = ?').all(removed.id)).toEqual([]);
+    expect(db.prepare('SELECT id FROM messages WHERE conversation_id = ?').all(toStorageId(removed.id))).toEqual([]);
     expect(store.messages(kept.id, 1)).toEqual([keptMessage]);
     expect(store.list(1)).toEqual([kept]);
     expect(store.delete(removed.id, 1)).toBe(false);

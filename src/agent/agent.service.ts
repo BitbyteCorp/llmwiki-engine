@@ -8,6 +8,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import { CONFIG, LOGGER } from '../common/tokens.js';
+import { idSchema } from '../common/ids.js';
 import type { Config } from '../config.js';
 import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
 import type { Logger } from '../log.js';
@@ -29,7 +30,7 @@ function responseText(response: Response): string {
 const searchArgs = z.object({ query: z.string().min(1), limit: z.number().int().min(1).max(100).optional() });
 const readArgs = z.object({ path: z.string().min(1) });
 const writeKnowledgeArgs = z.object({ content: z.string().trim().min(1) });
-const writeStatusArgs = z.object({ jobId: z.string().trim().min(1) });
+const writeStatusArgs = z.object({ jobId: idSchema });
 const waitWriteArgs = writeStatusArgs.extend({ timeoutSeconds: z.number().min(0).max(120).optional().default(60) });
 
 interface MarkdownNode {

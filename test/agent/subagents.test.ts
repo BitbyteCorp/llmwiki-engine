@@ -14,6 +14,7 @@ import { AuditService } from '../../src/audit/audit.service.js';
 import { UsersService } from '../../src/auth/users.service.js';
 import { UsersRepository } from '../../src/auth/users.repository.js';
 import { CONFIG, LOGGER } from '../../src/common/tokens.js';
+import { apiIdToLegacyUuid, newId } from '../../src/common/ids.js';
 import { loadConfig } from '../../src/config.js';
 import { openDb, runMigrations } from '../../src/db/index.js';
 import type { WriteJob } from '../../src/jobs/write-job.types.js';
@@ -126,7 +127,7 @@ function waitFor(pool: SubagentPool, ids?: string[], mode = 'all', timeoutSecond
 }
 
 const job: WriteJob = {
-  id: 'parallel-write', userId: 1, source: 'mcp', input: '두 독립 노트를 기록한다.', status: 'running', summary: null,
+  id: newId(), userId: 1, source: 'mcp', input: '두 독립 노트를 기록한다.', status: 'running', summary: null,
   kind: 'agent', client: null, conflicts: [], commits: [], mergeSha: null, error: null,
   createdAt: '2026-10-07T00:00:00.000Z', startedAt: null, finishedAt: null,
 };
@@ -193,7 +194,7 @@ describe('write subagent pool', () => {
     await expect(invoke(parent, 'commit', { message: 'Too soon' })).rejects.toThrow(/running|wait/i);
     await invoke(parent, 'write_file', { path: 'wiki/second-sibling.md', content: 'Unclaimed parent note.\n' });
     release.resolve();
-    const result = await waitFor(pool, [first.id, second.id]);
+    const result = await waitFor(pool, [apiIdToLegacyUuid(first.id)!, second.id]);
     expect(result).toMatchObject({ timedOut: false, running: [] });
     expect(result.settled).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: first.id, status: 'completed', result: 'first finished', toolCalls: 1 }),

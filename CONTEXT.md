@@ -30,6 +30,7 @@ Node.js 기반으로 LLM Wiki를 관리하는 도구다.
 - [도니](docs/agent.md) — 지식 쓰기·충돌 해결·꿈꾸기·웹 질의응답을 맡는 에이전트와 모델 선택, 도구 및 임베딩의 경계를 설명한다. 대화의 명시적인 지식 기록 도구와 읽기 전용 초안 제안을 구분한다.
 - [지식 저장소](docs/knowledge-repository.md) — `main`이 진실 원천이고 GitHub는 하루 한 번 push되는 백업이며, LLM Wiki 표준을 따른 레이아웃을 쓴다.
 - [개발 환경](docs/development.md) — 기술 스택·모듈 소유·스크립트·환경변수와 로컬·Docker 실행, SQL 테이블 재구축의 인덱스·트리거 보존 및 외래 키 검증을 설명한다. 터미널 출력 정지와 개발 잠금 파일의 함정, 병렬 서버의 격리 방법도 기록한다.
+- [식별자](docs/identifiers.md) — 엔진 UUID의 API base62 표현과 SQLite base64url 저장 표현, SQL 변환 경계를 설명한다. 이전 입력·git 트레일러·업로드 파일과 JSON 문서의 호환 및 마이그레이션 규칙을 기록한다.
 - [백업과 복원](docs/backup.md) — 일관된 SQLite 스냅샷과 지식 git bundle의 체크섬 검증, 오프라인 복원과 main 내보내기를 설명한다.
 - [운영](docs/operations.md) — 준비 상태·요청 식별자·인증 지표와 관리자 운영 API를 설명한다. 운영 사이드바·설정·팔레트의 즉시 실행과 확인·중복 방지·결과 알림을 함께 기록한다.
 - [읽기 성능](docs/performance.md) — SQLite 조회 인덱스와 Git 캐시, 인증을 유지하는 HTTP 재검증·압축, 화면의 지연 로딩을 설명한다. 캐시 수명과 권한 경계, 성능 수치의 해석 한계를 기록한다.

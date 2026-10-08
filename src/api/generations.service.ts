@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { fromStorageId, newId, parseApiId, toStorageId } from '../common/ids.js';
 import { Inject, Injectable, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import type { Statement } from 'better-sqlite3';
 import type { Response } from 'express';
@@ -20,6 +20,16 @@ type Listener = (frame: Frame, terminal: boolean) => void;
 type StartInput = Pick<Generation, 'conversationId' | 'userId'> & {
   userMessageId: string; assistantMessageId: string; clientId?: string; model?: string; effort?: string;
 };
+
+function fromRow(row: Generation): Generation {
+  return {
+    ...row,
+    id: fromStorageId(row.id),
+    conversationId: fromStorageId(row.conversationId),
+    userMessageId: row.userMessageId === null ? null : fromStorageId(row.userMessageId),
+    assistantMessageId: row.assistantMessageId === null ? null : fromStorageId(row.assistantMessageId),
+  };
+}
 
 @Injectable()
 export class GenerationsService implements OnModuleInit, OnModuleDestroy {
@@ -44,24 +54,27 @@ export class GenerationsService implements OnModuleInit, OnModuleDestroy {
     const finish = db.prepare<[GenerationStatus, string, string]>('UPDATE generations SET status = ?, finished_at = ? WHERE id = ?');
     const failMessage = db.prepare<[GenerationStatus, string]>('UPDATE messages SET status = ? WHERE id = (SELECT assistant_message_id FROM generations WHERE id = ?)');
     this.persistFrame = db.transaction((id: string, frame: Frame, status: GenerationStatus | null) => {
-      if (insertFrame.run(frame.seq, frame.event, frame.data, id).changes === 0) return false;
+      const storedId = toStorageId(id)!;
+      if (insertFrame.run(frame.seq, frame.event, frame.data, storedId).changes === 0) return false;
       if (status !== null) {
-        finish.run(status, new Date().toISOString(), id);
-        if (status === 'cancelled' || status === 'failed') failMessage.run(status, id);
+        finish.run(status, new Date().toISOString(), storedId);
+        if (status === 'cancelled' || status === 'failed') failMessage.run(status, storedId);
       }
       return true;
     });
   }
 
   onModuleInit(): void {
-    const interrupted = this.db.prepare<[], Generation>(`SELECT ${columns} FROM generations g WHERE status = 'running'`).all();
+    const interrupted = this.db.prepare<[], Generation>(`SELECT ${columns} FROM generations g WHERE status = 'running'`).all().map(fromRow);
     for (const generation of interrupted) {
       this.db.transaction(() => {
-        const seq = this.db.prepare<[string], { seq: number }>('SELECT COALESCE(MAX(seq),0)+1 AS seq FROM generation_frames WHERE generation_id = ?').get(generation.id)!.seq;
+        const storedId = toStorageId(generation.id)!;
+        const seq = this.db.prepare<[string], { seq: number }>('SELECT COALESCE(MAX(seq),0)+1 AS seq FROM generation_frames WHERE generation_id = ?').get(storedId)!.seq;
         this.db.prepare('INSERT INTO generation_frames (generation_id,seq,event,data) VALUES (?,?,?,?)')
-          .run(generation.id, seq, 'error', JSON.stringify({ code: 'generation_interrupted', message: 'Generation interrupted by server restart' }));
-        this.db.prepare("UPDATE generations SET status = 'interrupted', finished_at = ? WHERE id = ?").run(new Date().toISOString(), generation.id);
-        this.db.prepare("UPDATE messages SET status = 'interrupted' WHERE id = ?").run(generation.assistantMessageId);
+          .run(storedId, seq, 'error', JSON.stringify({ code: 'generation_interrupted', message: 'Generation interrupted by server restart' }));
+        this.db.prepare("UPDATE generations SET status = 'interrupted', finished_at = ? WHERE id = ?").run(new Date().toISOString(), storedId);
+        this.db.prepare("UPDATE messages SET status = 'interrupted' WHERE id = ?")
+          .run(generation.assistantMessageId === null ? null : toStorageId(generation.assistantMessageId));
       })();
     }
   }
@@ -75,34 +88,44 @@ export class GenerationsService implements OnModuleInit, OnModuleDestroy {
   }
 
   findClient(conversationId: string, clientId: string): Generation | null {
-    return this.clientGeneration.get(conversationId, clientId) ?? null;
+    const storedId = toStorageId(conversationId);
+    if (storedId === null) return null;
+    const row = this.clientGeneration.get(storedId, clientId);
+    return row ? fromRow(row) : null;
   }
 
   get(id: string, userId: number): Generation {
-    const generation = this.memberGeneration.get(id, userId);
+    const storedId = toStorageId(id);
+    if (storedId === null) notFound('Generation not found');
+    const generation = this.memberGeneration.get(storedId, userId);
     if (!generation) notFound('Generation not found');
-    return generation;
+    return fromRow(generation);
   }
 
   active(conversationId: string): boolean {
-    return this.activeGeneration.get(conversationId) !== undefined;
+    const storedId = toStorageId(conversationId);
+    return storedId !== null && this.activeGeneration.get(storedId) !== undefined;
   }
 
   start(input: StartInput, run: (signal: AbortSignal, emit: (event: GenerationEvent, data: unknown) => void) => Promise<void>): Generation {
+    const conversationId = parseApiId(input.conversationId);
+    const userMessageId = parseApiId(input.userMessageId);
+    const assistantMessageId = parseApiId(input.assistantMessageId);
+    if (!conversationId || !userMessageId || !assistantMessageId) notFound('Generation not found');
     if (input.clientId !== undefined) {
-      const existing = this.findClient(input.conversationId, input.clientId);
+      const existing = this.findClient(conversationId, input.clientId);
       if (existing) return existing;
     }
-    if (this.active(input.conversationId)) throw new ApiError(409, 'generation_active', 'A generation is already running in this conversation');
+    if (this.active(conversationId)) throw new ApiError(409, 'generation_active', 'A generation is already running in this conversation');
     const generation: Generation = {
-      ...input, id: randomUUID(), clientId: input.clientId ?? null,
+      ...input, id: newId(), conversationId, userMessageId, assistantMessageId, clientId: input.clientId ?? null,
       model: input.model ?? null, effort: input.effort ?? null,
       status: 'running', createdAt: new Date().toISOString(), finishedAt: null,
     };
     const job: Job = { controller: new AbortController(), seq: 0, terminal: false };
     this.db.transaction(() => {
       this.db.prepare(`INSERT INTO generations (id,conversation_id,user_message_id,assistant_message_id,user_id,client_id,status,model,effort,created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?)`).run(generation.id, generation.conversationId, generation.userMessageId, generation.assistantMessageId,
+        VALUES (?,?,?,?,?,?,?,?,?,?)`).run(toStorageId(generation.id), toStorageId(conversationId), toStorageId(userMessageId), toStorageId(assistantMessageId),
         generation.userId, generation.clientId, generation.status, generation.model, generation.effort, generation.createdAt);
       this.emit(generation.id, job, 'generation', { generationId: generation.id, userMessageId: generation.userMessageId, sourceTracking: true });
       this.emit(generation.id, job, 'status', { phase: 'queued' });
@@ -129,17 +152,20 @@ export class GenerationsService implements OnModuleInit, OnModuleDestroy {
 
   cancel(id: string, userId: number): void {
     const generation = this.get(id, userId);
-    const membership = this.membership.get(generation.conversationId, userId)!;
+    const membership = this.membership.get(toStorageId(generation.conversationId)!, userId)!;
     if (membership.role === 'viewer') throw new ApiError(403, 'forbidden', 'Conversation editor role required');
     if (generation.status !== 'running') return;
-    const job = this.jobs.get(id);
+    const job = this.jobs.get(generation.id);
     if (!job) return;
     job.controller.abort();
-    this.emit(id, job, 'error', { code: 'generation_cancelled', message: 'Generation cancelled' });
+    this.emit(generation.id, job, 'error', { code: 'generation_cancelled', message: 'Generation cancelled' });
   }
 
   stream(id: string, userId: number, res: Response, lastEventId?: string): void {
     const generation = this.get(id, userId);
+    id = generation.id;
+    const storedId = toStorageId(id)!;
+    const storedConversationId = toStorageId(generation.conversationId)!;
     const actor = chatUser(this.db, userId);
     // Other members must wait until the complete source set is known; early deltas can precede hidden citations.
     let deferred = generation.status === 'running' && generation.userId !== userId && actor.role !== 'admin';
@@ -191,12 +217,12 @@ export class GenerationsService implements OnModuleInit, OnModuleDestroy {
     };
     const send: Listener = (frame, terminal) => {
       if (res.destroyed || res.writableEnded) { close(); return; }
-      if (live && !this.membership.get(generation.conversationId, userId)) { close(); res.end(); return; }
+      if (live && !this.membership.get(storedConversationId, userId)) { close(); res.end(); return; }
       if (deferred) {
         if (!terminal) return;
         deferred = false;
         sourcePaths = generationSources(this.db, id);
-        for (const stored of this.frames.iterate(id, cursor)) project(stored);
+        for (const stored of this.frames.iterate(storedId, cursor)) project(stored);
       } else {
         if (live && ['sources', 'tool', 'citation', 'done'].includes(frame.event)) sourcePaths = generationSources(this.db, id);
         project(frame);
@@ -204,7 +230,7 @@ export class GenerationsService implements OnModuleInit, OnModuleDestroy {
       if (terminal) { close(); res.end(); }
     };
     res.on('close', close);
-    if (!deferred) for (const frame of this.frames.iterate(id, cursor)) send(frame, false);
+    if (!deferred) for (const frame of this.frames.iterate(storedId, cursor)) send(frame, false);
     if (generation.status !== 'running') { close(); res.end(); return; }
     if (res.destroyed || res.writableEnded) { close(); return; }
     live = true;

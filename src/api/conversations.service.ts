@@ -2,6 +2,7 @@ import { HttpException, Inject, Injectable, OnModuleDestroy, Optional } from '@n
 import { createHash } from 'node:crypto';
 import type { ResponseInputContent } from 'openai/resources/responses/responses';
 import type { Logger } from 'pino';
+import { parseApiId } from '../common/ids.js';
 import { DB, LOGGER } from '../common/tokens.js';
 import { EventsService } from '../events/events.service.js';
 import { AgentService } from '../agent/agent.service.js';
@@ -35,10 +36,17 @@ export class ConversationsService implements OnModuleDestroy {
     @Optional() private readonly audit?: AuditService,
   ) { this.presenceTimer.unref(); }
   onModuleDestroy(): void { clearInterval(this.presenceTimer); }
-  private access(id:string,userId:number,write=false,owner=false): void {
+  private identifier(value:string,message:string):string {
+    const id=parseApiId(value);
+    if(!id) notFound(message);
+    return id;
+  }
+  private access(id:string,userId:number,write=false,owner=false): string {
+    id=this.identifier(id,'Conversation not found');
     const role=this.repository.role(id,userId);
     if (!role) notFound('Conversation not found');
     if ((write && role==='viewer') || (owner && role!=='owner')) throw new ApiError(403,'forbidden','Conversation permission denied');
+    return id;
   }
   private changed(id:string,messageId?:string): void {
     this.events.publish({type:'conversation.updated',conversationId:id,...(messageId ? {messageId} : {})},{userIds:this.repository.members(id).map(m=>m.userId)});
@@ -59,7 +67,7 @@ export class ConversationsService implements OnModuleDestroy {
   }
   create(userId:number,title?:string) { return this.repository.create(userId,title); }
   get(id:string,userId:number) {
-    this.access(id,userId);
+    id=this.access(id,userId);
     const actor=chatUser(this.db,userId);
     const turns=readableTurns(this.db,this.acl,actor,this.repository.messages(id,userId));
     const conversation=this.repository.get(id,userId)!;
@@ -67,21 +75,21 @@ export class ConversationsService implements OnModuleDestroy {
       messages:turns.map(turn=>turn.readable ? {...turn.message,citations:turn.message.citations.filter(c=>this.acl.canRead(actor,c.path))} : redactMessage(this.acl,actor,turn.message))};
   }
   delete(id:string,userId:number):void {
-    this.access(id,userId,false,true);
+    id=this.access(id,userId,false,true);
     this.idle(id);
     this.changed(id);
     this.repository.delete(id,userId);
     this.audit?.record({actorId:userId,action:'conversation.delete',target:id,outcome:'succeeded'});
   }
   rename(id:string,userId:number,title:string) {
-    this.access(id,userId,true);this.repository.rename(id,title);this.changed(id);
+    id=this.access(id,userId,true);this.repository.rename(id,title);this.changed(id);
     return {conversation:this.repository.get(id,userId)!};
   }
   private idle(id:string):void {
     if (this.generations.active(id)) throw new ApiError(409,'generation_active','Wait for the current answer or cancel it first');
   }
   async submit(id:string,userId:number,input:SubmitMessage) {
-    this.access(id,userId,true);
+    id=this.access(id,userId,true);
     if(input.context) this.acl.assertRead(chatUser(this.db,userId),input.context.notePath);
     if(input.clientId) {
       const prior=this.generations.findClient(id,input.clientId);
@@ -227,7 +235,8 @@ export class ConversationsService implements OnModuleDestroy {
     });
   }
   retry(id:string,mid:string,userId:number) {
-    this.access(id,userId,true);this.idle(id);
+    id=this.access(id,userId,true);this.idle(id);
+    mid=this.identifier(mid,'Message not found');
     const message=this.repository.message(id,mid,userId);if(!message)notFound('Message not found');
     const messages=this.repository.messages(id,userId), index=messages.findIndex(m=>m.id===mid);
     const turn=readableTurns(this.db,this.acl,chatUser(this.db,userId),messages).find(turn=>turn.message.id===mid);
@@ -242,7 +251,8 @@ export class ConversationsService implements OnModuleDestroy {
     return this.begin(id,userId,user,model,effort);
   }
   regenerate(id:string,mid:string,userId:number) {
-    this.access(id,userId,true);this.idle(id);
+    id=this.access(id,userId,true);this.idle(id);
+    mid=this.identifier(mid,'Assistant message not found');
     const messages=this.repository.messages(id,userId),index=messages.findIndex(m=>m.id===mid);
     if(index<0||messages[index].role!=='assistant')notFound('Assistant message not found');
     const user=messages.slice(0,index).reverse().find(m=>m.role==='user');if(!user)notFound('User message not found');
@@ -254,7 +264,8 @@ export class ConversationsService implements OnModuleDestroy {
     return this.begin(id,userId,user,model,effort);
   }
   edit(id:string,mid:string,userId:number,content:string) {
-    this.access(id,userId,true);this.idle(id);
+    id=this.access(id,userId,true);this.idle(id);
+    mid=this.identifier(mid,'User message not found');
     const user=this.repository.message(id,mid,userId);if(!user||user.role!=='user')notFound('User message not found');
     const turn=readableTurns(this.db,this.acl,chatUser(this.db,userId),this.repository.messages(id,userId)).find(turn=>turn.message.id===mid);
     if(!turn?.readable) notFound('User message not found');
@@ -264,18 +275,18 @@ export class ConversationsService implements OnModuleDestroy {
     this.repository.truncate(id,mid);this.repository.edit(mid,content);this.changed(id,mid);
     return this.begin(id,userId,{...user,content},model,effort);
   }
-  members(id:string,userId:number) {this.access(id,userId);return {members:this.repository.members(id)};}
+  members(id:string,userId:number) {id=this.access(id,userId);return {members:this.repository.members(id)};}
   addMember(id:string,userId:number,email:string,role:'editor'|'viewer') {
-    this.access(id,userId,false,true);if(!this.repository.addMember(id,email,role))notFound('User not found');this.changed(id);return this.members(id,userId);
+    id=this.access(id,userId,false,true);if(!this.repository.addMember(id,email,role))notFound('User not found');this.changed(id);return this.members(id,userId);
   }
   removeMember(id:string,userId:number,target:number):void {
-    this.access(id,userId,false,true);
+    id=this.access(id,userId,false,true);
     if(this.repository.role(id,target)==='owner')throw new ApiError(409,'owner_required','The owner cannot be removed');
     this.changed(id);this.repository.removeMember(id,target);
     this.audit?.record({actorId:userId,action:'conversation.member.remove',target:`${id}/${target}`,outcome:'succeeded'});
   }
   presence(id:string,userId:number,name:string,typing:boolean) {
-    this.access(id,userId);
+    id=this.access(id,userId);
     let users=this.presenceUsers.get(id);if(!users){users=new Map();this.presenceUsers.set(id,users);}
     users.set(userId,{id:userId,name,typing,expires:Date.now()+30000});
     this.publishPresence(id,users);
@@ -289,7 +300,8 @@ export class ConversationsService implements OnModuleDestroy {
     for(const [id,users] of this.presenceUsers){let changed=false;for(const [uid,user]of users)if(user.expires<=Date.now()){users.delete(uid);changed=true;}if(changed)this.publishPresence(id,users);if(!users.size)this.presenceUsers.delete(id);}
   }
   async proposal(id:string,mid:string,userId:number,mode:'new'|'edit',path?:string) {
-    this.access(id,userId,true);
+    id=this.access(id,userId,true);
+    mid=this.identifier(mid,'Completed answer not found');
     const answer=this.repository.message(id,mid,userId);
     if(!answer||answer.role!=='assistant'||answer.status!=='completed')notFound('Completed answer not found');
     const actor=chatUser(this.db,userId);

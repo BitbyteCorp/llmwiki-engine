@@ -117,7 +117,7 @@ describe('ACL-aware RAG HTTP with a real repository and index', () => {
     expect(first.body.degraded).toBeNull();
     expect(first.body.hits.map((hit: { path: string }) => hit.path)).toEqual([visible[0]]);
     expect(first.body.hits[0].related).toEqual([]);
-    expect(first.body.nextCursor).toEqual(expect.any(String));
+    expect(first.body.nextCursor).toMatch(/^[0-9A-Za-z]{22}\.1$/);
     const nextUrl = `/api/search?q=needle&tags=common&limit=1&cursor=${first.body.nextCursor}`;
     await get(nextUrl, 'bob').expect(400);
     await get(nextUrl, 'admin').expect(400);

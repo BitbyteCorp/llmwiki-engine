@@ -14,6 +14,7 @@ import { AclModule } from '../acl/acl.module.js';
 import { UsersService } from '../auth/users.service.js';
 import type { User } from '../auth/users.types.js';
 import { CommonModule } from '../common/common.module.js';
+import { apiIdToLegacyUuid, parseApiId } from '../common/ids.js';
 import { CONFIG, DB, LOGGER } from '../common/tokens.js';
 import { loadConfig } from '../config.js';
 import type { Db } from '../db/index.js';
@@ -30,6 +31,8 @@ const clients: Client[] = [];
 const dirs: string[] = [];
 const author = { name: 'Wiki Editor', email: 'editor@example.test' };
 const oldContent = '---\ntitle: Engine\ntags: [platform]\n---\n# Engine\n\n## Durable Knowledge\nEngine knowledge is shared. [[wiki/neighbor]] [[missing]]\n';
+const parityJobId = parseApiId('11223344-5566-4788-99aa-bbccddeeff00')!;
+const missingJobId = parseApiId('11223344-5566-4788-99aa-bbccddeeff01')!;
 
 async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), 'mcp-parity-'));
@@ -62,7 +65,7 @@ async function fixture() {
   await rename.dispose();
   const edit = await repo.createWorktree('edit-parity');
   await edit.write('wiki/engine.md', oldContent.replace('is shared.', 'is shared and versioned.'));
-  edit.setCommitMetadata({ jobId: 'parity-job', source: 'mcp', requester: author.email });
+  edit.setCommitMetadata({ jobId: parityJobId, source: 'mcp', requester: author.email });
   const latest = (await edit.commit('Explain versioning', author))!;
   await edit.fastForwardMain();
   await edit.dispose();
@@ -141,7 +144,7 @@ describe('MCP knowledge parity', () => {
     expect(compare.structuredContent?.patch).toContain('+Engine knowledge is shared and versioned.');
     const blame = await call(client, 'blame', { path: 'wiki/engine.md', ref: latest });
     expect(blame.structuredContent).toMatchObject({ ref: latest, ranges: expect.arrayContaining([
-      expect.objectContaining({ sha: latest, authorName: author.name, jobId: 'parity-job', source: 'mcp' }),
+      expect.objectContaining({ sha: latest, authorName: author.name, jobId: parityJobId, source: 'mcp' }),
     ]) });
     expect((await call(client, 'read_note', { path: 'wiki/engine.md', ref: initial })).isError).toBe(true);
     expect((await call(client, 'get_commit', { sha: 'not-a-ref' })).isError).toBe(true);
@@ -225,13 +228,21 @@ describe('MCP knowledge parity', () => {
     expect((await call(viewerClient, 'ingest_source', { kind: 'text', text: 'Viewer source' })).isError).toBe(true);
     const written = await call(editorClient, 'write', { content: 'Record durable engine behavior.' });
     const jobId = z.string().parse(written.structuredContent?.jobId);
-    expect((await call(editorClient, 'get_write_status', { jobId })).structuredContent).toMatchObject({
-      job: { userId: editor.id, source: 'mcp', client: 'Trusted OAuth Client', status: 'queued' },
+    const ownStatus = await call(editorClient, 'get_write_status', { jobId });
+    expect(ownStatus.structuredContent).toMatchObject({
+      job: { id: jobId, userId: editor.id, source: 'mcp', client: 'Trusted OAuth Client', status: 'queued' },
     });
+    const legacyJobId = apiIdToLegacyUuid(jobId)!;
+    const legacyStatus = await call(editorClient, 'get_write_status', { jobId: legacyJobId });
+    expect(legacyStatus.isError).not.toBe(true);
+    expect(legacyStatus.structuredContent).toEqual(ownStatus.structuredContent);
     const hidden = await call(viewerClient, 'get_write_status', { jobId });
-    const missing = await call(viewerClient, 'get_write_status', { jobId: 'absent' });
+    const missing = await call(viewerClient, 'get_write_status', { jobId: missingJobId });
     expect(hidden.isError).toBe(true);
     expect(hidden.content).toEqual(missing.content);
+    const hiddenLegacy = await call(viewerClient, 'get_write_status', { jobId: legacyJobId });
+    expect(hiddenLegacy.isError).toBe(true);
+    expect(hiddenLegacy.content).toEqual(missing.content);
     expect((await call(adminClient, 'get_write_status', { jobId })).structuredContent).toMatchObject({ job: { id: jobId } });
     const imported = await call(editorClient, 'ingest_source', { kind: 'text', text: 'Imported source knowledge.', filename: 'source.txt' });
     expect(imported.isError).not.toBe(true);

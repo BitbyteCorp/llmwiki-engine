@@ -22,6 +22,7 @@ import { SessionGuard } from '../src/auth/guards/session.guard.js';
 import { UsersRepository } from '../src/auth/users.repository.js';
 import { UsersService } from '../src/auth/users.service.js';
 import { HttpExceptionFilter } from '../src/common/filters/http-exception.filter.js';
+import { toStorageId } from '../src/common/ids.js';
 import { CONFIG, DB, LOGGER } from '../src/common/tokens.js';
 import { loadConfig } from '../src/config.js';
 import { openDb, runMigrations } from '../src/db/index.js';
@@ -244,8 +245,8 @@ describe('folder ACL at chat HTTP seams', () => {
     const output = await f.post(`/conversations/${f.conversation.id}/messages`, { content: 'Old question' }).expect(200);
     const generation = frames(output.text).find(frame => frame.event === 'generation')!.data.generationId;
     // Seed the persisted format from before source tracking was introduced.
-    f.db.prepare("UPDATE generation_frames SET data=json_remove(data,'$.sourceTracking') WHERE generation_id=? AND event='generation'").run(generation);
-    f.db.prepare("DELETE FROM generation_frames WHERE generation_id=? AND event='sources'").run(generation);
+    f.db.prepare("UPDATE generation_frames SET data=json_remove(data,'$.sourceTracking') WHERE generation_id=? AND event='generation'").run(toStorageId(generation as string));
+    f.db.prepare("DELETE FROM generation_frames WHERE generation_id=? AND event='sources'").run(toStorageId(generation as string));
     expect(JSON.stringify((await f.api(`/conversations/${f.conversation.id}`, 2)).body)).toContain('Legacy SAPPHIRE');
     f.acl.create({ prefix: 'wiki/private/', subjectType: 'everyone', subject: '', access: 'none' }, f.admin);
     const detail = await f.api(`/conversations/${f.conversation.id}`, 2).expect(200);

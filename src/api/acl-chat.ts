@@ -1,3 +1,4 @@
+import { toStorageId } from '../common/ids.js';
 import type { AclService } from '../acl/acl.service.js';
 import type { User } from '../auth/users.types.js';
 import type { Db } from '../db/index.js';
@@ -13,14 +14,15 @@ export function chatUser(db: Db, id: number): Pick<User, 'id' | 'role'> {
 /** Legacy answers cannot prove which uncited sources they used. Rules activate conservative redaction. */
 export function generationTracked(db: Db, id: string): boolean {
   return db.prepare(`SELECT 1 FROM generation_frames WHERE generation_id=? AND event='generation'
-    AND json_extract(data,'$.sourceTracking')=1 LIMIT 1`).get(id) !== undefined;
+    AND json_extract(data,'$.sourceTracking')=1 LIMIT 1`).get(toStorageId(id)) !== undefined;
 }
 
 export function generationSources(db: Db, id: string): string[] {
   const paths = new Set<string>();
-  const generation = db.prepare(`SELECT m.context FROM generations g JOIN messages m ON m.id=g.user_message_id WHERE g.id=?`).get(id) as { context: string | null } | undefined;
+  const stored = toStorageId(id);
+  const generation = db.prepare(`SELECT m.context FROM generations g JOIN messages m ON m.id=g.user_message_id WHERE g.id=?`).get(stored) as { context: string | null } | undefined;
   if (generation?.context) paths.add(JSON.parse(generation.context).notePath);
-  const frames = db.prepare("SELECT event,data FROM generation_frames WHERE generation_id=? AND event IN ('sources','citation','tool','done')").iterate(id) as Iterable<{event: string; data: string}>;
+  const frames = db.prepare("SELECT event,data FROM generation_frames WHERE generation_id=? AND event IN ('sources','citation','tool','done')").iterate(stored) as Iterable<{event: string; data: string}>;
   for (const frame of frames) {
     const data = JSON.parse(frame.data);
     if (frame.event === 'sources') for (const path of data.paths) paths.add(path);
@@ -50,7 +52,7 @@ export function readableTurns(db: Db, acl: AclService, user: Pick<User, 'id' | '
     const sources = [...new Set(turn.flatMap(message => messageSources(db, message)))];
     const pending = user.role !== 'admin' && turn.some(message => {
       if (message.status !== 'running' || !message.generationId) return false;
-      const generation = db.prepare('SELECT user_id AS userId FROM generations WHERE id=?').get(message.generationId) as {userId: number} | undefined;
+      const generation = db.prepare('SELECT user_id AS userId FROM generations WHERE id=?').get(toStorageId(message.generationId)) as {userId: number} | undefined;
       return generation?.userId !== user.id;
     });
     const legacy = requireProvenance && turn.some(message => message.role === 'assistant'

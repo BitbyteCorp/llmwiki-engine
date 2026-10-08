@@ -6,6 +6,7 @@ import pino, { type Logger } from 'pino';
 import { afterEach, describe, expect, it } from 'vitest';
 import { loadConfig, type Config } from '../../src/config.js';
 import { CONFIG, LOGGER } from '../../src/common/tokens.js';
+import { newId } from '../../src/common/ids.js';
 import { KnowledgeRepo, type Worktree } from '../../src/knowledge/repo.js';
 import { SearchService } from '../../src/rag/search.service.js';
 import type { WriteJob } from '../../src/jobs/write-job.types.js';
@@ -69,7 +70,7 @@ const lookup: AgentTool = {
 };
 
 const job: WriteJob = {
-  id: 'test-write', userId: 1, source: 'mcp', input: '캐시의 정의를 정리한다.', status: 'running', summary: null,
+  id: newId(), userId: 1, source: 'mcp', input: '캐시의 정의를 정리한다.', status: 'running', summary: null,
   kind: 'agent', client: null, conflicts: [],
   commits: [], mergeSha: null, error: null, createdAt: '2026-10-07T00:00:00.000Z', startedAt: null, finishedAt: null,
 };

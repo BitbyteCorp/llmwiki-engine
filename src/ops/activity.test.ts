@@ -71,15 +71,15 @@ describe('operations activity and REST', () => {
       listFiles: async () => ['journal/2026-01-01.md', 'journal/2026-01-02.md', 'journal/not-a-date.md', 'journal/sub/2026-01-03.md'],
     } as unknown as KnowledgeRepo;
     activity = new ActivityService(db, repo, dreams, new AclService(db, users, new AuditService(db)), users);
-    manual = vi.fn(async () => dream('manual-run'));
+    manual = vi.fn(async () => dream('0000000000000000000005'));
     index = { status: vi.fn(async () => ({ indexedSha: 'main', syncing: false })), reindex: vi.fn(async () => {}) };
     jobs = {
       retry: vi.fn((id: string) => {
         const original = jobRows.get(id);
         if (!original) throw new ApiError(404, 'not_found', 'Write job not found');
         if (original.status !== 'failed') throw new ApiError(409, 'job_not_retryable', 'Only failed jobs can be retried');
-        jobRows.enqueue('retried', original.userId, original.input, stamp, original.source);
-        return jobRows.get('retried')!;
+        jobRows.enqueue('0000000000000000000006', original.userId, original.input, stamp, original.source);
+        return jobRows.get('0000000000000000000006')!;
       }),
       cancel: vi.fn((id: string) => {
         if (!jobRows.cancelQueued(id, stamp)) throw new ApiError(409, 'job_not_cancelable', 'Only queued jobs can be canceled');
@@ -118,18 +118,18 @@ describe('operations activity and REST', () => {
   }
 
   it('pages tied mixed sources without duplicates after a newer insertion', async () => {
-    jobRows.enqueue('job-z', 1, 'owner prompt', stamp, 'web');
-    jobRows.enqueue('job-a', 2, 'private other prompt', stamp, 'mcp');
-    saveDream(dream('dream-a'));
+    jobRows.enqueue('0000000000000000000003', 1, 'owner prompt', stamp, 'web');
+    jobRows.enqueue('0000000000000000000001', 2, 'private other prompt', stamp, 'mcp');
+    saveDream(dream('0000000000000000000004'));
     commits.push(commit('c'.repeat(40)), commit('b'.repeat(40)));
     const first = await activity.list({ limit: 2 }, viewer);
-    expect(first.items.map((item) => [item.type, item.id])).toEqual([['job', 'job-z'], ['job', 'job-a']]);
-    jobRows.enqueue('job-new', 2, 'new private prompt', '2026-01-03T00:00:00.000Z', 'web');
+    expect(first.items.map((item) => [item.type, item.id])).toEqual([['job', '0000000000000000000003'], ['job', '0000000000000000000001']]);
+    jobRows.enqueue('0000000000000000000002', 2, 'new private prompt', '2026-01-03T00:00:00.000Z', 'web');
     commits.unshift(commit('d'.repeat(40), '2026-01-03T00:00:00.000Z'));
     const second = await activity.list({ limit: 2, before: first.nextCursor! }, viewer);
-    expect(second.items.map((item) => [item.type, item.id])).toEqual([['dream', 'dream-a'], ['commit', 'c'.repeat(40)]]);
+    expect(second.items.map((item) => [item.type, item.id])).toEqual([['dream', '0000000000000000000004'], ['commit', 'c'.repeat(40)]]);
     const third = await activity.list({ limit: 2, before: second.nextCursor! }, viewer);
-    expect(third.items.map((item) => [item.type, item.id])).toEqual([['commit', 'b'.repeat(40)], ['backup', 'dream-a']]);
+    expect(third.items.map((item) => [item.type, item.id])).toEqual([['commit', 'b'.repeat(40)], ['backup', '0000000000000000000004']]);
     expect(third.nextCursor).toBeNull();
   });
 
@@ -145,30 +145,30 @@ describe('operations activity and REST', () => {
     expect(ids).toEqual(Array.from({ length: 301 }, (_, i) => (300 - i).toString(16).padStart(40, '0')));
   });
 
-  it('matches SQLite ID tie ordering across cursor pages', async () => {
-    for (const id of ['job-A', 'job-a', 'job_z']) jobRows.enqueue(id, 1, 'prompt', stamp, 'web');
+  it('keeps API ID tie ordering across pages when SQLite storage ordering differs', async () => {
+    for (const id of ['000000000000000000003M', '0000000000000000000001', '000000000000000000000C']) jobRows.enqueue(id, 1, 'prompt', stamp, 'web');
     const first = await activity.list({ limit: 1, type: 'job' }, viewer);
     const second = await activity.list({ limit: 1, type: 'job', before: first.nextCursor! }, viewer);
     const third = await activity.list({ limit: 1, type: 'job', before: second.nextCursor! }, viewer);
-    expect([first.items[0]!.id, second.items[0]!.id, third.items[0]!.id]).toEqual(['job_z', 'job-a', 'job-A']);
+    expect([first.items[0]!.id, second.items[0]!.id, third.items[0]!.id]).toEqual(['000000000000000000003M', '000000000000000000000C', '0000000000000000000001']);
     expect(third.nextCursor).toBeNull();
   });
 
   it('filters path, source and type together and protects other users raw inputs and errors', async () => {
-    jobRows.enqueue('own', 1, 'visible owner prompt', stamp, 'web');
-    jobRows.enqueue('foreign', 2, 'secret other prompt', stamp, 'web');
-    jobRows.markFailed('foreign', 'error containing secret prompt', stamp);
-    jobRows.enqueue('unrelated', 2, 'other file prompt', stamp, 'mcp');
-    commits.push({ ...commit('a'.repeat(40), stamp, 'web', 'foreign'), files: ['wiki/route.md'] });
+    jobRows.enqueue('0000000000000000000007', 1, 'visible owner prompt', stamp, 'web');
+    jobRows.enqueue('0000000000000000000008', 2, 'secret other prompt', stamp, 'web');
+    jobRows.markFailed('0000000000000000000008', 'error containing secret prompt', stamp);
+    jobRows.enqueue('0000000000000000000009', 2, 'other file prompt', stamp, 'mcp');
+    commits.push({ ...commit('a'.repeat(40), stamp, 'web', '0000000000000000000008'), files: ['wiki/route.md'] });
     const shared = await activity.list({ limit: 10, type: 'job' }, viewer);
-    expect(shared.items.find((item) => item.id === 'own')!.job!.input).toBe('visible owner prompt');
-    expect(shared.items.find((item) => item.id === 'foreign')!.job).not.toHaveProperty('input');
-    expect(shared.items.find((item) => item.id === 'foreign')!.job).not.toHaveProperty('error');
+    expect(shared.items.find((item) => item.id === '0000000000000000000007')!.job!.input).toBe('visible owner prompt');
+    expect(shared.items.find((item) => item.id === '0000000000000000000008')!.job).not.toHaveProperty('input');
+    expect(shared.items.find((item) => item.id === '0000000000000000000008')!.job).not.toHaveProperty('error');
     const filtered = await activity.list({ limit: 10, type: 'job', path: 'wiki/route.md', source: 'web' }, viewer);
-    expect(filtered.items.map((item) => item.id)).toEqual(['foreign']);
+    expect(filtered.items.map((item) => item.id)).toEqual(['0000000000000000000008']);
     expect(JSON.stringify(filtered)).not.toContain('secret');
     const privileged = await activity.list({ limit: 10, type: 'job' }, admin);
-    expect(privileged.items.find((item) => item.id === 'foreign')!.job!.input).toBe('secret other prompt');
+    expect(privileged.items.find((item) => item.id === '0000000000000000000008')!.job!.input).toBe('secret other prompt');
     await expect(activity.list({ limit: 10, before: 'bad-cursor' }, viewer)).rejects.toMatchObject({ status: 400, code: 'invalid_cursor' });
   });
 
@@ -183,83 +183,83 @@ describe('operations activity and REST', () => {
   });
 
   it('serves viewer dream list/detail, backup outcomes, and newest dated journals', async () => {
-    saveDream(dream('old', '2026-01-01T00:00:00.000Z'));
-    saveDream(dream('new'));
+    saveDream(dream('000000000000000000000A', '2026-01-01T00:00:00.000Z'));
+    saveDream(dream('000000000000000000000B'));
     const http = await server();
     const first = await request(http).get('/api/dreams?limit=1').expect(200);
-    expect(first.body.runs.map((run: DreamRun) => run.id)).toEqual(['new']);
-    expect(first.body.nextCursor).toBe('new');
-    const second = await request(http).get('/api/dreams?limit=1&before=new').expect(200);
-    expect(second.body).toMatchObject({ runs: [{ id: 'old' }], nextCursor: null });
-    const detail = await request(http).get('/api/dreams/new').expect(200);
-    expect(detail.body).toEqual(dream('new'));
-    await request(http).get('/api/dreams/missing').expect(404);
+    expect(first.body.runs.map((run: DreamRun) => run.id)).toEqual(['000000000000000000000B']);
+    expect(first.body.nextCursor).toBe('000000000000000000000B');
+    const second = await request(http).get('/api/dreams?limit=1&before=000000000000000000000B').expect(200);
+    expect(second.body).toMatchObject({ runs: [{ id: '000000000000000000000A' }], nextCursor: null });
+    const detail = await request(http).get('/api/dreams/000000000000000000000B').expect(200);
+    expect(detail.body).toEqual(dream('000000000000000000000B'));
+    await request(http).get('/api/dreams/000000000000000000000Z').expect(404);
     await request(http).get('/api/dreams?limit=0').expect(400);
     const backup = await request(http).get('/api/backup/status').expect(200);
-    expect(backup.body).toMatchObject({ lastAttempt: { id: 'new' }, lastSuccess: { id: 'new' } });
+    expect(backup.body).toMatchObject({ lastAttempt: { id: '000000000000000000000B' }, lastSuccess: { id: '000000000000000000000B' } });
     const journal = await request(http).get('/api/journal').expect(200);
     expect(journal.body).toEqual([
-      { date: '2026-01-02', path: 'journal/2026-01-02.md', dreamRunId: 'new' },
+      { date: '2026-01-02', path: 'journal/2026-01-02.md', dreamRunId: '000000000000000000000B' },
       { date: '2026-01-01', path: 'journal/2026-01-01.md', dreamRunId: null },
     ]);
   });
 
   it('does not let an unmerged or unchanged later dream steal a published journal association', async () => {
-    saveDream(dream('published'));
-    saveDream({ ...dream('failed-later', '2026-01-03T00:00:00.000Z'), status: 'failed', mergeSha: null, error: 'Journal validation failed' });
-    saveDream({ ...dream('unchanged-later', '2026-01-04T00:00:00.000Z'), changedPaths: ['wiki/route.md'] });
+    saveDream(dream('000000000000000000000C'));
+    saveDream({ ...dream('000000000000000000000D', '2026-01-03T00:00:00.000Z'), status: 'failed', mergeSha: null, error: 'Journal validation failed' });
+    saveDream({ ...dream('000000000000000000000E', '2026-01-04T00:00:00.000Z'), changedPaths: ['wiki/route.md'] });
     expect(await activity.journal(viewer)).toEqual([
-      { date: '2026-01-02', path: 'journal/2026-01-02.md', dreamRunId: 'published' },
+      { date: '2026-01-02', path: 'journal/2026-01-02.md', dreamRunId: '000000000000000000000C' },
       { date: '2026-01-01', path: 'journal/2026-01-01.md', dreamRunId: null },
     ]);
   });
 
   it('reports admin queue states with sanitized failures and rejects viewer operations', async () => {
-    jobRows.enqueue('queued', 1, 'queued private prompt', stamp, 'web');
-    jobRows.enqueue('running', 1, 'running private prompt', stamp, 'web');
-    jobRows.markRunning('running', stamp);
-    jobRows.enqueue('merging', 2, 'merging private prompt', stamp, 'chat');
-    jobRows.markMerging('merging', 'Merge summary', []);
-    jobRows.enqueue('failed', 2, 'failed private prompt', stamp, 'mcp');
-    jobRows.markFailed('failed', 'Provider failed', stamp);
+    jobRows.enqueue('000000000000000000000N', 1, 'queued private prompt', stamp, 'web');
+    jobRows.enqueue('000000000000000000000O', 1, 'running private prompt', stamp, 'web');
+    jobRows.markRunning('000000000000000000000O', stamp);
+    jobRows.enqueue('000000000000000000000M', 2, 'merging private prompt', stamp, 'chat');
+    jobRows.markMerging('000000000000000000000M', 'Merge summary', []);
+    jobRows.enqueue('000000000000000000000L', 2, 'failed private prompt', stamp, 'mcp');
+    jobRows.markFailed('000000000000000000000L', 'Provider failed', stamp);
     const http = await server();
     await request(http).get('/api/admin/ops').expect(403);
     await request(http).post('/api/admin/dreams/run').expect(403);
     const response = await request(http).get('/api/admin/ops').set('x-admin', '1').expect(200);
     expect(response.body.queue).toEqual({ queued: 1, running: 2, oldestQueuedAt: stamp });
-    expect(response.body.failedJobs).toMatchObject([{ id: 'failed', error: 'Provider failed' }]);
+    expect(response.body.failedJobs).toMatchObject([{ id: '000000000000000000000L', error: 'Provider failed' }]);
     expect(JSON.stringify(response.body.failedJobs)).not.toContain('private prompt');
     expect(response.body.index).toEqual({ indexedSha: 'main', syncing: false });
     const feed = await request(http).get('/api/activity?type=job&limit=2').expect(200);
-    expect(feed.body.items.map((item: { id: string }) => item.id)).toEqual(['running', 'queued']);
+    expect(feed.body.items.map((item: { id: string }) => item.id)).toEqual(['000000000000000000000O', '000000000000000000000N']);
   });
 
   it('audits manual run outcomes and propagates operational failures', async () => {
     const http = await server();
     const ok = await request(http).post('/api/admin/dreams/run').set('x-admin', '1').expect(201);
     expect(ok.body.status).toBe('succeeded');
-    manual.mockResolvedValueOnce({ ...dream('failed-run'), status: 'failed', error: 'Dony failed' });
+    manual.mockResolvedValueOnce({ ...dream('000000000000000000000F'), status: 'failed', error: 'Dony failed' });
     const failedRun = await request(http).post('/api/admin/dreams/run').set('x-admin', '1').expect(201);
     expect(failedRun.body.status).toBe('failed');
     manual.mockRejectedValueOnce(new ApiError(503, 'unavailable', 'Dony unavailable'));
     await request(http).post('/api/admin/dreams/run').set('x-admin', '1').expect(503);
     const records = new AuditService(db).list({ limit: 10 }).events;
     expect(records.map((record) => [record.actorId, record.action, record.target, record.outcome])).toEqual([
-      [3, 'dream.run', 'dreaming', 'failed'], [3, 'dream.run', 'failed-run', 'failed'], [3, 'dream.run', 'manual-run', 'succeeded'],
+      [3, 'dream.run', 'dreaming', 'failed'], [3, 'dream.run', '000000000000000000000F', 'failed'], [3, 'dream.run', '0000000000000000000005', 'succeeded'],
     ]);
   });
 
   it('audits retry, cancel and reindex successes and failures without suppressing errors', async () => {
-    jobRows.enqueue('failed', 1, 'retry original', stamp, 'web');
-    jobRows.markFailed('failed', 'Provider failed', stamp);
-    jobRows.enqueue('queued', 1, 'cancel original', stamp, 'mcp');
+    jobRows.enqueue('000000000000000000000L', 1, 'retry original', stamp, 'web');
+    jobRows.markFailed('000000000000000000000L', 'Provider failed', stamp);
+    jobRows.enqueue('000000000000000000000N', 1, 'cancel original', stamp, 'mcp');
     const http = await server();
-    const retried = await request(http).post('/api/admin/jobs/failed/retry').set('x-admin', '1').expect(201);
-    expect(retried.body.job).toMatchObject({ id: 'retried', status: 'queued' });
-    const canceled = await request(http).post('/api/admin/jobs/queued/cancel').set('x-admin', '1').expect(201);
-    expect(canceled.body.job).toMatchObject({ id: 'queued', status: 'failed', error: 'canceled' });
-    await request(http).post('/api/admin/jobs/queued/cancel').set('x-admin', '1').expect(409);
-    await request(http).post('/api/admin/jobs/missing/retry').set('x-admin', '1').expect(404);
+    const retried = await request(http).post('/api/admin/jobs/000000000000000000000L/retry').set('x-admin', '1').expect(201);
+    expect(retried.body.job).toMatchObject({ id: '0000000000000000000006', status: 'queued' });
+    const canceled = await request(http).post('/api/admin/jobs/000000000000000000000N/cancel').set('x-admin', '1').expect(201);
+    expect(canceled.body.job).toMatchObject({ id: '000000000000000000000N', status: 'failed', error: 'canceled' });
+    await request(http).post('/api/admin/jobs/000000000000000000000N/cancel').set('x-admin', '1').expect(409);
+    await request(http).post('/api/admin/jobs/000000000000000000000Z/retry').set('x-admin', '1').expect(404);
     await request(http).post('/api/admin/index/reindex').set('x-admin', '1').send({ full: true }).expect(201);
     index.reindex.mockRejectedValueOnce(new ApiError(503, 'index_unavailable', 'Embedding failed'));
     await request(http).post('/api/admin/index/reindex').set('x-admin', '1').send({ full: false }).expect(503);

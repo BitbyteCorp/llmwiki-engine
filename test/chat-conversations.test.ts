@@ -23,6 +23,7 @@ import { SessionsService } from '../src/auth/sessions.service.js';
 import type { User } from '../src/auth/users.types.js';
 import { HttpExceptionFilter } from '../src/common/filters/http-exception.filter.js';
 import { configureApp } from '../src/common/http/configure-app.js';
+import { apiIdToLegacyUuid, toStorageId } from '../src/common/ids.js';
 import { DB, LOGGER } from '../src/common/tokens.js';
 import { loadConfig } from '../src/config.js';
 import { openDb, runMigrations } from '../src/db/index.js';
@@ -319,6 +320,43 @@ describe('chat write job monitoring', () => {
 });
 
 describe('conversation consumer contract', () => {
+  it('returns base62 conversation IDs while persisting base64url IDs and owner memberships', async () => {
+    const f = await fixture([]);
+    const conversation = await f.create('Encoding boundary');
+    expect(conversation.id).toMatch(/^[0-9A-Za-z]{22}$/);
+    const stored = f.db.prepare('SELECT id FROM conversations').get() as { id: string };
+    expect(stored.id).toMatch(/^[A-Za-z0-9_-]{21}[AQgw]$/);
+    expect(stored.id).toBe(toStorageId(conversation.id));
+    expect(f.db.prepare('SELECT conversation_id AS conversationId,user_id AS userId,role FROM conversation_members').all()).toEqual([
+      { conversationId: stored.id, userId: 1, role: 'owner' },
+    ]);
+    expect((await f.detail(conversation.id)).conversation).toEqual(conversation);
+    expect(await (await f.request('/conversations')).json()).toEqual({ conversations: [conversation] });
+  });
+
+  it('resolves legacy UUID routes to the same conversation and shares one normalized presence state', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+    const f = await fixture([]);
+    const conversation = await f.create('Legacy bookmark');
+    const legacyId = apiIdToLegacyUuid(conversation.id)!;
+    expect((await f.detail(legacyId)).conversation).toEqual(conversation);
+    expect((await f.request(`/conversations/${legacyId}`, 'PATCH', { title: 'Renamed from bookmark' })).status).toBe(200);
+    expect((await f.detail(conversation.id)).conversation).toMatchObject({ id: conversation.id, title: 'Renamed from bookmark' });
+    expect(f.published.filter(item => item.event.type === 'conversation.updated').at(-1)).toEqual({
+      event: { type: 'conversation.updated', conversationId: conversation.id }, audience: { userIds: [1] },
+    });
+    expect((await f.request(`/conversations/${legacyId}/presence`, 'POST', { typing: true })).status).toBe(201);
+    expect((await f.request(`/conversations/${conversation.id}/presence`, 'POST', { typing: false })).status).toBe(201);
+    expect(f.published.filter(item => item.event.type === 'conversation.presence').map(item => item.event)).toEqual([
+      { type: 'conversation.presence', conversationId: conversation.id, users: [{ id: 1, name: 'User 1', typing: true }] },
+      { type: 'conversation.presence', conversationId: conversation.id, users: [{ id: 1, name: 'User 1', typing: false }] },
+    ]);
+    await vi.advanceTimersByTimeAsync(31_000);
+    expect(f.published.filter(item => item.event.type === 'conversation.presence').slice(2)).toEqual([
+      { event: { type: 'conversation.presence', conversationId: conversation.id, users: [] }, audience: { userIds: [1] } },
+    ]);
+  });
+
   it('queues an explicit editor write with complete chat provenance and persists its job ID for replay', async () => {
     const content = 'Citrine is yellow quartz. Store it away from heat.';
     const f = await fixture([
@@ -352,7 +390,7 @@ describe('conversation consumer contract', () => {
       'wiki/facts.md', 'AGENTS.md', 'MEMORY.md', 'wiki/updates.md',
     ]));
     const persisted = f.db.prepare("SELECT data FROM generation_frames WHERE generation_id = ? AND event = 'tool' ORDER BY seq")
-      .all(generationId) as Array<{ data: string }>;
+      .all(toStorageId(generationId)) as Array<{ data: string }>;
     expect(persisted.map(frame => JSON.parse(frame.data))).toContainEqual(toolEnd.data);
     expect(await f.stream(`/generations/${generationId}/events`, 'GET')).toEqual(result);
     expect(await f.send(conversation.id, { content: 'Save this fact and its storage advice in the wiki.', clientId: 'save-citrine' })).toEqual(result);
@@ -476,7 +514,7 @@ describe('conversation consumer contract', () => {
     const answer = f.agent.answer.bind(f.agent);
     vi.spyOn(f.agent, 'answer').mockImplementationOnce((messages, delta, signal, options) => answer(messages, delta, signal, {
       ...options, submitKnowledge: async content => {
-        if (revocation === 'membership') f.db.prepare('DELETE FROM conversation_members WHERE conversation_id = ? AND user_id = 1').run(conversation.id);
+        if (revocation === 'membership') f.db.prepare('DELETE FROM conversation_members WHERE conversation_id = ? AND user_id = 1').run(toStorageId(conversation.id));
         if (revocation === 'role') f.db.prepare("UPDATE users SET role = 'viewer' WHERE id = 1").run();
         if (revocation === 'policy') f.acl.create({ prefix: 'wiki/', subjectType: 'everyone', subject: '', access: 'none' }, f.users.get(4)!);
         return options!.submitKnowledge!(content);

@@ -1,8 +1,9 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
 import { Injectable, type OnApplicationBootstrap, type OnModuleDestroy } from '@nestjs/common';
 import { ApiError, notFound } from '../api/api-error.js';
 import { AuditService } from '../audit/audit.service.js';
+import { newId } from '../common/ids.js';
 import { EventsService } from '../events/events.service.js';
 import { NoteWriterService, type NoteOp } from '../jobs/note-writer.service.js';
 import { WriteJobsRepository } from '../jobs/write-jobs.repository.js';
@@ -45,7 +46,7 @@ export class IngestService implements OnApplicationBootstrap, OnModuleDestroy {
     const parsed = ingestSchema.safeParse(body);
     if (!parsed.success || !Number.isInteger(userId) || userId <= 0) throw new ApiError(400, 'invalid_import', parsed.success ? 'Invalid user' : parsed.error.issues[0]!.message);
     input = { userId, ...parsed.data };
-    const importId = randomUUID();
+    const importId = newId();
     const source = input.url ?? (input.uploadId ? `upload:${input.uploadId}` : `text:${safeFilename(input.filename ?? 'source.md')}`);
     this.imports.create(importId, userId, input.kind, source);
     this.active.add(importId);

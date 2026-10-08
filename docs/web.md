@@ -338,6 +338,8 @@ frontmatter 속성 패널은 제목·날짜·중요도 같은 알려진 필드�
 `POST /conversations/:id/messages` 입력은 `{content,attachments?:string[],context?:{notePath,ref?,selection?},clientId?,model?,effort?}`이다. 첨부는 최대 10개이며 업로드 소유자만 새 질문에 첨부한다. 이전 구성원이 제출한 첨부는 권한을 검사한 대화 기록을 통해 서버에서 다시 읽는다. `model`은 `LLM_MODELS`의 선택 가능 모델명 목록에 있어야 한다. 목록은 쉼표로 나누고 각 항목 앞뒤 공백을 제거하며 빈 항목은 제외한다. 기본값은 `gpt-6-luna`이고 첫 항목을 기본 모델로 사용한다. `effort`는 `low|medium|high`이며 서버 기본 추론 강도는 `LLM_REASONING_EFFORT`(기본값 `medium`)로 설정한다. 고정 노트 문맥은 서버가 지정 ref의 정식 원문을 읽으며 selection은 신뢰하지 않는 인용문으로 다룬다.
 
 `GET /models`는 `{models:string[],defaultModel:string,efforts:['low','medium','high'],defaultEffort:string}`을 반환한다. 서버 기본 추론 강도는 요청별 허용 목록보다 넓을 수 있으므로 기본값 선택은 `effort`를 생략한다.
+대화·메시지·생성·업로드 식별자는 응답과 SSE·실시간 이벤트에서 22자리 base62로 반환한다. 경로와 첨부 입력은 기존 UUID도 허용하므로 이전 `/chat/<uuid>` 북마크와 저장된 마지막 스레드를 계속 열 수 있다. DB의 ID 열과 메시지 첨부 배열은 base64url로 저장하지만 SSE 프레임의 JSON은 전송한 base62 값을 그대로 보존한다. `clientId`는 클라이언트가 정하는 불투명 문자열이므로 변환하지 않으며 사용자 ID와 SSE 순번은 정수다. 인코딩과 입력 허용 범위는 [식별자](identifiers.md)를 따른다.
+
 
 SSE는 `id: <정수 seq>`, `event: <유형>`, `data: <JSON>` 뒤 빈 줄을 보낸다. 이벤트는 `generation {generationId,userMessageId}`, `status {phase}`, `tool {name,state:'start'|'end',summary,path?,jobId?}`, `citation {path,heading?,anchor?,excerpt?,sha?}`, `delta {text}`, `usage {inputTokens,outputTokens,reasoningTokens}`, `done {message}`, `error {code,message}`다. 도구 요약의 공개 범위와 `write_knowledge`의 제출문 발췌 예외는 [도니의 진행 이벤트](agent.md#모델과-호출-방식)를 따른다. `write_knowledge`의 성공한 종료 이벤트만 `jobId`를 추가하며 도구 실패에는 작업 링크를 만들지 않는다. `GET /generations/:id/events`의 `Last-Event-ID`는 해당 생성의 마지막 정수 seq이며 이후 프레임만 재생하고 실시간 프레임으로 이어진다. 완료된 생성도 재생한다.
 
@@ -360,6 +362,8 @@ proposal 입력은 `{mode:'new'|'edit',path?}`이며 edit에는 경로가 필요
 ### 폴더별 접근 제어
 
 `/settings?tab=acl`의 `접근 권한` 탭은 접두사별 규칙 목록, 트리 기반 폴더 선택과 정확한 파일 경로 입력, 사용자·역할·전체 주체 선택과 `none`·`read`·`write` 선택을 제공한다. 같은 주체의 규칙을 저장하면 갱신하고 삭제는 확인을 요구한다. `접근 확인`에서 사용자와 경로를 골라 실효 권한과 적용 규칙을 확인한다. 조회 실패는 빈 규칙 목록과 구분하며 다시 시도할 수 있다.
+임시 업로드 파일명은 응답의 base62 업로드 ID와 같다. 시작 시 기존 UUID 파일명을 같은 식별자의 base62 이름으로 옮긴 뒤 보존 기간 정리를 수행하며, 이미 옮긴 파일과 UUID가 아닌 파일명은 다시 이름을 바꾸지 않는다.
+
 
 위키 목록·검색·이력·그래프·첨부 원문과 내보내기는 읽을 수 있는 경로만 반환한다. 읽지 못하는 노트를 직접 열면 없는 노트와 같은 404를 표시한다. 저장·이동·삭제·초안과 첨부 저장은 전역 역할 외에 대상 경로의 쓰기 권한도 요구한다.
 

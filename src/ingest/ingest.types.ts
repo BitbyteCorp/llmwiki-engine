@@ -1,9 +1,10 @@
 import { z } from 'zod';
+import { idSchema } from '../common/ids.js';
 export const importKindSchema = z.enum(['url', 'pdf', 'text', 'obsidian', 'notion', 'file']);
 export type ImportKind = z.infer<typeof importKindSchema>;
 export const ingestSchema = z.object({
   kind: importKindSchema,
-  url: z.string().max(4096).optional(), uploadId: z.uuid().optional(),
+  url: z.string().max(4096).optional(), uploadId: idSchema.optional(),
   text: z.string().max(20 * 1024 * 1024).optional(), filename: z.string().min(1).max(255).optional(),
   instructions: z.string().trim().max(10_000).optional(),
 }).strict().superRefine((value, ctx) => {

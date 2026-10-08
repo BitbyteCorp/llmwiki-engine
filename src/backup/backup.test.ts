@@ -7,12 +7,17 @@ import { AclService } from '../acl/acl.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { UsersRepository } from '../auth/users.repository.js';
 import { UsersService } from '../auth/users.service.js';
+import { parseApiId, toStorageId } from '../common/ids.js';
 import { loadConfig, type Config } from '../config.js';
 import { openDb, runMigrations, type Db } from '../db/index.js';
 import { ExportService } from '../export/export.service.js';
 import { git } from '../export/git.js';
 import { BackupService } from './backup.service.js';
 
+const backupUploads = [
+  { id: parseApiId('00000000-0000-4000-8000-000000000001')!, content: 'attached bytes\n' },
+  { id: parseApiId('d0000000-0000-4000-8000-000000000002')!, content: 'second attachment\n' },
+];
 const directories: string[] = [];
 const databases: Db[] = [];
 afterEach(async () => {
@@ -41,9 +46,11 @@ async function fixture(): Promise<{ root: string; config: Config; db: Db; head: 
   databases.push(db);
   runMigrations(db);
   db.prepare('INSERT INTO users(email,role,created_at) VALUES(?,?,?)').run('reader@example.com', 'viewer', '2026-10-07T00:00:00.000Z');
-  db.prepare('INSERT INTO uploads(id,user_id,name,media_type,size,created_at) VALUES(?,?,?,?,?,?)').run('backup-upload', 1, 'note.txt', 'text/plain', 15, '2026-10-07T00:00:00.000Z');
+  for (const upload of backupUploads) {
+    db.prepare('INSERT INTO uploads(id,user_id,name,media_type,size,created_at) VALUES(?,?,?,?,?,?)').run(toStorageId(upload.id), 1, 'note.txt', 'text/plain', Buffer.byteLength(upload.content), '2026-10-07T00:00:00.000Z');
+  }
   await mkdir(join(config.dataDir, 'uploads'));
-  await writeFile(join(config.dataDir, 'uploads', 'backup-upload'), 'attached bytes\n');
+  for (const upload of backupUploads) await writeFile(join(config.dataDir, 'uploads', upload.id), upload.content);
   return { root, config, db, head };
 }
 
@@ -94,7 +101,9 @@ describe('backup archive roundtrip', () => {
     const restored = openDb(join(restoredConfig.dataDir, 'llmwiki.db'));
     databases.push(restored);
     expect(restored.prepare('SELECT email,role FROM users').all()).toEqual([{ email: 'reader@example.com', role: 'viewer' }]);
-    expect(await readFile(join(restoredConfig.dataDir, 'uploads', 'backup-upload'), 'utf8')).toBe('attached bytes\n');
+    for (const upload of backupUploads) {
+      expect(await readFile(join(restoredConfig.dataDir, 'uploads', upload.id), 'utf8')).toBe(upload.content);
+    }
     expect(await readFile(join(restoredConfig.dataDir, 'knowledge', 'wiki', 'note.md'), 'utf8')).toBe('# Durable note\n\nA committed fact.\n');
     expect((await git(join(restoredConfig.dataDir, 'knowledge'), ['rev-parse', 'main'])).trim()).toBe(head);
     expect(restored.prepare('SELECT value FROM index_meta WHERE key = ?').get('indexed_sha')).toBeUndefined();

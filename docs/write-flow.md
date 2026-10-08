@@ -10,6 +10,8 @@
 
 작업 상태는 `queued → running → merging → succeeded`이며 실행 오류나 취소는 `failed`로 끝난다. 상태 외에 `queued`, `preparing`, `editing`, `committing`, `merging`, `resolving_conflict`, `indexing`, `cleanup`, `done`, `failed` 단계 이벤트를 순서대로 저장한다. 각 이벤트는 `{ phase, at, detail }`이며 UTC ISO-8601 시각과 선택적 세부 정보를 포함한다. `WriteJobsRepository.events(id)`와 `WriteJobsService.events(id)`로 동일한 이력을 조회한다.
 
+작업과 서브에이전트의 ID는 API·이벤트에서 고정 22자리 base62로 노출하며 SQLite의 ID 열은 같은 바이트의 base64url 형식으로 저장한다. 작업 이벤트의 JSON 세부 정보는 발행한 API 형식을 그대로 보존한다. 레거시 UUID 입력과 기존 실패 Git ref의 호환 규칙은 [식별자](identifiers.md)를 따른다.
+
 `EventsService`는 각 단계에서 `job.updated`를 작업 소유자와 관리자에게 발행하고, main 반영 후 `main.updated`를 모든 로그인 사용자에게 발행한다. 색인 서비스는 별도로 `index.updated`를 발행한다. SSE 이벤트는 갱신 알림이고, 영속적인 작업 이력의 원천은 SQLite다.
 
 ## 도니 비동기 쓰기

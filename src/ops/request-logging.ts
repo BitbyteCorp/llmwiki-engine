@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { newId } from '../common/ids.js';
 import type { RequestHandler } from 'express';
 import { SessionsService } from '../auth/sessions.service.js';
 import type { Logger } from '../log.js';
@@ -8,7 +8,7 @@ import { MetricsService } from './metrics.service.js';
 export function requestLogging(log: Logger, metrics: MetricsService, sessions: SessionsService): RequestHandler {
   return (request, response, next) => {
     const incoming = request.get('x-request-id');
-    const requestId = incoming && /^[A-Za-z0-9._:-]{1,128}$/.test(incoming) ? incoming : randomUUID();
+    const requestId = incoming && /^[A-Za-z0-9._:-]{1,128}$/.test(incoming) ? incoming : newId();
     request.headers['x-request-id'] = requestId;
     response.setHeader('X-Request-ID', requestId);
     const started = performance.now();

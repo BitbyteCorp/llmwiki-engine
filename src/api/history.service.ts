@@ -5,6 +5,7 @@ import { AclService } from '../acl/acl.service.js';
 import { UsersService } from '../auth/users.service.js';
 import type { User } from '../auth/users.types.js';
 import { DB } from '../common/tokens.js';
+import { fromStorageId } from '../common/ids.js';
 import type { WriteJob } from '../jobs/write-job.types.js';
 import { projectSubagent } from '../jobs/write-job.projection.js';
 import { WriteJobsService } from '../jobs/write-jobs.service.js';
@@ -38,7 +39,7 @@ export class HistoryService {
       )
       ORDER BY created_at DESC LIMIT 1
     `).get(detail.commit.sha, detail.commit.sha) as { id: string } | undefined;
-    const job = row ? this.jobs.get(row.id) : null;
+    const job = row ? this.jobs.get(fromStorageId(row.id)) : null;
     const visible = job && (user.role === 'admin' || job.userId === user.id) ? await this.jobs.visible(user, job) : null;
     if (this.acl.policyKey(user) !== policy) notFound('Permissions changed during history read');
     return { ...detail, job: visible };

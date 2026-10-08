@@ -5,6 +5,7 @@ import { redactCommit } from '../api/acl-history.js';
 import type { User } from '../auth/users.types.js';
 import { UsersService } from '../auth/users.service.js';
 import { DB } from '../common/tokens.js';
+import { fromStorageId, toStorageId } from '../common/ids.js';
 import type { Db } from '../db/index.js';
 import type { DreamRun } from '../dreaming/dream-run.types.js';
 import { DreamRunsRepository } from '../dreaming/dream-runs.repository.js';
@@ -32,7 +33,7 @@ interface JobRow {
   merge_sha: string | null; error: string | null; created_at: string; started_at: string | null; finished_at: string | null;
 }
 const kinds: ActivityKind[] = ['commit', 'job', 'dream', 'backup'];
-// Binary comparison matches SQLite's default text collation, including ID ties.
+// IDs are ordered in API form; SQLite's storage encoding has a different lexical order.
 function compare(a: Cursor, b: Cursor): number {
   if (a.at !== b.at) return a.at < b.at ? 1 : -1;
   if (a.type !== b.type) return a.type < b.type ? 1 : -1;
@@ -185,14 +186,14 @@ export class ActivityService {
       const clauses: string[] = [];
       const values: Array<string | number> = [user.id, user.role === 'admin' ? 1 : 0, user.id, user.role === 'admin' ? 1 : 0];
       if (cursor) {
-        clauses.push('(created_at < ? OR (created_at = ? AND (? > \'job\' OR (? = \'job\' AND id < ?))))');
-        values.push(cursor.at, cursor.at, cursor.type, cursor.type, cursor.id);
+        clauses.push('created_at <= ?');
+        values.push(cursor.at);
       }
       if (query.source) { clauses.push('source = ?'); values.push(query.source); }
       if (query.path) {
         clauses.push('(id IN (SELECT value FROM json_each(?)) OR merge_sha IN (SELECT value FROM json_each(?)) OR EXISTS (SELECT 1 FROM json_each(write_jobs.commits) WHERE value IN (SELECT value FROM json_each(?))))');
         const pathCommitJson = JSON.stringify([...pathCommits]);
-        values.push(JSON.stringify([...pathJobIds]), pathCommitJson, pathCommitJson);
+        values.push(JSON.stringify([...pathJobIds].map(toStorageId).filter((id) => id !== null)), pathCommitJson, pathCommitJson);
       }
       const rows = this.db.prepare(`SELECT id, user_id, kind, source, client, status, summary, commits, conflicts,
         merge_sha, created_at, started_at, finished_at,
@@ -203,10 +204,11 @@ export class ActivityService {
       const readEvents = this.db.prepare('SELECT phase, detail FROM write_job_events WHERE job_id = ? ORDER BY seq');
       const hasRules = this.acl.list().length > 0;
       for (const row of rows) {
+        const id = fromStorageId(row.id);
         const privileged = row.user_id === user.id || user.role === 'admin';
         const commitIds = JSON.parse(row.commits) as string[];
         const conflicts = JSON.parse(row.conflicts) as string[];
-        const paths = [...new Set([...(jobPaths.get(row.id) ?? []),
+        const paths = [...new Set([...(jobPaths.get(id) ?? []),
           ...[...commitIds, ...(row.merge_sha ? [row.merge_sha] : [])].flatMap((sha) => commitPaths.get(sha) ?? []), ...conflicts])];
         const readable = this.acl.filterPaths(user, paths);
         if (paths.length && !readable.length) continue;
@@ -226,13 +228,13 @@ export class ActivityService {
             [...sourcePaths].some((path) => !this.acl.canRead(user, path)));
         const redacted = sourceRedacted || readable.length !== paths.length ||
           (!paths.length && user.role !== 'admin' && hasRules);
-        const job: ActivityItem['job'] = { id: row.id, userId: row.user_id, kind: row.kind, source: row.source,
+        const job: ActivityItem['job'] = { id, userId: row.user_id, kind: row.kind, source: row.source,
           client: row.client, status: row.status, summary: redacted ? null : row.summary,
           commits: sourceRedacted ? [] : commitIds.filter((sha) => (commitPaths.get(sha) ?? []).every((path) => this.acl.canRead(user, path))),
           conflicts: sourceRedacted ? [] : this.acl.filterPaths(user, conflicts), mergeSha: redacted ? null : row.merge_sha, createdAt: row.created_at,
           startedAt: row.started_at, finishedAt: row.finished_at,
           ...(privileged && !redacted ? { input: row.input!, error: row.error } : {}) };
-        accept({ id: row.id, type: 'job', at: row.created_at, source: row.source,
+        accept({ id, type: 'job', at: row.created_at, source: row.source,
           paths: readable, summary: redacted ? null : row.summary, job });
       }
     }
@@ -260,7 +262,8 @@ export class ActivityService {
       .get() as { queued: number | null; running: number | null; oldestQueuedAt: string | null };
     const failedJobs = this.db.prepare(`SELECT id, user_id AS userId, kind, source, client, status, summary,
       error, merge_sha AS mergeSha, created_at AS createdAt, started_at AS startedAt, finished_at AS finishedAt
-      FROM write_jobs WHERE status = 'failed' ORDER BY finished_at DESC, id DESC LIMIT 20`).all();
-    return { queue: { ...queue, queued: queue.queued ?? 0, running: queue.running ?? 0 }, failedJobs };
+      FROM write_jobs WHERE status = 'failed' ORDER BY finished_at DESC, id DESC LIMIT 20`).all() as Array<{ id: string } & Record<string, unknown>>;
+    return { queue: { ...queue, queued: queue.queued ?? 0, running: queue.running ?? 0 },
+      failedJobs: failedJobs.map((row) => ({ ...row, id: fromStorageId(row.id) })) };
   }
 }

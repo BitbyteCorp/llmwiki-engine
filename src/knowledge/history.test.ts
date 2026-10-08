@@ -1,10 +1,13 @@
+import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
 import pino from 'pino';
 import { afterEach, expect, it } from 'vitest';
 import { loadConfig } from '../config.js';
+import { legacyUuidToApi } from '../common/ids.js';
 import { commitTrailers } from './commit-trailers.js';
 import { KnowledgeRepo, repoPath } from './repo.js';
 
@@ -63,6 +66,52 @@ it('records trailers and attributes grouped blame ranges to the introducing jobs
   expect((await repo.blame('wiki/lines.md', first)).ranges).toMatchObject([{ start: 1, end: 4, sha: first }]);
   expect(commitTrailers(metadata).split('\n')).toEqual(['Wiki-Job: job-123', 'Wiki-Source: web', `Wiki-Requester: ${author.email}`, 'Wiki-Client: editor']);
   expect(() => commitTrailers({ ...metadata, client: 'editor\nWiki-Source: spoof' })).toThrow();
+});
+
+it('normalizes historical UUID job trailers and blame while new commits write API IDs', async () => {
+  const { repo } = await fixture();
+  const uuid = '550e8400-e29b-41d4-a716-446655440000';
+  const jobId = legacyUuidToApi(uuid);
+  const wt = await repo.createWorktree('legacy-trailers');
+  await wt.write('wiki/legacy.md', 'old line\n');
+  const git = promisify(execFile);
+  await git('git', ['add', '--all'], { cwd: wt.path });
+  await git('git', ['commit', '-m', `Legacy write\n\nWiki-Job: ${uuid}\nWiki-Source: web\nWiki-Requester: ${author.email}`], { cwd: wt.path });
+  const { stdout } = await git('git', ['rev-parse', 'HEAD'], { cwd: wt.path });
+  const legacySha = stdout.trim();
+  await wt.fastForwardMain();
+  expect((await repo.log('wiki/legacy.md'))[0]!.trailers['Wiki-Job']).toBe(jobId);
+  expect((await repo.show(legacySha)).commit.trailers['Wiki-Job']).toBe(jobId);
+  expect((await repo.blame('wiki/legacy.md')).ranges).toMatchObject([{ sha: legacySha, jobId }]);
+  wt.setCommitMetadata({ ...metadata, jobId: uuid });
+  await wt.write('wiki/legacy.md', 'new line\n');
+  const currentSha = (await wt.commit('Current write', author))!;
+  const message = (await git('git', ['show', '-s', '--format=%B', currentSha], { cwd: wt.path })).stdout;
+  expect(message).toContain(`Wiki-Job: ${jobId}`);
+  expect(message).not.toContain(uuid);
+  expect(commitTrailers({ ...metadata, jobId: uuid })).toContain(`Wiki-Job: ${jobId}`);
+});
+
+it('resolves UUID-named failed refs by API ID and prefers a newer API-named ref', async () => {
+  const { repo, dir } = await fixture();
+  const uuid = '550e8400-e29b-41d4-a716-446655440000';
+  const jobId = legacyUuidToApi(uuid);
+  const wt = await repo.createWorktree('legacy-failure');
+  await wt.write('wiki/failed.md', 'legacy failure\n');
+  const legacySha = (await wt.commit('Legacy failure', author))!;
+  const git = promisify(execFile);
+  await git('git', ['update-ref', `refs/wiki/failed/${uuid}`, legacySha], { cwd: join(dir, 'knowledge') });
+  await wt.dispose();
+  const ref = `refs/wiki/failed/${jobId}`;
+  expect(await repo.resolveRef(ref)).toBe(legacySha);
+  expect(await repo.readFile('wiki/failed.md', ref)).toBe('legacy failure\n');
+  const replacement = await repo.createWorktree('new-failure');
+  await replacement.write('wiki/failed.md', 'new failure\n');
+  const newSha = (await replacement.commit('New failure', author))!;
+  await replacement.preserveFailed(jobId);
+  await replacement.dispose();
+  expect(await repo.resolveRef(ref)).toBe(newSha);
+  expect(await repo.readFile('wiki/failed.md', ref)).toBe('new failure\n');
 });
 
 it('compares either merge parent and enriches automatic and resolved merges', async () => {

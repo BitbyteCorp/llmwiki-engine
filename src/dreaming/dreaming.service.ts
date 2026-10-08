@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { newId } from '../common/ids.js';
 import { Inject, Injectable, type OnApplicationShutdown } from '@nestjs/common';
 import { Cron } from 'croner';
 import { ApiError } from '../api/api-error.js';
@@ -98,7 +98,7 @@ export class DreamingService implements OnApplicationShutdown {
   private async execute(): Promise<DreamRun> {
     const { repo, agent, indexer, config, log, runs } = this;
     const run: DreamRun = {
-      id: randomUUID(), startedAt: new Date().toISOString(), finishedAt: null,
+      id: newId(), startedAt: new Date().toISOString(), finishedAt: null,
       status: 'running', fromSha: null, toSha: null, mergeSha: null, pushed: false, error: null,
       summary: null, changedPaths: [], journalPath: null,
       push: { status: 'pending', remote: null, sha: null, at: null, reason: null },
