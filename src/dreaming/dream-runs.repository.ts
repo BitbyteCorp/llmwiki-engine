@@ -6,6 +6,7 @@ import type { DreamRun, DreamUserMessage } from './dream-run.types.js';
 
 interface DreamRunRow {
   id: string; started_at: string; finished_at: string | null; status: DreamRun['status'];
+  mode: DreamRun['mode']; focus: string | null; structural_changes: string;
   from_sha: string | null; to_sha: string | null; merge_sha: string | null;
   pushed: number; error: string | null; summary: string | null;
   changed_paths: string; journal_path: string | null;
@@ -16,6 +17,7 @@ interface DreamRunRow {
 function toRun(row: DreamRunRow): DreamRun {
   return {
     id: fromStorageId(row.id), startedAt: row.started_at, finishedAt: row.finished_at, status: row.status,
+    mode: row.mode, focus: row.focus, structuralChanges: JSON.parse(row.structural_changes) as DreamRun['structuralChanges'],
     fromSha: row.from_sha, toSha: row.to_sha, mergeSha: row.merge_sha,
     pushed: Boolean(row.pushed), error: row.error, summary: row.summary,
     changedPaths: JSON.parse(row.changed_paths) as string[], journalPath: row.journal_path,
@@ -29,8 +31,9 @@ export class DreamRunsRepository {
   constructor(@Inject(DB) private readonly db: Database.Database) {}
 
   create(run: DreamRun): void {
-    this.db.prepare('INSERT INTO dream_runs (id, started_at, status) VALUES (?, ?, ?)')
-      .run(toStorageId(run.id), run.startedAt, run.status);
+    this.db.prepare(`INSERT INTO dream_runs (id, started_at, status, mode, focus, structural_changes)
+      VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(toStorageId(run.id), run.startedAt, run.status, run.mode, run.focus, JSON.stringify(run.structuralChanges));
   }
 
   get(id: string): DreamRun | null {
@@ -83,9 +86,16 @@ export class DreamRunsRepository {
     return row?.to_sha;
   }
 
+  lastSucceededSweeps(): Map<string, string> {
+    const rows = this.db.prepare(`SELECT focus, MAX(finished_at) AS finished_at FROM dream_runs
+      WHERE status = 'succeeded' AND mode = 'sweep' AND focus IS NOT NULL AND finished_at IS NOT NULL
+      GROUP BY focus`).all() as Array<{ focus: string; finished_at: string }>;
+    return new Map(rows.map((row) => [row.focus, row.finished_at]));
+  }
+
   setInputRange(run: DreamRun): void {
-    this.db.prepare('UPDATE dream_runs SET from_sha = ?, to_sha = ? WHERE id = ?')
-      .run(run.fromSha, run.toSha, toStorageId(run.id));
+    this.db.prepare(`UPDATE dream_runs SET from_sha = ?, to_sha = ?, mode = ?, focus = ?, structural_changes = ? WHERE id = ?`)
+      .run(run.fromSha, run.toSha, run.mode, run.focus, JSON.stringify(run.structuralChanges), toStorageId(run.id));
   }
 
   unlearnedUserMessages(startedAt: string): DreamUserMessage[] {
@@ -105,10 +115,10 @@ export class DreamRunsRepository {
 
   finish(run: DreamRun): void {
     this.db.prepare(`UPDATE dream_runs SET finished_at = ?, status = ?, from_sha = ?, to_sha = ?,
-      merge_sha = ?, pushed = ?, error = ?, summary = ?, changed_paths = ?, journal_path = ?,
-      push_status = ?, push_remote = ?, push_sha = ?, push_at = ?, push_reason = ? WHERE id = ?`)
-      .run(run.finishedAt, run.status, run.fromSha, run.toSha, run.mergeSha, Number(run.pushed), run.error,
-        run.summary, JSON.stringify(run.changedPaths), run.journalPath, run.push.status, run.push.remote,
-        run.push.sha, run.push.at, run.push.reason, toStorageId(run.id));
+      mode = ?, focus = ?, structural_changes = ?, merge_sha = ?, pushed = ?, error = ?, summary = ?,
+      changed_paths = ?, journal_path = ?, push_status = ?, push_remote = ?, push_sha = ?, push_at = ?, push_reason = ? WHERE id = ?`)
+      .run(run.finishedAt, run.status, run.fromSha, run.toSha, run.mode, run.focus, JSON.stringify(run.structuralChanges),
+        run.mergeSha, Number(run.pushed), run.error, run.summary, JSON.stringify(run.changedPaths), run.journalPath,
+        run.push.status, run.push.remote, run.push.sha, run.push.at, run.push.reason, toStorageId(run.id));
   }
 }

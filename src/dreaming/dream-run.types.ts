@@ -1,8 +1,13 @@
+import type { StructuralChange } from './dream-tools.js';
+
 export interface DreamRun {
   id: string;
   startedAt: string;
   finishedAt: string | null;
   status: 'running' | 'succeeded' | 'failed';
+  mode: 'local' | 'structural' | 'sweep' | null;
+  focus: string | null;
+  structuralChanges: StructuralChange[];
   fromSha: string | null;
   toSha: string | null;
   mergeSha: string | null;

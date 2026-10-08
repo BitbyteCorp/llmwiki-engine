@@ -84,6 +84,8 @@ export interface OpsJob {
 }
 export interface OpsDreamRun {
   id: string; startedAt: string; finishedAt: string | null; status: 'running' | 'succeeded' | 'failed'
+  mode: 'local' | 'structural' | 'sweep' | null; focus: string | null
+  structuralChanges: Array<{ kind: 'move' | 'delete'; from: string; to?: string }>
   fromSha: string | null; toSha: string | null; mergeSha: string | null; pushed: boolean; error: string | null; summary: string | null
   changedPaths: string[]; journalPath: string | null
   push: { status: 'pending' | 'succeeded' | 'skipped' | 'failed'; remote: string | null; sha: string | null; at: string | null; reason: string | null }

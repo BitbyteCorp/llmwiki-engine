@@ -86,8 +86,12 @@ export class ActivityService {
   projectDream(run: DreamRun, user: User): DreamRun {
     const changedPaths = this.acl.filterPaths(user, run.changedPaths);
     const journalPath = run.journalPath && this.acl.canRead(user, run.journalPath) ? run.journalPath : null;
-    const redacted = changedPaths.length !== run.changedPaths.length || journalPath !== run.journalPath;
-    return { ...run, changedPaths, journalPath,
+    const focus = run.focus && this.acl.canRead(user, run.focus) ? run.focus : null;
+    const structuralChanges = run.structuralChanges.filter((change) =>
+      this.acl.canRead(user, change.from) && (change.to === undefined || this.acl.canRead(user, change.to)));
+    const redacted = changedPaths.length !== run.changedPaths.length || journalPath !== run.journalPath ||
+      focus !== run.focus || structuralChanges.length !== run.structuralChanges.length;
+    return { ...run, changedPaths, journalPath, focus, structuralChanges,
       summary: redacted ? null : run.summary, error: redacted ? null : run.error,
       push: { ...run.push, reason: redacted ? null : run.push.reason } };
   }

@@ -36,6 +36,7 @@ function commit(sha: string, at = stamp, source = 'web', jobId?: string): Commit
 }
 function dream(id: string, at = stamp): DreamRun {
   return { id, startedAt: at, finishedAt: at, status: 'succeeded', fromSha: null, toSha: null, mergeSha: 'e'.repeat(40),
+    mode: null, focus: null, structuralChanges: [],
     pushed: true, error: null, summary: 'Daily summary', changedPaths: ['wiki/route.md', 'journal/2026-01-02.md'], journalPath: 'journal/2026-01-02.md',
     push: { status: 'succeeded', remote: 'origin', sha: 'a'.repeat(40), at, reason: null } };
 }

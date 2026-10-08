@@ -12,6 +12,11 @@ import type { Logger } from '../log.js';
 import { AgentService } from '../agent/agent.service.js';
 import { IndexerService } from '../rag/indexer.service.js';
 import { SearchService } from '../rag/search.service.js';
+import { CatalogService } from '../rag/catalog.service.js';
+import { ComparisonService } from '../rag/comparison.service.js';
+import { normalizeLinkTarget } from '../rag/link-resolver.js';
+import { guardDreamTools, unresolvedLinkTargets } from './dream-tools.js';
+import { collectStructureSignals, restrictStructureSignals, selectDreamMode } from './structure-signals.js';
 import type { DreamRun } from './dream-run.types.js';
 import { DreamRunsRepository } from './dream-runs.repository.js';
 
@@ -59,6 +64,8 @@ export class DreamingService implements OnApplicationShutdown {
     private readonly events: EventsService,
     private readonly acl: AclService,
     private readonly audit: AuditService,
+    private readonly catalog: CatalogService,
+    private readonly comparison: ComparisonService,
   ) {}
 
   start(): void {
@@ -102,6 +109,7 @@ export class DreamingService implements OnApplicationShutdown {
       id: newId(), startedAt: new Date().toISOString(), finishedAt: null,
       status: 'running', fromSha: null, toSha: null, mergeSha: null, pushed: false, error: null,
       summary: null, changedPaths: [], journalPath: null,
+      mode: null, focus: null, structuralChanges: [],
       push: { status: 'pending', remote: null, sha: null, at: null, reason: null },
     };
     let worktree: Worktree | undefined;
@@ -141,9 +149,16 @@ export class DreamingService implements OnApplicationShutdown {
       // learned. Assistant responses never enter the learning input.
       const messages = runs.unlearnedUserMessages(run.startedAt);
 
-      if (commits.length > 0 || messages.length > 0) {
+      const structure = await collectStructureSignals(repo, this.catalog, this.comparison, run.toSha);
+      const choice = selectDreamMode(structure.signals, commits.length > 0 || messages.length > 0,
+        structure.folders, runs.lastSucceededSweeps());
+      run.mode = choice.mode;
+      run.focus = choice.focus;
+      runs.setInputRange(run);
+
+      if (run.mode !== null) {
         const date = dateFormat.format(new Date(run.startedAt));
-        const changes = (await repo.diffNames(run.fromSha, run.toSha)).filter((change) => change.path.endsWith('.md'));
+        const changes = (await repo.diffNames(run.fromSha, run.toSha)).filter((change) => /\.md$/i.test(change.path));
         const changedNotes = await Promise.all(changes.map(async (change) => {
           const content = await repo.readFile(change.path, run.toSha!);
           const previous = content ?? await repo.readFile(change.oldPath ?? change.path, run.fromSha!);
@@ -152,29 +167,76 @@ export class DreamingService implements OnApplicationShutdown {
             .map((hit) => ({ path: hit.path, title: hit.title, excerpt: hit.excerpt.slice(0, SIMILAR_NOTE_EXCERPT_CHARS) }));
           return { change, content, similarNotes };
         }));
+        const changedPaths = changes.flatMap((change) => change.oldPath ? [change.oldPath, change.path] : [change.path]);
+        const focusedFolder = structure.folders.find((folder) => folder.path === run.focus);
+        const signals = run.mode === 'local'
+          ? restrictStructureSignals(structure.signals, changedPaths,
+            [...new Set(changedPaths.filter((path) => path.startsWith('wiki/')).map((path) => path.slice(0, path.lastIndexOf('/') + 1)))])
+          : run.mode === 'sweep'
+            ? restrictStructureSignals(structure.signals, focusedFolder?.files ?? [], run.focus ? [run.focus] : [])
+            : structure.signals;
+        const beforePaths = (await repo.diffNames(null, run.toSha)).map(({ path }) => path);
+        const beforeNotes = await Promise.all(beforePaths.filter((path) => /\.md$/i.test(path)).map(async (path) =>
+          ({ path, content: (await repo.readFile(path, run.toSha!)) ?? '' })));
+        const beforeLinks = new Set([...unresolvedLinkTargets(beforePaths, beforeNotes)].map(normalizeLinkTarget));
         worktree = await repo.createWorktree(`dream-${date}`);
+        let editingBaseline = beforeLinks;
+        const worktreeSha = worktree.baseSha;
+        if (worktreeSha !== run.toSha) {
+          const initialPaths = (await repo.diffNames(null, worktreeSha)).map(({ path }) => path);
+          const initialNotes = await Promise.all(initialPaths.filter((path) => /\.md$/i.test(path)).map(async (path) =>
+            ({ path, content: (await repo.readFile(path, worktreeSha)) ?? '' })));
+          // Worktree creation may inherit main commits newer than the input.
+          editingBaseline = new Set(beforeLinks);
+          for (const target of unresolvedLinkTargets(initialPaths, initialNotes)) editingBaseline.add(normalizeLinkTarget(target));
+        }
         worktree.setCommitMetadata({ jobId: run.id, source: 'dreaming', requester: config.gitBotEmail });
         const author = { name: config.gitBotName, email: config.gitBotEmail };
         const journalPath = `journal/${date}.md`;
-        const result = await agent.runAgent({
-          instructions: `${await agent.baseInstructions()}\n\n${dreamInstructions(date, journalPath)}`,
-          input: JSON.stringify({ date, fromSha: run.fromSha, toSha: run.toSha, commits, changedNotes, userMessages: messages }),
-          tools: agent.worktreeTools(worktree, author),
-        });
+        const guarded = guardDreamTools(agent.worktreeTools(worktree, author), this.acl);
+        const rejectIntroducedLinks = async (baseline = editingBaseline) => {
+          const paths = await worktree!.list();
+          const notes = await Promise.all(paths.filter((path) => /\.md$/i.test(path)).map(async (path) =>
+            ({ path, content: (await worktree!.read(path)) ?? '' })));
+          const introduced = [...unresolvedLinkTargets(paths, notes)].filter((target) => !baseline.has(normalizeLinkTarget(target))).sort();
+          if (introduced.length) throw new Error(`Dreaming introduced broken links: ${introduced.join(', ')}`);
+        };
+        let result;
+        try {
+          result = await agent.runAgent({
+            instructions: `${await agent.baseInstructions()}\n\n${dreamInstructions(date, journalPath)}`,
+            input: JSON.stringify({
+              date, fromSha: run.fromSha, toSha: run.toSha, commits, changedNotes, userMessages: messages,
+              mode: run.mode, focus: run.focus, structure: { signals, focus: run.focus, files: focusedFolder?.files ?? [] },
+            }),
+            tools: guarded.tools,
+          });
+        } finally {
+          run.structuralChanges = guarded.changes();
+        }
         run.summary = result.text || null;
         if (!(await worktree.read(journalPath))?.trim()) {
           throw new Error(`Dreaming did not write the required journal: ${journalPath}`);
         }
         run.journalPath = journalPath;
+        await rejectIntroducedLinks();
         await worktree.commit(`dreaming: ${date}`, author);
         const wt = worktree;
         await repo.withMergeLock(async () => {
+          const previousHead = await repo.headSha();
+          const mainPaths = (await repo.diffNames(null, previousHead)).map(({ path }) => path);
+          const mainNotes = await Promise.all(mainPaths.filter((path) => /\.md$/i.test(path)).map(async (path) =>
+            ({ path, content: (await repo.readFile(path, previousHead)) ?? '' })));
+          // Concurrent main changes are not dreaming-introduced link failures.
+          // Keep the input baseline too: main may have repaired an older target.
+          const mergeBaseline = new Set(beforeLinks);
+          for (const target of unresolvedLinkTargets(mainPaths, mainNotes)) mergeBaseline.add(normalizeLinkTarget(target));
           const merge = await wt.mergeMain();
           if (!merge.ok) {
             await agent.resolveConflicts(wt, merge.conflicts);
             await wt.finishMerge(author);
           }
-          const previousHead = await repo.headSha();
+          await rejectIntroducedLinks(mergeBaseline);
           run.mergeSha = await wt.fastForwardMain();
           const changes = await repo.diffNames(previousHead, run.mergeSha);
           run.changedPaths = [...new Set(changes.flatMap((change) => change.oldPath
@@ -245,6 +307,19 @@ function dreamInstructions(date: string, journalPath: string): string {
 변경과 관련 노트를 읽고 근거에 따라 모순과 중복을 정리한다. read_file은 페이지 JSON을 반환하므로 truncated이면 nextOffset과 nextCharOffset(있을 때)으로 이어 읽는다. 기존 파일을 write_file로 교체할 때는 모든 필요한 페이지를 읽고 유효한 기존 내용을 포함한 전체 파일을 저장한다. list_files는 같은 prefix와 nextOffset으로 이어 조회하거나 폴더를 좁힌다. 최신 근거가 불명확하면 열린 쟁점으로 남기고 지어내지 않는다.
 깨진 위키링크와 index.md를 고치고 MEMORY.md의 낡은 항목을 정리한다. raw/ 원문은 불변으로 보존한다.
 ACL 경계를 넘어 제한된 노트·사용자 자료의 내용이나 의미를 다른 권한 영역의 노트, 색인, 메모리, 일기에 복사·요약·의역하지 않는다. 이 시스템 작업은 전체 저장소를 읽을 수 있지만 공유 범위를 확대할 권한은 없다. 경계가 불명확하면 내용을 옮기지 않고 기존 영역에 보존한다.
+입력 structure는 엔진이 계산한 구조 신호이며 mode는 오늘의 정리 범위다.
+- local: 변경 노트 주변만 정리한다. 다른 영역의 구조는 바꾸지 않는다.
+- structural: structure.signals에 지목된 영역만 정리한다. 변경과 메시지도 평소처럼 처리한다.
+- sweep: structure.focus 폴더 하나만 점검한다.
+구조 변경은 탐색이나 검색이 분명히 좋아질 때만 한다. 취향 때문에 이름을 바꾸거나 폴더를 다시 나누지 않는다.
+- 합치기: 같은 사실을 다루는 노트는 하나의 정본으로 합치고 나머지는 삭제한다. 삭제한 노트를 가리키던 모든 위키링크는 정본을 가리키게 고친다.
+- 옮기기·이름 바꾸기: 저장소의 기존 폴더와 파일명 관례를 따른다. 새 폴더는 같은 주제의 노트가 3개 이상일 때만 만든다.
+- 쪼개기: 한 노트에 서로 독립적인 주제가 섞였을 때만 원자적 노트로 나누고 서로 링크한다.
+- 허브: 같은 주제의 노트가 흩어져 있으면 지식을 복제하지 않는 허브 노트를 만들고 index.md에 연결한다.
+파일을 옮기거나 삭제하면 그 경로를 가리키던 모든 [[링크]]를 같은 커밋에서 고친다.
+raw/, journal/, MEMORY.md, AGENTS.md, index.md의 위치는 바꾸지 않는다.
+이동·삭제는 하루 20건까지다. 일기의 "구조 정리" 절에 이전 경로 → 새 경로와 이유를 모두 적고, 남은 후보는 다음 정리 후보로 남긴다.
+엔진은 서로 다른 ACL 규칙 집합 사이의 이동을 거절한다. 새로 깨지거나 모호해진 위키링크가 있으면 main 머지 전에 실행 전체를 실패시키므로 모든 역링크를 함께 고친다.
 userMessages에는 아직 학습하지 않은 사용자 발언만 있다. 사용자가 직접 말한 사실과 정정만 추출한다.
 질문이나 요청을 사실로 바꾸지 않고 도니/assistant 답변을 재학습하지 않으며 대화를 덤프하지 않는다.
 대화에서 추출하는 지식은 공용 위키에 공개된다는 점을 고려하고, 비밀값은 저장하지 않으며 개인정보는 마스킹한다.

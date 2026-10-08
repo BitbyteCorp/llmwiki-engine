@@ -111,6 +111,7 @@ describe('public operations, live events and archives obey folder ACL', () => {
       ['000000000000000000000H', [hidden, publicPath], null],
     ] as const) {
       const run: DreamRun = { id, startedAt: stamp, finishedAt: stamp, status: 'succeeded', fromSha: null,
+        mode: 'sweep', focus: 'wiki/private/', structuralChanges: [{ kind: 'move', from: hidden, to: publicPath }],
         toSha: mixedSha, mergeSha: mixedSha, pushed: true, summary: secret, changedPaths: [...changedPaths], journalPath,
         error: `Error ${hidden} ${secret}`, push: { status: 'succeeded', remote: 'origin', sha: mixedSha, at: stamp, reason: `${hidden} ${secret}` } };
       dreams.create(run);
@@ -165,7 +166,8 @@ describe('public operations, live events and archives obey folder ACL', () => {
       expect(JSON.stringify(response.body)).not.toContain(secret);
     }
     const dream = await get('/api/dreams/000000000000000000000G').expect(200);
-    expect(dream.body).toMatchObject({ changedPaths: [], journalPath: null, summary: null, error: null, push: { reason: null } });
+    expect(dream.body).toMatchObject({ mode: 'sweep', focus: null, structuralChanges: [],
+      changedPaths: [], journalPath: null, summary: null, error: null, push: { reason: null } });
     const mixed = await get('/api/dreams/000000000000000000000H').expect(200);
     expect(mixed.body).toMatchObject({ changedPaths: [publicPath], summary: null });
     const journal = await get('/api/journal').expect(200);
@@ -190,7 +192,8 @@ describe('public operations, live events and archives obey folder ACL', () => {
     const allowed = await get('/api/activity?type=commit', collaborator).expect(200);
     expect(allowed.body.items.find((item: ActivityItem) => item.id === mixedSha).summary).toContain(secret);
     const sharedDream = await get('/api/dreams/000000000000000000000H', collaborator).expect(200);
-    expect(sharedDream.body).toMatchObject({ changedPaths: [hidden, publicPath], summary: secret });
+    expect(sharedDream.body).toMatchObject({ focus: 'wiki/private/', structuralChanges: [{ kind: 'move', from: hidden, to: publicPath }],
+      changedPaths: [hidden, publicPath], summary: secret });
     const firstDream = await get('/api/dreams?limit=1').expect(200);
     expect(firstDream.body.runs.map((run: DreamRun) => run.id)).toEqual(['000000000000000000000H']);
     const secondDream = await get(`/api/dreams?limit=1&before=${firstDream.body.nextCursor}`).expect(200);
@@ -199,6 +202,32 @@ describe('public operations, live events and archives obey folder ACL', () => {
     expect(bypass.body.changedPaths).toContain(hidden);
     expect(bypass.body.summary).toBe(secret);
     await request(app.getHttpServer()).post('/api/admin/dreams/run').auth(tokens[String(collaborator.id)], { type: 'bearer' }).expect(403);
+  });
+
+  it('redacts hidden sweep focus and both sides of structural changes even when changed paths are empty', async () => {
+    const dreams = app.get(DreamRunsRepository);
+    const original = dreams.get('000000000000000000000H')!;
+    const focusOnly: DreamRun = { ...original, id: '000000000000000000000Y', changedPaths: [], journalPath: null,
+      focus: 'wiki/private/', structuralChanges: [] };
+    dreams.create(focusOnly);
+    dreams.finish(focusOnly);
+    const focusResponse = await get(`/api/dreams/${focusOnly.id}`).expect(200);
+    expect(focusResponse.body).toMatchObject({ focus: null, structuralChanges: [], summary: null, error: null, push: { reason: null } });
+    const changesOnly: DreamRun = { ...focusOnly, id: '000000000000000000000Z', mode: 'structural', focus: null,
+      structuralChanges: [
+        { kind: 'move', from: hidden, to: publicPath },
+        { kind: 'move', from: publicPath, to: hidden },
+        { kind: 'delete', from: hidden },
+        { kind: 'delete', from: publicPath },
+      ] };
+    dreams.create(changesOnly);
+    dreams.finish(changesOnly);
+    const changesResponse = await get(`/api/dreams/${changesOnly.id}`).expect(200);
+    expect(changesResponse.body).toMatchObject({ focus: null, structuralChanges: [{ kind: 'delete', from: publicPath }],
+      summary: null, error: null, push: { reason: null } });
+    expect(JSON.stringify(changesResponse.body)).not.toContain(hidden);
+    const adminResponse = await get(`/api/dreams/${changesOnly.id}`, admin).expect(200);
+    expect(adminResponse.body).toMatchObject({ structuralChanges: changesOnly.structuralChanges, summary: secret });
   });
 
   it('downloads and unzips only readable committed files, including allowed descendants of a denied prefix', async () => {

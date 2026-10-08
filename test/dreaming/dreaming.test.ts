@@ -15,6 +15,7 @@ import { newId, toStorageId } from '../../src/common/ids.js';
 import { registerDreamCommands } from '../../src/dreaming/dreaming.commands.js';
 import { DreamRunsRepository } from '../../src/dreaming/dream-runs.repository.js';
 import { DreamingService } from '../../src/dreaming/dreaming.service.js';
+import type { StructureSignals } from '../../src/dreaming/structure-signals.js';
 import { EventsService } from '../../src/events/events.service.js';
 import { KnowledgeRepo, type CommitInfo, type FileChange, type Worktree } from '../../src/knowledge/repo.js';
 import { commitTrailers, type CommitMetadata } from '../../src/knowledge/commit-trailers.js';
@@ -22,6 +23,8 @@ import { AgentService } from '../../src/agent/agent.service.js';
 import type { AgentTool, RunAgentOptions } from '../../src/agent/agent.types.js';
 import { IndexerService } from '../../src/rag/indexer.service.js';
 import { SearchService } from '../../src/rag/search.service.js';
+import { CatalogService, type CatalogGraph } from '../../src/rag/catalog.service.js';
+import { ComparisonService, type DuplicateNotes } from '../../src/rag/comparison.service.js';
 import type { SearchHit } from '../../src/rag/types.js';
 import { AclService } from '../../src/acl/acl.service.js';
 import { AuditService } from '../../src/audit/audit.service.js';
@@ -44,6 +47,9 @@ type DreamInput = {
   date: string; fromSha: string; toSha: string; commits: CommitInfo[];
   changedNotes: Array<{ change: FileChange; content: string | null; similarNotes: Array<{ path: string; title: string; excerpt: string }> }>;
   userMessages: MessageInput[];
+  mode: 'local' | 'structural' | 'sweep';
+  focus: string | null;
+  structure: { signals: StructureSignals; focus: string | null; files: string[] };
 };
 
 @Module({})
@@ -97,12 +103,12 @@ class TempRepo {
   }
   async listFiles(prefix = '', ref = 'main'): Promise<string[]> {
     return (await this.git(['ls-tree', '-r', '--name-only', ref])).split('\n')
-      .filter((path) => path.endsWith('.md') && path.startsWith(prefix));
+      .filter((path) => /\.md$/i.test(path) && path.startsWith(prefix));
   }
   async diffNames(fromSha: string | null, toSha: string): Promise<FileChange[]> {
     const args = fromSha
       ? ['diff', '--name-status', '-M', fromSha, toSha]
-      : ['diff-tree', '--root', '--no-commit-id', '-r', '--name-status', toSha];
+      : ['diff', '--name-status', '-M', '4b825dc642cb6eb9a060e54bf8d69288fbee4904', toSha];
     return (await this.git(args)).split('\n').filter(Boolean).map((line) => {
       const [status, first, second] = line.split('\t');
       return status.startsWith('R')
@@ -184,7 +190,7 @@ class TempWorktree {
   }
   async list(prefix = ''): Promise<string[]> {
     const files = await this.repo.git(['ls-files', '--cached', '--others', '--exclude-standard'], this.path);
-    return [...new Set(files.split('\n').filter((path) => path.endsWith('.md') && path.startsWith(prefix)))];
+    return [...new Set(files.split('\n').filter((path) => path && path.startsWith(prefix)))];
   }
   async commit(message: string, author: Author): Promise<string | null> {
     await this.repo.git(['add', '-A'], this.path);
@@ -237,7 +243,7 @@ async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'llmwiki-dreaming-'));
   const db = new Database(':memory:');
   resources.push({ root, db });
-  for (const migration of ['001_core', '002_auth', '005_dreaming', '008_ops', '011_platform', '013_acl']) db.exec(await readFile(new URL(`../../src/db/migrations/${migration}.sql`, import.meta.url), 'utf8'));
+  for (const migration of ['001_core', '002_auth', '005_dreaming', '008_ops', '011_platform', '013_acl', '021_dream_modes']) db.exec(await readFile(new URL(`../../src/db/migrations/${migration}.sql`, import.meta.url), 'utf8'));
   db.exec(`CREATE TABLE messages (
     id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('user', 'assistant')), content TEXT NOT NULL,
@@ -253,12 +259,19 @@ async function fixture() {
   });
   const indexer = { syncToHead: vi.fn(async () => ({ indexedSha: await repo.headSha(), changedFiles: 1 })) };
   const search = { search: vi.fn(async () => [similarHit]) };
+  const catalog = { graph: vi.fn((): CatalogGraph => ({
+    nodes: [{ path: similarHit.path, title: similarHit.title, tags: [] }],
+    edges: [],
+  })) };
+  const comparison = { duplicates: vi.fn(async (): Promise<DuplicateNotes[]> => []) };
   const agent = {
     runAgent,
     baseInstructions: async () => 'Use verified facts.',
     worktreeTools: (worktree: Worktree, author: Author): AgentTool[] => [
       { name: 'write_file', description: 'Write a note', parameters: { type: 'object' },
         run: async ({ path, content }: { path: string; content: string }) => { await worktree.write(path, content); return 'written'; } },
+      { name: 'move_file', description: 'Move a note', parameters: { type: 'object' },
+        run: async ({ from, to }: { from: string; to: string }) => { await worktree.move(from, to); return 'moved'; } },
       { name: 'commit', description: 'Commit notes', parameters: { type: 'object' },
         run: async ({ message }: { message: string }) => JSON.stringify({ sha: await worktree.commit(message, author) }) },
     ],
@@ -274,6 +287,8 @@ async function fixture() {
       { provide: AgentService, useValue: agent },
       { provide: IndexerService, useValue: indexer },
       { provide: SearchService, useValue: search },
+      { provide: CatalogService, useValue: catalog },
+      { provide: ComparisonService, useValue: comparison },
       AuditService,
       { provide: UsersService, useValue: new UsersService(new UsersRepository(db)) },
       AclService,
@@ -282,7 +297,7 @@ async function fixture() {
       DreamingService,
       { provide: 'otherDreaming', useClass: DreamingService },
     ],
-  }, { logger: false });
+  }, { logger: false, abortOnError: false });
   resources[resources.length - 1].app = app;
   const dreaming = app.get(DreamingService);
   const otherDreaming = app.get<DreamingService>('otherDreaming');
@@ -317,15 +332,34 @@ afterEach(async () => {
 });
 
 describe('DreamingService.runOnce', () => {
+  it('pushes without an agent or worktree when there are no inputs or sweepable notes', async () => {
+    const f = await fixture();
+    await f.repo.git(['rm', 'wiki/release.md']);
+    await f.repo.git(['commit', '-m', 'Remove sweepable knowledge']);
+    const head = await f.repo.headSha();
+    f.checkpoint(head);
+    const run = await f.dreaming.runOnce();
+    expect(run).toMatchObject({
+      status: 'succeeded', fromSha: head, toSha: head, mode: null, focus: null,
+      mergeSha: null, journalPath: null, structuralChanges: [], pushed: true, error: null,
+    });
+    expect(f.runAgent).not.toHaveBeenCalled();
+    expect(await f.repo.headSha()).toBe(head);
+    expect(f.indexer.syncToHead).not.toHaveBeenCalled();
+    expect(f.repo.worktreeCount).toBe(0);
+    expect(f.repo.pushCount).toBe(1);
+    expect(await f.repo.git(['rev-parse', 'main'], f.repo.origin)).toBe(head);
+  });
+
   it('reviews only post-baseline changes, merges a dated journal into main, and pushes the actual result', async () => {
     const f = await fixture();
     const toSha = await f.repo.change();
     const run = await f.dreaming.runOnce();
     const input = inputOf(f.runAgent.mock.calls[0][0]);
     const kstDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(run.startedAt));
-    expect(run).toMatchObject({ status: 'succeeded', fromSha: f.baseSha, toSha, pushed: true, error: null });
+    expect(run).toMatchObject({ status: 'succeeded', fromSha: f.baseSha, toSha, mode: 'local', focus: null, pushed: true, error: null });
     expect(run.finishedAt).not.toBeNull();
-    expect(input).toMatchObject({ date: kstDate, fromSha: f.baseSha, toSha });
+    expect(input).toMatchObject({ date: kstDate, fromSha: f.baseSha, toSha, mode: 'local', focus: null });
     expect(input.commits.map((commit) => commit.sha)).toEqual([toSha]);
     expect(input.changedNotes).toEqual([{
       change: { status: 'A', path: 'wiki/deployment.md' },
@@ -430,17 +464,29 @@ describe('DreamingService.runOnce', () => {
     expect(f.repo.pushCount).toBe(1);
   });
 
-  it('records a successful no-op and pushes without creating a worktree when checkpoint equals head', async () => {
+  it('sweeps existing notes and merges a journal when checkpoint equals head', async () => {
     const f = await fixture();
     const head = await f.repo.headSha();
     f.checkpoint(head);
     const run = await f.dreaming.runOnce();
-    expect(run).toMatchObject({ status: 'succeeded', fromSha: head, toSha: head, mergeSha: null, pushed: true, error: null });
-    expect(await f.repo.headSha()).toBe(head);
-    expect(f.runAgent).not.toHaveBeenCalled();
-    expect(f.indexer.syncToHead).not.toHaveBeenCalled();
-    expect(f.repo.worktreeCount).toBe(0);
+    const input = inputOf(f.runAgent.mock.calls[0][0]);
+    const journalPath = `journal/${input.date}.md`;
+    expect(run).toMatchObject({
+      status: 'succeeded', fromSha: head, toSha: head, mode: 'sweep', focus: 'wiki/',
+      journalPath, changedPaths: [journalPath], structuralChanges: [], pushed: true, error: null,
+    });
+    expect(input).toMatchObject({
+      mode: 'sweep', focus: 'wiki/', commits: [], changedNotes: [], userMessages: [],
+      structure: { focus: 'wiki/', files: ['wiki/release.md'] },
+    });
+    expect(await f.repo.readFile(journalPath)).toBe(journalContent);
+    expect(await f.repo.headSha()).toBe(run.mergeSha);
+    expect(run.mergeSha).not.toBe(head);
+    expect(f.runAgent).toHaveBeenCalledTimes(1);
+    expect(f.indexer.syncToHead).toHaveBeenCalledTimes(1);
+    expect(f.repo.worktreeCount).toBe(1);
     expect(f.repo.pushCount).toBe(1);
+    expect(await f.repo.git(['rev-parse', 'main'], f.repo.origin)).toBe(run.mergeSha);
   });
 
   it('retries unlearned backlog after a failed attempt rather than advancing the checkpoint', async () => {
@@ -512,6 +558,217 @@ describe('DreamingService.runOnce', () => {
     expect(secondInput.changedNotes).toContainEqual(expect.objectContaining({
       change: { status: 'A', path: 'wiki/later.md' }, content: concurrentContent,
     }));
+  });
+
+  it('allows broken links introduced by concurrent main changes during the agent run', async () => {
+    const f = await fixture();
+    const messageId = f.addMessage();
+    const sampledSha = await f.repo.headSha();
+    const concurrentContent = '# Concurrent note\n\n[[missing-concurrent-note]]\n';
+    let concurrentSha: string | undefined;
+    f.runAgent.mockImplementationOnce(async (options) => {
+      await writeJournal(options);
+      concurrentSha = await f.repo.change('wiki/concurrent.md', concurrentContent);
+      return { text: 'Reviewed the captured inputs.', toolCalls: 1 };
+    });
+
+    const run = await f.dreaming.runOnce();
+
+    expect(run).toMatchObject({ status: 'succeeded', toSha: sampledSha, pushed: true, error: null });
+    expect(run.mergeSha).toBe(await f.repo.headSha());
+    expect(run.mergeSha).not.toBe(concurrentSha);
+    expect(run.changedPaths).toEqual([run.journalPath]);
+    expect(await f.repo.readFile('wiki/concurrent.md')).toBe(concurrentContent);
+    expect(await f.repo.readFile(run.journalPath!)).toBe(journalContent);
+    expect(f.learnedAt(messageId)).toEqual(expect.any(String));
+    expect(await f.repo.git(['rev-parse', 'main'], f.repo.origin)).toBe(run.mergeSha);
+  });
+
+  it('allows unresolved links inherited when main advances before worktree creation', async () => {
+    const f = await fixture();
+    f.addMessage();
+    const sampledSha = await f.repo.headSha();
+    const originalCreateWorktree = f.repo.createWorktree.bind(f.repo);
+    const concurrentContent = '# Inherited note\n\n[[missing-before-worktree]]\n';
+    let concurrentSha: string | undefined;
+    f.repo.createWorktree = async (name) => {
+      concurrentSha = await f.repo.change('wiki/inherited.md', concurrentContent);
+      return originalCreateWorktree(name);
+    };
+
+    const run = await f.dreaming.runOnce();
+
+    expect(run).toMatchObject({ status: 'succeeded', toSha: sampledSha, pushed: true, error: null });
+    expect(inputOf(f.runAgent.mock.calls[0][0]).toSha).toBe(sampledSha);
+    expect(run.mergeSha).toBe(await f.repo.headSha());
+    expect(run.mergeSha).not.toBe(concurrentSha);
+    expect(await f.repo.readFile('wiki/inherited.md')).toBe(concurrentContent);
+    expect(await f.repo.readFile(run.journalPath!)).toBe(journalContent);
+  });
+
+  it('retains captured unresolved targets when concurrent main repairs them', async () => {
+    const f = await fixture();
+    const sampledSha = await f.repo.change('wiki/older.md', '# Older note\n\n[[missing-before-run]]\n');
+    const journal = `${journalContent}\nStill unresolved: [[missing-before-run]]\n`;
+    f.runAgent.mockImplementationOnce(async (options) => {
+      await writeJournal(options, journal);
+      await f.repo.change('wiki/older.md', '# Older note\n\nThe unresolved reference was removed.\n');
+      return { text: 'Preserved an existing unresolved target.', toolCalls: 1 };
+    });
+
+    const run = await f.dreaming.runOnce();
+
+    expect(run).toMatchObject({ status: 'succeeded', toSha: sampledSha, pushed: true, error: null });
+    expect(await f.repo.readFile('wiki/older.md')).toBe('# Older note\n\nThe unresolved reference was removed.\n');
+    expect(await f.repo.readFile(run.journalPath!)).toBe(journal);
+    expect(run.mergeSha).toBe(await f.repo.headSha());
+  });
+
+  it('rejects a dreaming move that breaks a link introduced by concurrent main', async () => {
+    const f = await fixture();
+    const messageId = f.addMessage();
+    const concurrentContent = '# Concurrent note\n\n[[wiki/release]]\n[[missing-concurrent-note]]\n';
+    let concurrentSha: string | undefined;
+    f.runAgent.mockImplementationOnce(async (options) => {
+      await writeJournal(options);
+      const move = options.tools.find(tool => tool.name === 'move_file')!;
+      await move.run({ from: 'wiki/release.md', to: 'wiki/renamed-release.md' });
+      concurrentSha = await f.repo.change('wiki/concurrent.md', concurrentContent);
+      return { text: 'Moved release knowledge.', toolCalls: 2 };
+    });
+
+    const run = await f.dreaming.runOnce();
+
+    expect(run).toMatchObject({
+      status: 'failed', mergeSha: null, pushed: true,
+      error: 'Dreaming introduced broken links: wiki/release',
+      structuralChanges: [{ kind: 'move', from: 'wiki/release.md', to: 'wiki/renamed-release.md' }],
+    });
+    expect(await f.repo.headSha()).toBe(concurrentSha);
+    expect(await f.repo.readFile('wiki/release.md')).toBe(similarContent);
+    expect(await f.repo.readFile('wiki/renamed-release.md')).toBeNull();
+    expect(await f.repo.readFile('wiki/concurrent.md')).toBe(concurrentContent);
+    expect(await f.repo.listFiles('journal/')).toEqual([]);
+    expect(f.learnedAt(messageId)).toBeNull();
+    expect(f.indexer.syncToHead).not.toHaveBeenCalled();
+    expect(await f.repo.git(['rev-parse', 'main'], f.repo.origin)).toBe(concurrentSha);
+  });
+
+  it('rejects a broken link introduced in an uppercase markdown extension', async () => {
+    const f = await fixture();
+    f.addMessage();
+    const head = await f.repo.headSha();
+    f.runAgent.mockImplementationOnce(async (options) => {
+      await writeJournal(options);
+      await options.tools.find(tool => tool.name === 'write_file')!.run({
+        path: 'wiki/UPPER.MD', content: '# Uppercase note\n\n[[missing-uppercase-target]]\n',
+      });
+      return { text: 'Added an uppercase note.', toolCalls: 2 };
+    });
+
+    const run = await f.dreaming.runOnce();
+
+    expect(run).toMatchObject({ status: 'failed', mergeSha: null, error: 'Dreaming introduced broken links: missing-uppercase-target' });
+    expect(await f.repo.headSha()).toBe(head);
+    expect(await f.repo.readFile('wiki/UPPER.MD')).toBeNull();
+    expect(f.indexer.syncToHead).not.toHaveBeenCalled();
+  });
+
+  it('allows respelling an existing unresolved target with the same normalized identity', async () => {
+    const f = await fixture();
+    const sampledSha = await f.repo.change('wiki/reference.MD', '# Reference\n\n[[Missing.MD]]\n');
+    const updated = '# Reference\n\n[[missing]]\n';
+    f.runAgent.mockImplementationOnce(async (options) => {
+      await writeJournal(options);
+      await options.tools.find(tool => tool.name === 'write_file')!.run({ path: 'wiki/reference.MD', content: updated });
+      return { text: 'Normalized an existing unresolved target.', toolCalls: 2 };
+    });
+
+    const run = await f.dreaming.runOnce();
+
+    expect(run).toMatchObject({ status: 'succeeded', toSha: sampledSha, pushed: true, error: null });
+    expect(await f.repo.readFile('wiki/reference.MD')).toBe(updated);
+    expect(run.mergeSha).toBe(await f.repo.headSha());
+  });
+
+  it('rejects a new basename collision that makes an existing resolved link ambiguous', async () => {
+    const f = await fixture();
+    const head = await f.repo.change('wiki/reference.md', '# Reference\n\n[[release]]\n');
+    f.runAgent.mockImplementationOnce(async (options) => {
+      await writeJournal(options);
+      await options.tools.find(tool => tool.name === 'write_file')!.run({
+        path: 'wiki/other/release.md', content: '# Another release\n\nA different topic.\n',
+      });
+      return { text: 'Added another release note.', toolCalls: 2 };
+    });
+
+    const run = await f.dreaming.runOnce();
+
+    expect(run).toMatchObject({ status: 'failed', mergeSha: null, error: 'Dreaming introduced broken links: release' });
+    expect(await f.repo.headSha()).toBe(head);
+    expect(await f.repo.readFile('wiki/other/release.md')).toBeNull();
+    expect(await f.repo.readFile('wiki/reference.md')).toBe('# Reference\n\n[[release]]\n');
+    expect(f.indexer.syncToHead).not.toHaveBeenCalled();
+  });
+
+  it('allows a new embed targeting an existing asset', async () => {
+    const f = await fixture();
+    await f.repo.change('assets/diagram.png', 'image bytes');
+    const content = '# Diagram\n\n![[assets/diagram.png]]\n';
+    f.runAgent.mockImplementationOnce(async (options) => {
+      await writeJournal(options);
+      await options.tools.find(tool => tool.name === 'write_file')!.run({ path: 'wiki/diagram.md', content });
+      return { text: 'Referenced an existing asset.', toolCalls: 2 };
+    });
+
+    const run = await f.dreaming.runOnce();
+
+    expect(run).toMatchObject({ status: 'succeeded', pushed: true, error: null });
+    expect(await f.repo.readFile('wiki/diagram.md')).toBe(content);
+    expect(await f.repo.readFile('assets/diagram.png')).toBe('image bytes');
+    expect(run.mergeSha).toBe(await f.repo.headSha());
+  });
+
+  it('rejects a move that breaks an existing asset embed', async () => {
+    const f = await fixture();
+    await f.repo.change('assets/diagram.png', 'image bytes');
+    const content = '# Diagram\n\n![[assets/diagram.png]]\n';
+    const head = await f.repo.change('wiki/diagram.md', content);
+    f.runAgent.mockImplementationOnce(async (options) => {
+      await writeJournal(options);
+      await options.tools.find(tool => tool.name === 'move_file')!.run({ from: 'assets/diagram.png', to: 'assets/renamed.png' });
+      return { text: 'Moved an embedded asset.', toolCalls: 2 };
+    });
+
+    const run = await f.dreaming.runOnce();
+
+    expect(run).toMatchObject({ status: 'failed', mergeSha: null, error: 'Dreaming introduced broken links: assets/diagram.png' });
+    expect(await f.repo.headSha()).toBe(head);
+    expect(await f.repo.readFile('assets/diagram.png')).toBe('image bytes');
+    expect(await f.repo.readFile('assets/renamed.png')).toBeNull();
+    expect(await f.repo.readFile('wiki/diagram.md')).toBe(content);
+    expect(f.indexer.syncToHead).not.toHaveBeenCalled();
+  });
+
+  it('rejects a new asset basename collision that makes an existing embed ambiguous', async () => {
+    const f = await fixture();
+    await f.repo.change('assets/diagram.png', 'image bytes');
+    const content = '# Diagram\n\n![[diagram.png]]\n';
+    const head = await f.repo.change('wiki/diagram.md', content);
+    f.runAgent.mockImplementationOnce(async (options) => {
+      await writeJournal(options);
+      await options.tools.find(tool => tool.name === 'write_file')!.run({
+        path: 'assets/other/diagram.png', content: 'other image bytes',
+      });
+      return { text: 'Added another diagram asset.', toolCalls: 2 };
+    });
+
+    const run = await f.dreaming.runOnce();
+
+    expect(run).toMatchObject({ status: 'failed', mergeSha: null, error: 'Dreaming introduced broken links: diagram.png' });
+    expect(await f.repo.headSha()).toBe(head);
+    expect(await f.repo.readFile('assets/other/diagram.png')).toBeNull();
+    expect(await f.repo.readFile('wiki/diagram.md')).toBe(content);
   });
 
   it.each([null, ' \n\t'])('rejects a missing or empty journal before changing main (%j)', async (content) => {

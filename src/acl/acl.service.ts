@@ -16,6 +16,10 @@ function fail(status: number, code: string, message: string): never {
   throw new HttpException({ error: { code, message } }, status);
 }
 
+export function matchesAclPrefix(prefix: string, path: string): boolean {
+  return prefix === '/' || prefix === path || (prefix.endsWith('/') && path.startsWith(prefix));
+}
+
 @Injectable()
 export class AclService {
   private readonly readRevision;
@@ -162,7 +166,7 @@ export class AclService {
     const subject = String(user.id);
     return rules.find((rule) =>
       (rule.subjectType === 'everyone' || (rule.subjectType === 'role' ? rule.subject === user.role : rule.subject === subject)) &&
-      (rule.prefix === '/' || rule.prefix === path || (rule.prefix.endsWith('/') && path.startsWith(rule.prefix)))) ?? null;
+      matchesAclPrefix(rule.prefix, path)) ?? null;
   }
 
   private effective(user: AclUser, rule: AclRule | null): Access {

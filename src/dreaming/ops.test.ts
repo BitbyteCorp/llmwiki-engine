@@ -18,6 +18,9 @@ import type { WikiEvent } from '../events/events.types.js';
 import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
 import type { AgentService } from '../agent/agent.service.js';
 import type { RunAgentOptions } from '../agent/agent.types.js';
+import { makeWorktreeTools } from '../agent/worktree.js';
+import type { CatalogService } from '../rag/catalog.service.js';
+import type { ComparisonService } from '../rag/comparison.service.js';
 import type { IndexerService } from '../rag/indexer.service.js';
 import type { SearchService } from '../rag/search.service.js';
 import type { DreamRun } from './dream-run.types.js';
@@ -34,7 +37,7 @@ afterEach(async () => {
 async function database() {
   const db = new Database(':memory:');
   resources.push(() => { db.close(); });
-  for (const migration of ['001_core', '002_auth', '005_dreaming', '008_ops', '011_platform', '013_acl']) db.exec(await readFile(new URL(`../db/migrations/${migration}.sql`, import.meta.url), 'utf8'));
+  for (const migration of ['001_core', '002_auth', '005_dreaming', '008_ops', '011_platform', '013_acl', '021_dream_modes']) db.exec(await readFile(new URL(`../db/migrations/${migration}.sql`, import.meta.url), 'utf8'));
   db.exec('CREATE TABLE messages (id TEXT PRIMARY KEY, conversation_id TEXT, role TEXT, content TEXT, created_at TEXT, learned_at TEXT)');
   return { db, runs: new DreamRunsRepository(db) };
 }
@@ -43,6 +46,7 @@ function runRecord(id: string, startedAt: string): DreamRun {
   return {
     id, startedAt, finishedAt: null, status: 'running', fromSha: null, toSha: null,
     mergeSha: null, pushed: false, summary: null, changedPaths: [], journalPath: null,
+    mode: null, focus: null, structuralChanges: [],
     error: null, push: { status: 'pending', remote: null, sha: null, at: null, reason: null },
   };
 }
@@ -60,24 +64,27 @@ async function fixture(slackWebhookUrl?: string) {
   const events = new EventsService();
   const seen: WikiEvent[] = [];
   events.subscribe((event) => seen.push(event));
-  let worktree: Worktree;
   const runAgent = vi.fn(async (options: RunAgentOptions) => {
     const input = JSON.parse(options.input as string) as { date: string };
-    await worktree.write(`journal/${input.date}.md`, '# SECRET_NOTE_CONTENT\n');
-    await worktree.write('wiki/result.md', '# Reviewed knowledge\n');
+    await options.tools.find((tool) => tool.name === 'write_file')!.run({ path: `journal/${input.date}.md`, content: '# SECRET_NOTE_CONTENT\n' });
+    await options.tools.find((tool) => tool.name === 'write_file')!.run({ path: 'wiki/result.md', content: '# Reviewed knowledge\n' });
     return { text: 'SECRET_SUMMARY', toolCalls: 2 };
   });
   const agent = {
     baseInstructions: async () => 'Review facts.', runAgent,
-    worktreeTools: (wt: Worktree) => { worktree = wt; return []; },
+    worktreeTools: (wt: Worktree, author: { name: string; email: string }) => {
+      return makeWorktreeTools(search, wt, author, acl);
+    },
     resolveConflicts: async () => { throw new Error('Unexpected conflict'); },
   } as unknown as AgentService;
   const indexer = { syncToHead: async () => ({ indexedSha: await repo.headSha() }) } as unknown as IndexerService;
   const search = { search: async () => [] } as unknown as SearchService;
+  const catalog = { graph: () => ({ nodes: [], edges: [] }) } as unknown as CatalogService;
+  const comparison = { duplicates: () => [] } as unknown as ComparisonService;
   const audit = new AuditService(db);
   const acl = new AclService(db, new UsersService(new UsersRepository(db)), audit);
-  const dreaming = new DreamingService(repo, agent, indexer, search, config, log, runs, events, acl, audit);
-  const other = new DreamingService(repo, agent, indexer, search, config, log, runs, events, acl, audit);
+  const dreaming = new DreamingService(repo, agent, indexer, search, config, log, runs, events, acl, audit, catalog, comparison);
+  const other = new DreamingService(repo, agent, indexer, search, config, log, runs, events, acl, audit, catalog, comparison);
   return { root, repo, runs, db, dreaming, other, runAgent, events, seen, warn };
 }
 
@@ -106,6 +113,8 @@ it('persists completed details and pages tied timestamps without losing rows', a
     status: 'succeeded', finishedAt: '2026-10-01T00:01:00.000Z', summary: '검토 완료',
     fromSha: 'base', toSha: 'input', mergeSha: 'merged', changedPaths: ['wiki/a.md', 'journal/2026-10-01.md'],
     journalPath: 'journal/2026-10-01.md', pushed: true,
+    mode: 'sweep', focus: 'wiki/topic/',
+    structuralChanges: [{ kind: 'move', from: 'wiki/topic/old.md', to: 'wiki/topic/new.md' }],
     push: { status: 'succeeded', remote: 'origin', sha: 'merged', at: '2026-10-01T00:01:00.000Z', reason: null },
   });
   runs.finish(first);
@@ -265,5 +274,91 @@ it('keeps content edited after capture unlearned while acknowledging unchanged c
   ]);
   expect(runs.unlearnedUserMessages('2026-10-01T03:00:00.000Z')).toEqual([
     { id: edited, conversation_id: conversation, content: 'New unseen content', created_at: '2026-10-01T00:00:00.000Z' },
+  ]);
+});
+
+it('runs an idle night sweep in the least recently reviewed wiki folder', async () => {
+  const f = await fixture();
+  f.db.prepare('DELETE FROM messages').run();
+  const wt = await f.repo.createWorktree('idle-seed');
+  const author = { name: 'Test', email: 'test@example.test' };
+  await wt.write('wiki/topic/a.md', '# Topic\n\nA unique fact.\n');
+  await wt.write('index.md', '[[wiki/topic/a]]\n');
+  await wt.commit('Seed sweep folder', author);
+  await f.repo.withMergeLock(() => wt.fastForwardMain());
+  await wt.dispose();
+  const checkpoint = runRecord(newId(), '2020-01-01T00:00:00.000Z');
+  checkpoint.status = 'succeeded';
+  checkpoint.toSha = await f.repo.headSha();
+  checkpoint.finishedAt = '2020-01-01T00:01:00.000Z';
+  f.runs.create(checkpoint);
+  f.runs.finish(checkpoint);
+  const run = await f.dreaming.runOnce();
+  expect(run).toMatchObject({ status: 'succeeded', mode: 'sweep', focus: 'wiki/topic/' });
+  expect(f.runs.get(run.id)).toEqual(run);
+  expect(JSON.parse(f.runAgent.mock.calls[0][0].input as string)).toMatchObject({
+    mode: 'sweep', focus: 'wiki/topic/', commits: [], userMessages: [],
+    structure: { focus: 'wiki/topic/', files: ['wiki/topic/a.md'] },
+  });
+  expect(f.runs.lastSucceededSweeps().get('wiki/topic/')).toBe(run.finishedAt);
+});
+
+it.each([false, true])('validates backlinks before merging a moved note (fixed: %s)', async (fixLinks) => {
+  const f = await fixture();
+  const author = { name: 'Test', email: 'test@example.test' };
+  const seed = await f.repo.createWorktree('linked-seed');
+  await seed.write('wiki/topic/old.md', '# Durable fact\n');
+  await seed.write('wiki/topic/source.md', '[[wiki/topic/old]]\n');
+  await seed.write('index.md', '[[wiki/topic/source]]\n');
+  await seed.commit('Seed linked notes', author);
+  await f.repo.withMergeLock(() => seed.fastForwardMain());
+  await seed.dispose();
+  const beforeHead = await f.repo.headSha();
+  f.runAgent.mockImplementationOnce(async (options) => {
+    const input = JSON.parse(options.input as string) as { date: string };
+    await options.tools.find((tool) => tool.name === 'move_file')!.run({ from: 'wiki/topic/old.md', to: 'wiki/topic/new.md' });
+    if (fixLinks) await options.tools.find((tool) => tool.name === 'write_file')!.run({
+      path: 'wiki/topic/source.md', content: '[[wiki/topic/new]]\n',
+    });
+    await options.tools.find((tool) => tool.name === 'write_file')!.run({
+      path: `journal/${input.date}.md`, content: '# 일기\n\n## 구조 정리\nwiki/topic/old.md → wiki/topic/new.md: 탐색 개선이다.\n',
+    });
+    return { text: 'Reorganized', toolCalls: fixLinks ? 3 : 2 };
+  });
+  const run = await f.dreaming.runOnce();
+  expect(run.structuralChanges).toEqual([{ kind: 'move', from: 'wiki/topic/old.md', to: 'wiki/topic/new.md' }]);
+  expect(f.runs.get(run.id)).toEqual(run);
+  if (fixLinks) {
+    expect(run.status).toBe('succeeded');
+    expect(await f.repo.readFile('wiki/topic/old.md')).toBeNull();
+    expect(await f.repo.readFile('wiki/topic/new.md')).toBe('# Durable fact\n');
+    expect(await f.repo.readFile('wiki/topic/source.md')).toBe('[[wiki/topic/new]]\n');
+    expect(f.runs.unlearnedUserMessages(new Date().toISOString())).toEqual([]);
+  } else {
+    expect(run).toMatchObject({ status: 'failed', mergeSha: null, push: { status: 'skipped' } });
+    expect(run.error).toBe('Dreaming introduced broken links: wiki/topic/old');
+    expect(await f.repo.headSha()).toBe(beforeHead);
+    expect(await f.repo.readFile('wiki/topic/old.md')).toBe('# Durable fact\n');
+    expect(f.runs.unlearnedUserMessages(new Date().toISOString())).toMatchObject([{ content: 'SECRET_USER_INPUT' }]);
+  }
+});
+
+it('rotates sweep history only after succeeded sweeps', async () => {
+  const { runs } = await database();
+  for (const [mode, status, focus, finishedAt] of [
+    ['sweep', 'succeeded', 'wiki/a/', '2026-10-01T01:00:00.000Z'],
+    ['sweep', 'succeeded', 'wiki/a/', '2026-10-02T01:00:00.000Z'],
+    ['sweep', 'failed', 'wiki/a/', '2026-10-03T01:00:00.000Z'],
+    ['local', 'succeeded', 'wiki/a/', '2026-10-04T01:00:00.000Z'],
+    ['structural', 'succeeded', 'wiki/b/', '2026-10-05T01:00:00.000Z'],
+    ['sweep', 'succeeded', 'wiki/b/', '2026-10-01T01:00:00.000Z'],
+  ] as const) {
+    const record = runRecord(newId(), finishedAt);
+    Object.assign(record, { mode, status, focus, finishedAt });
+    runs.create(record);
+    runs.finish(record);
+  }
+  expect([...runs.lastSucceededSweeps()].sort(([left], [right]) => left.localeCompare(right))).toEqual([
+    ['wiki/a/', '2026-10-02T01:00:00.000Z'], ['wiki/b/', '2026-10-01T01:00:00.000Z'],
   ]);
 });
