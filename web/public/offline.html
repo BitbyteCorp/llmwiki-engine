@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>오프라인 · LLM Wiki</title>
+  <style>
+    :root { color-scheme: light; --background: #fff; --foreground: #171717; --muted-foreground: #5f5f5f; --primary: #171717; --primary-foreground: #fff; --ring: #0069d9; }
+    @media (prefers-color-scheme: dark) {
+      :root { color-scheme: dark; --background: #171717; --foreground: #f0f0f0; --muted-foreground: #b3b3b3; --primary: #f0f0f0; --primary-foreground: #171717; --ring: #79b8ff; }
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: 2rem; background: var(--background); color: var(--foreground); font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif; text-align: center; }
+    main { max-width: 28rem; }
+    .brand { display: inline-flex; align-items: center; gap: .625rem; font-size: 1rem; font-weight: 700; }
+    .brand svg { width: 1.5rem; height: 1.5rem; }
+    h1 { margin: 2rem 0 .75rem; font-size: 1.5rem; line-height: 1.4; letter-spacing: -.02em; }
+    p { margin: 0; color: var(--muted-foreground); font-size: .875rem; line-height: 1.75; word-break: keep-all; }
+    button { margin-top: 1.5rem; padding: .625rem 1.25rem; border: 0; border-radius: .25rem; background: var(--primary); color: var(--primary-foreground); font: inherit; font-size: .875rem; font-weight: 700; cursor: pointer; }
+    button:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="brand">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 7v14" />
+        <path d="M3 18a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h5a4 4 0 0 1 4 4 4 4 0 0 1 4-4h5a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-6a3 3 0 0 0-3 3 3 3 0 0 0-3-3z" />
+      </svg>
+      <span>LLM Wiki</span>
+    </div>
+    <h1>오프라인 상태입니다</h1>
+    <p>위키를 탐색하고 도니에게 질문하려면 인터넷 연결이 필요합니다. 연결을 확인한 후 다시 시도해 주세요.</p>
+    <button id="retry" type="button">다시 시도</button>
+  </main>
+  <script>
+    document.getElementById('retry').addEventListener('click', () => location.reload())
+    window.addEventListener('online', () => location.reload())
+  </script>
+</body>
+</html>
