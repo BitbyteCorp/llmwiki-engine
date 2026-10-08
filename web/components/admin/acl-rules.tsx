@@ -27,9 +27,9 @@ function subjectLabel(rule: AclRule, users: User[]) {
 
 function AccessResult({ result, users }: { result: AclCheck; users: User[] }) {
   const user = users.find(candidate => candidate.id === result.userId)
-  return <div role="status" className="space-y-3 rounded-lg border bg-card p-4 text-sm">
-    <p className="text-sm font-semibold">최종 접근 권한: {accessLabels[result.access]}</p>
-    <dl className="grid grid-cols-1 gap-3 @2xl/settings-panel:grid-cols-[auto_1fr]">
+  return <div role="status" className="space-y-2 text-label-13">
+    <p className="flex h-7 items-center gap-1.5 border-b text-label-13 font-semibold">최종 접근 권한: {accessLabels[result.access]}</p>
+    <dl className="grid grid-cols-1 gap-x-6 gap-y-1.5 text-label-13 @2xl/settings-panel:grid-cols-[auto_1fr]">
       <dt className="text-muted-foreground">사용자</dt><dd className="break-all">{user ? userLabel(user) : `사용자 ID: ${result.userId}`}</dd>
       <dt className="text-muted-foreground">경로</dt><dd className="break-all font-mono">{result.path}</dd>
       <dt className="text-muted-foreground">판정 근거</dt><dd>{result.reason === 'admin' ? '관리자는 모든 경로를 읽고 쓸 수 있다.' : result.reason === 'role_default' ? '일치하는 규칙이 없어 전역 역할의 기본 권한을 적용했다.' : '가장 구체적인 적용 규칙을 사용했다.'}</dd>
@@ -112,47 +112,47 @@ export function AclRules() {
   }
 
   return <section className="space-y-3" aria-labelledby="acl-heading">
-    <div className="space-y-3 rounded-lg border bg-card p-4">
-      <h2 id="acl-heading" className="text-sm font-semibold">폴더 접근 권한</h2>
-      <p className="text-sm text-muted-foreground">가장 구체적인 경로의 규칙을 적용하고, 같은 경로에서는 사용자 → 역할 → 모든 사용자 순으로 우선한다. 관리자는 규칙과 관계없이 접근한다.</p>
-      <p className="text-sm text-muted-foreground">규칙이 없으면 조회자는 읽기, 편집자는 읽기·쓰기가 가능하다. 쓰기 규칙으로 조회자의 전역 권한을 높일 수 없다.</p>
+    <div className="space-y-2">
+      <h2 id="acl-heading" className="flex h-7 items-center gap-1.5 border-b text-label-13 font-semibold">폴더 접근 권한</h2>
+      <p className="text-label-13 text-muted-foreground">가장 구체적인 경로의 규칙을 적용하고, 같은 경로에서는 사용자 → 역할 → 모든 사용자 순으로 우선한다. 관리자는 규칙과 관계없이 접근한다.</p>
+      <p className="text-label-13 text-muted-foreground">규칙이 없으면 조회자는 읽기, 편집자는 읽기·쓰기가 가능하다. 쓰기 규칙으로 조회자의 전역 권한을 높일 수 없다.</p>
     </div>
 
-    <div className="space-y-3 rounded-lg border bg-card p-4" aria-labelledby="acl-list-heading">
-      <h3 id="acl-list-heading" className="text-sm font-semibold">접근 규칙</h3>
+    <div className="space-y-2" aria-labelledby="acl-list-heading">
+      <h3 id="acl-list-heading" className="flex h-7 items-center gap-1.5 border-b text-label-13 font-semibold">접근 규칙</h3>
       {rules.isPending && <Loading label="접근 규칙을 불러오는 중이다." />}
       {rules.isError && <div className="space-y-3"><ErrorNotice error={rules.error} /><Button variant="outline" size="sm" disabled={rules.isFetching} onClick={() => void rules.refetch()}>규칙 다시 불러오기</Button></div>}
       {rules.data && !rules.data.rules.length && <EmptyState title="등록된 접근 규칙이 없다" description="모든 경로에 전역 역할의 기본 권한을 적용한다. 아래에서 폴더나 파일의 접근 규칙을 추가할 수 있다." />}
       {groupedRules.map(([groupPrefix, entries]) => <div key={groupPrefix} className="overflow-hidden rounded-lg border">
-        <h4 className="break-all border-b bg-muted/30 px-4 py-3 font-mono text-sm font-semibold">{groupPrefix === '/' ? '/ (전체 저장소)' : groupPrefix}</h4>
-        <Table className="min-w-[600px]">
-          <TableHeader><TableRow><TableHead scope="col">대상</TableHead><TableHead scope="col">권한</TableHead><TableHead scope="col">등록 시각</TableHead><TableHead scope="col"><span className="sr-only">규칙 삭제</span></TableHead></TableRow></TableHeader>
-          <TableBody>{entries.map(rule => <TableRow key={rule.id}>
-            <TableCell className="min-w-48 max-w-xs whitespace-normal break-all">{subjectLabel(rule, userList)}</TableCell>
-            <TableCell>{accessLabels[rule.access]}</TableCell>
-            <TableCell className="text-muted-foreground">{formatDate(rule.createdAt)}</TableCell>
-            <TableCell className="text-right"><Button variant="ghost" size="sm" disabled={busy} aria-label={`${rule.prefix} ${subjectLabel(rule, userList)} 규칙 삭제`} onClick={() => { remove.reset(); setNotice(''); setDeleteRule(rule) }}>삭제</Button></TableCell>
+        <h4 className="break-all border-b px-2 py-1.5 font-mono text-label-13 font-semibold">{groupPrefix === '/' ? '/ (전체 저장소)' : groupPrefix}</h4>
+        <Table className="min-w-[600px] text-label-13">
+          <TableHeader><TableRow><TableHead scope="col" className="h-7 px-2 py-1.5 text-xs">대상</TableHead><TableHead scope="col" className="h-7 px-2 py-1.5 text-xs">권한</TableHead><TableHead scope="col" className="h-7 px-2 py-1.5 text-xs">등록 시각</TableHead><TableHead scope="col" className="h-7 px-2 py-1.5"><span className="sr-only">규칙 삭제</span></TableHead></TableRow></TableHeader>
+          <TableBody className="divide-y border-y">{entries.map(rule => <TableRow key={rule.id}>
+            <TableCell className="min-w-48 max-w-xs whitespace-normal break-all px-2 py-1.5">{subjectLabel(rule, userList)}</TableCell>
+            <TableCell className="px-2 py-1.5">{accessLabels[rule.access]}</TableCell>
+            <TableCell className="px-2 py-1.5 text-xs text-muted-foreground">{formatDate(rule.createdAt)}</TableCell>
+            <TableCell className="px-2 py-1.5 text-right"><Button variant="ghost" size="sm" disabled={busy} aria-label={`${rule.prefix} ${subjectLabel(rule, userList)} 규칙 삭제`} onClick={() => { remove.reset(); setNotice(''); setDeleteRule(rule) }}>삭제</Button></TableCell>
           </TableRow>)}</TableBody>
         </Table>
       </div>)}
-      {deleteRule && <div role="alert" className="space-y-3 rounded-lg border bg-card p-4 text-sm">
+      {deleteRule && <div role="alert" className="space-y-2 text-label-13">
         <p className="break-all"><strong>{deleteRule.prefix}</strong>의 {subjectLabel(deleteRule, userList)} 규칙을 삭제할까요? 삭제하면 상위 경로의 규칙 또는 전역 역할의 기본 권한을 적용한다.</p>
         <ErrorNotice error={remove.error} />
-        <div className="flex gap-3"><Button variant="outline" disabled={remove.isPending} onClick={() => { setDeleteRule(null); remove.reset() }}>취소</Button><Button variant="destructive" disabled={busy} onClick={() => remove.mutate(deleteRule.id)}>{remove.isPending ? '삭제 중…' : '규칙 삭제 확인'}</Button></div>
+        <div className="flex gap-2"><Button variant="outline" disabled={remove.isPending} onClick={() => { setDeleteRule(null); remove.reset() }}>취소</Button><Button variant="destructive" disabled={busy} onClick={() => remove.mutate(deleteRule.id)}>{remove.isPending ? '삭제 중…' : '규칙 삭제 확인'}</Button></div>
       </div>}
-      {notice && <p role="status" className="text-sm">{notice}</p>}
+      {notice && <p role="status" className="text-label-13">{notice}</p>}
     </div>
 
-    <div className="space-y-3 rounded-lg border bg-card p-4" aria-labelledby="acl-add-heading">
-      <h3 id="acl-add-heading" className="text-sm font-semibold">규칙 추가 · 변경</h3>
-      <p className="text-sm text-muted-foreground">같은 경로와 대상의 규칙을 저장하면 기존 권한을 변경한다. 전체 저장소는 /, 폴더는 끝에 /를 붙이고 파일은 정확한 상대 경로를 입력한다.</p>
+    <div className="space-y-2" aria-labelledby="acl-add-heading">
+      <h3 id="acl-add-heading" className="flex h-7 items-center gap-1.5 border-b text-label-13 font-semibold">규칙 추가 · 변경</h3>
+      <p className="text-label-13 text-muted-foreground">같은 경로와 대상의 규칙을 저장하면 기존 권한을 변경한다. 전체 저장소는 /, 폴더는 끝에 /를 붙이고 파일은 정확한 상대 경로를 입력한다.</p>
       {tree.isPending && <Loading label="폴더 목록을 불러오는 중이다." />}
-      {tree.isError && <div className="space-y-3"><ErrorNotice error={tree.error} /><Button variant="outline" size="sm" disabled={tree.isFetching} onClick={() => void tree.refetch()}>폴더 목록 다시 불러오기</Button><p className="text-sm text-muted-foreground">폴더 목록 없이도 경로를 직접 입력할 수 있다.</p></div>}
+      {tree.isError && <div className="space-y-3"><ErrorNotice error={tree.error} /><Button variant="outline" size="sm" disabled={tree.isFetching} onClick={() => void tree.refetch()}>폴더 목록 다시 불러오기</Button><p className="text-label-13 text-muted-foreground">폴더 목록 없이도 경로를 직접 입력할 수 있다.</p></div>}
       {users.isPending && <Loading label="사용자 목록을 불러오는 중이다." />}
       {users.isError && <div className="space-y-3"><ErrorNotice error={users.error} /><Button variant="outline" size="sm" disabled={users.isFetching} onClick={() => void users.refetch()}>사용자 목록 다시 불러오기</Button></div>}
-      {users.data && !userList.length && <p className="text-sm text-muted-foreground">선택할 사용자가 없다. 역할이나 모든 사용자 대상 규칙은 저장할 수 있다.</p>}
-      <form onSubmit={submitRule} className="space-y-3">
-        <div className="grid grid-cols-1 gap-3 @2xl/settings-panel:grid-cols-2">
+      {users.data && !userList.length && <p className="text-label-13 text-muted-foreground">선택할 사용자가 없다. 역할이나 모든 사용자 대상 규칙은 저장할 수 있다.</p>}
+      <form onSubmit={submitRule} className="space-y-2">
+        <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 @2xl/settings-panel:grid-cols-2">
           <div className="space-y-2"><Label htmlFor="acl-folder">폴더 선택</Label><NativeSelect id="acl-folder" className="w-full" value={folders.includes(prefix) ? prefix : ''} disabled={busy} onChange={event => { if (event.target.value) setPrefix(event.target.value) }}><option value="">직접 입력한 경로</option>{folders.map(folder => <option key={folder} value={folder}>{folder === '/' ? '/ (전체 저장소)' : folder}</option>)}</NativeSelect></div>
           <div className="space-y-2"><Label htmlFor="acl-prefix">폴더 또는 정확한 파일 경로</Label><Input id="acl-prefix" value={prefix} required disabled={busy} aria-describedby="acl-prefix-help" placeholder="team/ 또는 team/note.md" onChange={event => { setPrefix(event.target.value); create.reset() }} /><p id="acl-prefix-help" className="text-xs text-muted-foreground">저장소 상대 경로를 사용한다. 상위 경로(..)와 절대 경로는 사용할 수 없다. /는 전체 저장소를 뜻한다.</p></div>
           <div className="space-y-2"><Label htmlFor="acl-subject-type">대상 유형</Label><NativeSelect id="acl-subject-type" className="w-full" value={subjectType} disabled={busy} onChange={event => { setSubjectType(event.target.value as AclSubjectType); create.reset() }}>{Object.entries(subjectLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</NativeSelect></div>
@@ -165,11 +165,11 @@ export function AclRules() {
       </form>
     </div>
 
-    <div className="space-y-3 rounded-lg border bg-card p-4" aria-labelledby="acl-check-heading">
-      <h3 id="acl-check-heading" className="text-sm font-semibold">접근 확인</h3>
-      <p className="text-sm text-muted-foreground">사용자와 파일 경로를 선택해 실제 접근 권한과 적용 규칙을 확인한다.</p>
-      <form onSubmit={submitCheck} className="space-y-3">
-        <div className="grid grid-cols-1 gap-3 @2xl/settings-panel:grid-cols-2">
+    <div className="space-y-2" aria-labelledby="acl-check-heading">
+      <h3 id="acl-check-heading" className="flex h-7 items-center gap-1.5 border-b text-label-13 font-semibold">접근 확인</h3>
+      <p className="text-label-13 text-muted-foreground">사용자와 파일 경로를 선택해 실제 접근 권한과 적용 규칙을 확인한다.</p>
+      <form onSubmit={submitCheck} className="space-y-2">
+        <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 @2xl/settings-panel:grid-cols-2">
           <div className="space-y-2"><Label htmlFor="acl-check-user">확인할 사용자</Label><NativeSelect id="acl-check-user" className="w-full" value={checkUser} required disabled={users.isPending || !userList.length} onChange={event => setCheckUser(event.target.value)}><option value="">사용자 선택</option>{userList.map(user => <option key={user.id} value={String(user.id)}>{userLabel(user)}</option>)}</NativeSelect></div>
           <div className="space-y-2"><Label htmlFor="acl-check-path">확인할 파일 경로</Label><Input id="acl-check-path" required value={checkPath} placeholder="team/note.md" onChange={event => setCheckPath(event.target.value)} /></div>
         </div>

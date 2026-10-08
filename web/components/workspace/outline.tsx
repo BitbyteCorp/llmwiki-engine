@@ -64,10 +64,10 @@ export function Outline({ contentRef, scrollerRef, revision }: {
   if (!headings.length) return null
   const minimumLevel = Math.min(...headings.map(heading => heading.level))
   return (
-    <details className="rounded-lg border bg-card p-4">
-      <summary className="cursor-pointer rounded text-sm font-semibold focus-visible:outline-2 focus-visible:outline-ring">목차</summary>
-      <nav aria-label="노트 목차" className="mt-3 max-h-52 overflow-y-auto">
-        <ol className="space-y-0.5">{headings.map(heading => <li key={heading.id}><button type="button" aria-current={active === heading.id ? 'location' : undefined} onClick={() => navigate(heading)} style={{ paddingLeft: `${(heading.level - minimumLevel) * 12 + 8}px` }} className={`min-h-7 w-full break-words rounded py-1 pr-2 text-left text-[13px] focus-visible:outline-2 focus-visible:outline-ring ${active === heading.id ? 'bg-accent font-medium text-foreground' : 'text-muted-foreground hover:bg-accent hover:text-foreground'}`}>{heading.title}</button></li>)}</ol>
+    <details className="space-y-2">
+      <summary className="flex h-7 cursor-pointer items-center gap-1.5 border-b text-label-13 font-semibold focus-visible:outline-2 focus-visible:outline-ring">목차</summary>
+      <nav aria-label="노트 목차" className="max-h-52 overflow-y-auto">
+        <ol className="space-y-0.5">{headings.map(heading => <li key={heading.id}><button type="button" aria-current={active === heading.id ? 'location' : undefined} onClick={() => navigate(heading)} style={{ paddingLeft: `${(heading.level - minimumLevel) * 12 + 8}px` }} className={`min-h-7 w-full break-words rounded py-1 pr-2 text-left text-label-13 focus-visible:outline-2 focus-visible:outline-ring ${active === heading.id ? 'bg-accent font-medium text-foreground' : 'text-muted-foreground hover:bg-accent hover:text-foreground'}`}>{heading.title}</button></li>)}</ol>
       </nav>
     </details>
   )

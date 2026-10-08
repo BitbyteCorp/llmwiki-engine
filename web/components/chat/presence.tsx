@@ -86,7 +86,7 @@ export function ConversationPresence({ id, typing }: { id: string; typing?: bool
   const others = users.filter(user => user.id !== me.data?.user.id)
   const typists = others.filter(user => user.typing)
   return <div ref={surface} className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground" aria-label="대화 접속 상태">
-    {others.length > 0 && <><div className="flex -space-x-1">{others.slice(0, 5).map(user => <span key={user.id} title={`${user.name} · ${user.typing ? '입력 중' : '보는 중'}`} aria-label={`${user.name} · ${user.typing ? '입력 중' : '보는 중'}`} className="flex size-7 items-center justify-center rounded-full border-2 border-background bg-secondary font-semibold text-secondary-foreground">{Array.from(user.name.trim())[0] || '?'}</span>)}</div><span>{others.length}명 보는 중</span></>}
+    {others.length > 0 && <><div className="flex -space-x-1">{others.slice(0, 5).map(user => <span key={user.id} title={`${user.name} · ${user.typing ? '입력 중' : '보는 중'}`} aria-label={`${user.name} · ${user.typing ? '입력 중' : '보는 중'}`} className="flex size-6 items-center justify-center rounded-full border border-background bg-secondary font-semibold text-secondary-foreground">{Array.from(user.name.trim())[0] || '?'}</span>)}</div><span>{others.length}명 보는 중</span></>}
     <span role="status" aria-live="polite">{typists.length > 0 ? `${typists.map(user => user.name).join(', ')} 입력 중…` : ''}</span>
     {Boolean(error) && <span className="flex items-center gap-1 text-destructive">접속 상태를 갱신하지 못했습니다.<Button size="xs" variant="ghost" onClick={() => heartbeat.current()}>다시 시도</Button></span>}
   </div>

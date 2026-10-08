@@ -63,48 +63,48 @@ export function UsersAndSettings({ currentUser, tab }: { currentUser: User; tab:
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {tab === "users" && <>
-      <section className="space-y-3 rounded-lg border bg-card p-4" aria-labelledby="users-heading">
-        <div><h2 id="users-heading" className="text-sm font-semibold">사용자</h2><p className="mt-1 text-sm text-muted-foreground">마지막 관리자는 삭제하거나 다른 역할로 변경할 수 없습니다.</p></div>
+      <section className="space-y-2" aria-labelledby="users-heading">
+        <div><h2 id="users-heading" className="flex h-7 items-center gap-1.5 border-b text-label-13 font-semibold">사용자</h2><p className="mt-1 text-label-13 text-muted-foreground">마지막 관리자는 삭제하거나 다른 역할로 변경할 수 없습니다.</p></div>
         {users.isPending && <Loading label="사용자를 불러오는 중…" />}
         {users.error && <div className="space-y-2"><ErrorNotice error={users.error} /><Button variant="outline" onClick={() => void users.refetch()}>사용자 다시 불러오기</Button></div>}
         {updateUser.error && <ErrorNotice error={updateUser.error} />}
         {deleteUser.error && <ErrorNotice error={deleteUser.error} />}
         {users.data && (users.data.users.length === 0 ? <EmptyState title="등록된 사용자가 없습니다" /> : (
           <div className="overflow-x-auto rounded-lg border">
-            <table className="w-full min-w-[600px] text-left text-sm">
-              <thead className="whitespace-nowrap border-b bg-muted/30 text-muted-foreground"><tr><th className="px-4 py-3 font-medium">사용자</th><th className="px-4 py-3 font-medium">역할</th><th className="px-4 py-3 font-medium">최근 로그인</th><th className="px-4 py-3 font-medium"><span className="sr-only">사용자 삭제</span></th></tr></thead>
+            <table className="w-full min-w-[600px] text-left text-label-13">
+              <thead className="whitespace-nowrap border-b bg-muted/30 text-xs text-muted-foreground"><tr><th className="px-2 py-1.5 font-medium">사용자</th><th className="px-2 py-1.5 font-medium">역할</th><th className="px-2 py-1.5 font-medium">최근 로그인</th><th className="px-2 py-1.5 font-medium"><span className="sr-only">사용자 삭제</span></th></tr></thead>
               <tbody className="divide-y">{users.data.users.map((user) => (
                 <tr key={user.id}>
-                  <td className="px-4 py-3"><p className="font-medium">{user.name || user.email}{user.id === currentUser.id && <span className="ml-2 text-xs text-muted-foreground">나</span>}</p>{user.name && <p className="mt-1 text-xs text-muted-foreground">{user.email}</p>}</td>
-                  <td className="px-4 py-3"><RoleSelect value={user.role} disabled={busy} label={`${user.email} 역할`} onChange={(role) => { updateUser.reset(); deleteUser.reset(); updateUser.mutate({ id: user.id, role }) }} /></td>
-                  <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">{formatDate(user.lastLoginAt)}</td>
-                  <td className="px-4 py-3 text-right"><Button variant="ghost" size="sm" disabled={busy} onClick={() => { deleteUser.reset(); setDeleteId(user.id) }} aria-label={`${user.email} 삭제`}>삭제</Button></td>
+                  <td className="px-2 py-1.5"><p className="font-medium">{user.name || user.email}{user.id === currentUser.id && <span className="ml-2 text-xs text-muted-foreground">나</span>}</p>{user.name && <p className="mt-0.5 text-xs text-muted-foreground">{user.email}</p>}</td>
+                  <td className="px-2 py-1.5"><RoleSelect value={user.role} disabled={busy} label={`${user.email} 역할`} onChange={(role) => { updateUser.reset(); deleteUser.reset(); updateUser.mutate({ id: user.id, role }) }} /></td>
+                  <td className="whitespace-nowrap px-2 py-1.5 text-xs text-muted-foreground">{formatDate(user.lastLoginAt)}</td>
+                  <td className="px-2 py-1.5 text-right"><Button variant="ghost" size="sm" disabled={busy} onClick={() => { deleteUser.reset(); setDeleteId(user.id) }} aria-label={`${user.email} 삭제`}>삭제</Button></td>
                 </tr>
               ))}</tbody>
             </table>
           </div>
         ))}
-        {userToDelete && <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-4 text-sm"><p><strong>{userToDelete.email}</strong> 사용자를 삭제할까요? 이 작업은 되돌릴 수 없습니다.</p><div className="flex gap-2"><Button variant="outline" disabled={deleteUser.isPending} onClick={() => setDeleteId(null)}>취소</Button><Button variant="destructive" disabled={deleteUser.isPending} onClick={() => deleteUser.mutate(userToDelete.id)}>{deleteUser.isPending ? "삭제 중…" : "사용자 삭제"}</Button></div></div>}
+        {userToDelete && <div role="alert" className="flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-label-13"><p><strong>{userToDelete.email}</strong> 사용자를 삭제할까요? 이 작업은 되돌릴 수 없습니다.</p><div className="flex gap-2"><Button variant="outline" disabled={deleteUser.isPending} onClick={() => setDeleteId(null)}>취소</Button><Button variant="destructive" disabled={deleteUser.isPending} onClick={() => deleteUser.mutate(userToDelete.id)}>{deleteUser.isPending ? "삭제 중…" : "사용자 삭제"}</Button></div></div>}
       </section>
-      <section className="space-y-3 rounded-lg border bg-card p-4" aria-labelledby="add-user-heading">
-        <h2 id="add-user-heading" className="text-sm font-semibold">사용자 추가</h2>
-        <form onSubmit={submitUser} className="space-y-3">
-          <div className="grid grid-cols-1 gap-3 @2xl/settings-panel:grid-cols-2 @4xl/settings-panel:grid-cols-3">
+      <section className="space-y-2" aria-labelledby="add-user-heading">
+        <h2 id="add-user-heading" className="flex h-7 items-center gap-1.5 border-b text-label-13 font-semibold">사용자 추가</h2>
+        <form onSubmit={submitUser} className="space-y-2">
+          <div className="grid grid-cols-1 gap-x-6 gap-y-1.5 @2xl/settings-panel:grid-cols-2 @4xl/settings-panel:grid-cols-3">
             <div className="space-y-2"><Label htmlFor="user-email">이메일</Label><Input id="user-email" type="email" required autoComplete="email" placeholder="name@example.com" value={email} onChange={(event) => setEmail(event.target.value)} disabled={createUser.isPending} /></div>
             <div className="space-y-2"><Label htmlFor="user-name">이름 <span className="text-muted-foreground">(선택)</span></Label><Input id="user-name" autoComplete="name" value={name} onChange={(event) => setName(event.target.value)} disabled={createUser.isPending} /></div>
             <div className="flex flex-col gap-2"><Label htmlFor="user-role">역할</Label><RoleSelect id="user-role" label="새 사용자 역할" value={role} onChange={setRole} disabled={createUser.isPending} /></div>
           </div>
           {createUser.error && <ErrorNotice error={createUser.error} />}
-          {createUser.isSuccess && <p role="status" className="text-sm text-success">사용자를 추가했습니다.</p>}
+          {createUser.isSuccess && <p role="status" className="text-label-13 text-success">사용자를 추가했습니다.</p>}
           <Button type="submit" disabled={createUser.isPending}>{createUser.isPending ? "추가 중…" : "사용자 추가"}</Button>
         </form>
       </section>
       </>}
       {tab === "login" &&
-      <section className="space-y-3" aria-labelledby="login-settings-heading">
-        <h2 id="login-settings-heading" className="text-sm font-semibold">로그인 설정</h2>
+      <section className="space-y-2" aria-labelledby="login-settings-heading">
+        <h2 id="login-settings-heading" className="flex h-7 items-center gap-1.5 border-b text-label-13 font-semibold">로그인 설정</h2>
         {settings.isPending && <Loading label="로그인 설정을 불러오는 중…" />}
         {settings.error && <div className="space-y-2"><ErrorNotice error={settings.error} /><Button variant="outline" onClick={() => void settings.refetch()}>로그인 설정 다시 불러오기</Button></div>}
         {settings.data && <SettingsForm settings={settings.data} />}
@@ -139,14 +139,14 @@ function SettingsForm({ settings }: { settings: Settings }) {
   }
 
   return (
-    <form onSubmit={submitSettings} className="space-y-3 rounded-lg border bg-card p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="space-y-1"><Label htmlFor="allowlist-enabled">등록된 이메일만 로그인 허용</Label><p className="text-sm leading-6 text-muted-foreground">켜면 허용 도메인에 속한 사용자 중 등록된 이메일만 로그인할 수 있습니다. 꺼도 도메인 검사는 적용됩니다.</p></div>
+    <form onSubmit={submitSettings} className="space-y-2">
+      <div className="flex items-start justify-between gap-2">
+        <div className="space-y-1"><Label htmlFor="allowlist-enabled">등록된 이메일만 로그인 허용</Label><p className="text-label-13 leading-5 text-muted-foreground">켜면 허용 도메인에 속한 사용자 중 등록된 이메일만 로그인할 수 있습니다. 꺼도 도메인 검사는 적용됩니다.</p></div>
         <Switch id="allowlist-enabled" checked={allowlistEnabled} disabled={save.isPending} onCheckedChange={(checked) => { setAllowlistEnabled(checked); save.reset() }} />
       </div>
       <div className="max-w-xl space-y-2"><Label htmlFor="allowed-domains">허용 도메인</Label><Textarea id="allowed-domains" rows={5} placeholder={"example.com\nteam.example.com"} value={domainText} disabled={save.isPending} onChange={(event) => { setDomainText(event.target.value); save.reset() }} /><p className="text-xs leading-5 text-muted-foreground">도메인을 한 줄에 하나씩 입력합니다. 이메일 주소나 @는 넣지 않습니다. 목록이 비어 있으면 도메인 제한을 적용하지 않습니다.</p></div>
       {save.error && <ErrorNotice error={save.error} />}
-      {save.isSuccess && <p role="status" className="text-sm text-success">로그인 설정을 저장했습니다.</p>}
+      {save.isSuccess && <p role="status" className="text-label-13 text-success">로그인 설정을 저장했습니다.</p>}
       <Button type="submit" disabled={save.isPending || (!domainsChanged && !enabledChanged)}>{save.isPending ? "저장 중…" : "설정 저장"}</Button>
     </form>
   )

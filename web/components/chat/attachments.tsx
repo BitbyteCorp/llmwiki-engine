@@ -94,8 +94,8 @@ function ImageLightbox({ url, name, compact = false }: { url: string; name: stri
   const dialog = useRef<HTMLDialogElement>(null)
   return <>
     <button type="button" className="shrink-0 rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => dialog.current?.showModal()} aria-label={`${name} 이미지 확대`}><img src={url} alt={name} className={compact ? 'size-12 rounded-md object-cover' : 'h-20 w-24 rounded-md object-cover'} /></button>
-    <dialog ref={dialog} className="m-auto max-h-[90vh] max-w-[95vw] rounded-lg border bg-background p-3 text-foreground shadow-xl backdrop:bg-background/80" onClick={event => { if (event.target === event.currentTarget) dialog.current?.close() }}>
-      <div className="mb-2 flex items-center justify-between gap-3"><span className="truncate text-sm">{name}</span><Button type="button" variant="ghost" size="icon-sm" aria-label="이미지 닫기" onClick={() => dialog.current?.close()}><X /></Button></div>
+    <dialog ref={dialog} className="m-auto max-h-[90vh] max-w-[95vw] rounded-lg border bg-background p-3 text-foreground shadow-lg backdrop:bg-background/80" onClick={event => { if (event.target === event.currentTarget) dialog.current?.close() }}>
+      <div className="mb-2 flex items-center justify-between gap-2"><span className="truncate text-label-13">{name}</span><Button type="button" variant="ghost" size="icon-sm" aria-label="이미지 닫기" onClick={() => dialog.current?.close()}><X /></Button></div>
       <img src={url} alt={name} className="max-h-[75vh] max-w-full object-contain" />
     </dialog>
   </>
@@ -179,7 +179,7 @@ function Attachment({ id }: { id: string }) {
     })()
     return () => { controller.abort(); if (objectUrl) URL.revokeObjectURL(objectUrl) }
   }, [id, attempt])
-  return <div className="flex w-full min-w-0 max-w-sm flex-wrap items-center gap-2 rounded-lg border bg-muted/30 p-2 text-sm">
+  return <div className="flex w-full min-w-0 max-w-sm flex-wrap items-center gap-2 rounded-md border bg-muted/30 p-2 text-label-13">
     {url && upload ? <ImageLightbox url={url} name={upload.name} /> : <div className="flex size-10 shrink-0 items-center justify-center rounded-md border bg-background text-muted-foreground">{upload?.mediaType.startsWith('image/') ? <ImageIcon className="size-5" /> : <FileText className="size-5" />}</div>}
     <div className="min-w-0 flex-1"><div className="truncate font-medium" title={upload?.name}>{upload?.name || '첨부 파일'}</div><div className="text-xs text-muted-foreground">{upload ? fileSize(upload.size) : '파일 정보를 읽는 중…'}</div></div>
     {!error && <a href={`/api/uploads/${encodeURIComponent(id)}`} download={upload?.name} className="rounded p-1 focus-visible:ring-2 focus-visible:ring-ring" aria-label={`${upload?.name || '첨부'} 다운로드`}><Download className="size-4" /></a>}
@@ -208,11 +208,11 @@ function fileSize(size: number) {
 
 export function DraftAttachments({ items, onRemove }: { items: DraftAttachment[]; onRemove: (key: string) => void }) {
   if (!items.length) return null
-  return <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,15rem),1fr))] gap-2">{items.map(item => <div key={item.key} className={`flex min-w-0 items-start gap-2 rounded-lg border p-2 ${item.error ? 'border-destructive/40 bg-destructive/5' : 'bg-muted/30'}`}>
+  return <div className="grid grid-cols-[repeat(auto-fit,minmax(min(100%,15rem),1fr))] gap-2">{items.map(item => <div key={item.key} className={`flex min-w-0 items-start gap-2 rounded-md border p-2 ${item.error ? 'border-destructive/40 bg-destructive/5' : 'bg-muted/30'}`}>
     <DraftPreview item={item} />
     <div className="min-w-0 flex-1 space-y-1 text-xs">
       <p className="truncate font-medium" title={item.file.name}>{item.file.name}</p>
-      <p className="text-[10px] text-muted-foreground">{fileSize(item.file.size)} · {item.file.type.startsWith('image/') ? '이미지' : item.file.type === 'application/pdf' ? 'PDF' : '문서'}</p>
+      <p className="text-xs text-muted-foreground">{fileSize(item.file.size)} · {item.file.type.startsWith('image/') ? '이미지' : item.file.type === 'application/pdf' ? 'PDF' : '문서'}</p>
       {item.error ? <p role="alert" className="flex items-start gap-1 break-words text-destructive"><CircleAlert className="mt-0.5 size-3 shrink-0" />{item.error}</p> : item.upload ? <p className="flex items-center gap-1 text-muted-foreground"><Check className="size-3 text-primary" />첨부 준비됨</p> : <div className="space-y-1">
         <div role="progressbar" aria-label={`${item.file.name} 업로드 진행률`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={item.progress} className="h-1 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-primary transition-[width]" style={{ width: `${item.progress}%` }} /></div>
         <p role="status" className="text-muted-foreground">{item.progress === 100 ? '파일을 확인하는 중…' : `업로드 중 · ${item.progress}%`}</p>

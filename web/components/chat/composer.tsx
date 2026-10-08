@@ -246,14 +246,14 @@ export function ChatComposer({ conversationId, disabled, streaming, onSubmit, on
     } else if (event.key === 'ArrowUp' && !content && !edit && !streaming && !disabled) { event.preventDefault(); onEditLast?.() }
   }
   const blocked = disabled || streaming || submitting || pinning || attachments.pending || attachments.failed || !content.trim()
-  return <section data-chat-composer className="relative min-w-0 space-y-2 rounded-xl border bg-background p-2.5 shadow-sm focus-within:border-ring/50" aria-label="도니 메시지 작성">
+  return <section data-chat-composer className="relative min-w-0 space-y-2 rounded-md border bg-background p-2 focus-within:border-ring/50" aria-label="도니 메시지 작성">
     {edit && <div className="flex items-center justify-between gap-2 text-xs"><span>질문 수정 · 이후 대화를 다시 생성합니다.</span><Button type="button" variant="ghost" size="xs" onClick={onCancelEdit}>수정 취소</Button></div>}
     {context && <div className="flex items-start gap-2 rounded-lg border bg-muted/50 px-2 py-1.5 text-xs"><Pin className="mt-0.5 size-3 shrink-0 text-muted-foreground" /><div className="min-w-0 flex-1"><p className="truncate" title={context.notePath}>고정 문맥 · {context.notePath}{context.ref ? ` @ ${context.ref.slice(0, 10)}` : ''}</p>{context.selection && <p className="mt-1 line-clamp-2 whitespace-pre-wrap break-words text-muted-foreground">선택: {context.selection}</p>}</div><Button type="button" variant="ghost" size="icon-xs" aria-label="고정 문맥 제거" onClick={() => pin(null)}><X /></Button></div>}
     <fieldset disabled={submitting} className="min-w-0"><DraftAttachments items={attachments.items} onRemove={key => { if (!submissionRef.current) attachments.remove(key) }} /></fieldset>
-    {(error || attachments.error) && <p role="alert" className="text-sm text-destructive">{error || attachments.error}</p>}
+    {(error || attachments.error) && <p role="alert" className="text-label-13 text-destructive">{error || attachments.error}</p>}
     <div className="relative">
       {showOptions && <div id={listId} role="listbox" aria-label={lookup !== null ? '노트 제안' : '명령 제안'} className="absolute bottom-full z-20 mb-2 max-h-56 w-full overflow-auto rounded-lg border bg-popover p-1 text-popover-foreground shadow-md">
-        {options.map((option, index) => <button id={`${listId}-${index}`} key={option.description} type="button" role="option" aria-selected={index === active} className={`flex w-full flex-col rounded px-2 py-1.5 text-left text-sm ${index === active ? 'bg-accent text-accent-foreground' : 'hover:bg-accent'}`} onMouseDown={event => event.preventDefault()} onClick={() => choose(index)}><span>{option.label}</span><span className="break-all text-xs text-muted-foreground">{option.description}</span></button>)}
+        {options.map((option, index) => <button id={`${listId}-${index}`} key={option.description} type="button" role="option" aria-selected={index === active} className={`flex w-full flex-col rounded px-2 py-1.5 text-left text-label-13 ${index === active ? 'bg-accent text-accent-foreground' : 'hover:bg-accent'}`} onMouseDown={event => event.preventDefault()} onClick={() => choose(index)}><span>{option.label}</span><span className="break-all text-xs text-muted-foreground">{option.description}</span></button>)}
         {lookup !== null && !options.length && <p className="px-2 py-1 text-xs text-muted-foreground">{loadingSuggestions ? '노트를 찾는 중…' : suggestionError || '일치하는 노트가 없습니다.'}</p>}
       </div>}
       <Textarea ref={textarea} value={content} disabled={disabled} rows={2} maxLength={100000} placeholder={disabled ? '조회 권한으로는 메시지를 보낼 수 없습니다.' : '도니에게 질문하세요. @ 노트 · / 명령'} aria-label="메시지" aria-controls={showOptions ? listId : undefined} aria-expanded={showOptions} aria-activedescendant={showOptions && options.length ? `${listId}-${Math.min(active, options.length - 1)}` : undefined} className="field-sizing-fixed max-h-60 min-h-20 resize-none overflow-y-auto rounded-none border-0 bg-transparent px-1 py-2 shadow-none focus-visible:ring-0 dark:bg-transparent" onChange={event => { setContent(event.target.value); setCaret(event.target.selectionStart); setDismissed(false); setActive(0); setError('') }} onSelect={event => setCaret(event.currentTarget.selectionStart)} onKeyDown={keyDown} onPaste={event => {
@@ -262,13 +262,13 @@ export function ChatComposer({ conversationId, disabled, streaming, onSubmit, on
         if (files.length) { event.preventDefault(); attachments.addFiles(files) }
       }} />
     </div>
-    {searchQuery && <section className="max-h-72 space-y-2 overflow-auto rounded-lg border p-3" aria-label="대화 안에서 검색 결과">
-      <div className="flex items-center gap-2 text-sm"><h3 className="min-w-0 flex-1 truncate font-medium">검색 · {searchQuery}</h3><Link href={`/search?q=${encodeURIComponent(searchQuery)}`} className="shrink-0 text-xs underline">전체 검색</Link><Button type="button" variant="ghost" size="icon-xs" aria-label="검색 결과 닫기" onClick={() => setSearchQuery('')}><X /></Button></div>
+    {searchQuery && <section className="max-h-72 space-y-2 overflow-auto rounded-md border p-2" aria-label="대화 안에서 검색 결과">
+      <div className="flex h-7 items-center gap-1.5 border-b text-label-13"><h3 className="min-w-0 flex-1 truncate font-semibold">검색 · {searchQuery}</h3><Link href={`/search?q=${encodeURIComponent(searchQuery)}`} className="shrink-0 text-xs underline">전체 검색</Link><Button type="button" variant="ghost" size="icon-xs" aria-label="검색 결과 닫기" onClick={() => setSearchQuery('')}><X /></Button></div>
       {search.isPending && <p role="status" className="text-xs text-muted-foreground">검색 중…</p>}
       {search.isError && <div><p role="alert" className="text-xs text-destructive">{search.error.message}</p><Button type="button" variant="ghost" size="xs" onClick={() => void search.refetch()}>다시 시도</Button></div>}
       {search.data?.degraded && <p className="text-xs text-muted-foreground">벡터 검색을 사용할 수 없어 키워드 검색으로 표시합니다.</p>}
       {search.data && !search.data.hits.length && <p className="text-xs text-muted-foreground">검색 결과가 없습니다.</p>}
-      {search.data?.hits.map(hit => <article key={`${hit.path}:${hit.anchor || hit.heading}`} className="space-y-1 border-t pt-2 text-xs">
+      {search.data?.hits.map(hit => <article key={`${hit.path}:${hit.anchor || hit.heading}`} className="space-y-1 border-t px-2 py-1.5 text-xs">
         <Link href={noteHref(hit.path) + (hit.anchor ? `#${encodeURIComponent(hit.anchor)}` : '')} className="font-medium underline">{hit.title || hit.path}{hit.heading ? ` · ${hit.heading}` : ''}</Link>
         <p className="break-all text-muted-foreground">{hit.path}</p><p className="line-clamp-3 whitespace-pre-wrap">{hit.excerpt || hit.snippet}</p>
         <Button type="button" variant="ghost" size="xs" disabled={disabled || streaming || !!edit} onClick={() => pin({ notePath: hit.path })}><Pin /> 문맥 고정</Button>
@@ -285,6 +285,6 @@ export function ChatComposer({ conversationId, disabled, streaming, onSubmit, on
       {streaming ? <Button type="button" variant="outline" size="icon-sm" aria-label="생성 중지" title="생성 중지 · Esc" onClick={onStop}><Square className="size-3.5 fill-current" /></Button> : <Button type="button" size="icon-sm" aria-label={edit ? '수정 후 다시 생성' : '메시지 보내기'} title={edit ? '수정 후 다시 생성' : '메시지 보내기 · Enter'} disabled={blocked} onClick={() => void submit()}><Send /></Button>}
     </div>
     <p className="flex flex-wrap gap-x-2 text-[10px] leading-relaxed text-muted-foreground"><span>Enter 전송 · Shift+Enter 줄바꿈</span><span>↑ 질문 수정 · Esc 중지</span></p>
-    {help && <div className="space-y-1 rounded-md bg-muted p-3 text-xs"><p>@노트와 /note 경로로 문맥을 고정하며 후속 질문에도 유지합니다. 칩의 ×로 제거하세요.</p><p>/search 검색어: 대화 안에서 검색 · /save: 마지막 답변의 위키 초안 검토 · /help: 이 도움말</p><p>편집자 이상은 대화에서 지식 기록이나 정정을 요청할 수 있습니다. 기록 요청은 비동기로 처리되며 작업 링크에서 결과를 확인합니다. /save 초안은 검토 후 직접 적용합니다.</p><p>제안에서 ↑↓ 선택, Enter 적용, Esc 닫기. 파일 드롭·이미지 붙여넣기를 지원합니다. 업로드 오류 파일은 제거 후 다시 첨부하세요.</p></div>}
+    {help && <div className="space-y-1 rounded-md bg-muted px-3 py-2 text-xs"><p>@노트와 /note 경로로 문맥을 고정하며 후속 질문에도 유지합니다. 칩의 ×로 제거하세요.</p><p>/search 검색어: 대화 안에서 검색 · /save: 마지막 답변의 위키 초안 검토 · /help: 이 도움말</p><p>편집자 이상은 대화에서 지식 기록이나 정정을 요청할 수 있습니다. 기록 요청은 비동기로 처리되며 작업 링크에서 결과를 확인합니다. /save 초안은 검토 후 직접 적용합니다.</p><p>제안에서 ↑↓ 선택, Enter 적용, Esc 닫기. 파일 드롭·이미지 붙여넣기를 지원합니다. 업로드 오류 파일은 제거 후 다시 첨부하세요.</p></div>}
   </section>
 }

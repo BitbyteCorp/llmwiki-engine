@@ -30,11 +30,11 @@ export function Properties({ frontmatter }: { frontmatter: Record<string, unknow
   })
   if (!tags.length && !fields.length) return null
   return (
-    <details className="rounded-lg border bg-card p-4">
-      <summary className="cursor-pointer rounded text-sm font-semibold focus-visible:outline-2 focus-visible:outline-ring">노트 속성</summary>
-      <div className="mt-3 space-y-3">
+    <details className="space-y-2">
+      <summary className="flex h-7 cursor-pointer items-center gap-1.5 border-b text-label-13 font-semibold focus-visible:outline-2 focus-visible:outline-ring">노트 속성</summary>
+      <div className="space-y-2">
         {tags.length > 0 && <div className="flex flex-wrap gap-2" aria-label="태그">{tags.map(tag => <Link key={tag} href={`/tags/${encodeURIComponent(tag)}`} className="rounded focus-visible:outline-2 focus-visible:outline-ring"><Badge variant="secondary">#{tag}</Badge></Link>)}</div>}
-        {fields.length > 0 && <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-3 text-xs">{fields.map(field => <div key={field.key} className="contents"><dt className="break-all text-muted-foreground">{field.label}</dt><dd className="break-words whitespace-pre-wrap">{field.text}</dd></div>)}</dl>}
+        {fields.length > 0 && <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-6 gap-y-1.5 text-label-13">{fields.map(field => <div key={field.key} className="contents"><dt className="break-all text-muted-foreground">{field.label}</dt><dd className="break-words whitespace-pre-wrap">{field.text}</dd></div>)}</dl>}
       </div>
     </details>
   )

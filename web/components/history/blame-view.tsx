@@ -31,8 +31,8 @@ export function BlameView({ path, ref, content, className }: { path: string; ref
     window.addEventListener("resize", close)
     return () => { window.removeEventListener("resize", close); window.clearTimeout(timer.current) }
   }, [])
-  if (blame.isPending) return <div className={cn("min-h-0 flex-1 p-4", className)}><Loading/></div>
-  if (blame.isError) return <div className={cn("space-y-3 p-4", className)}><ErrorNotice error={blame.error}/><Button variant="outline" onClick={() => blame.refetch()}>다시 시도</Button></div>
+  if (blame.isPending) return <div className={cn("min-h-0 flex-1 p-2", className)}><Loading/></div>
+  if (blame.isError) return <div className={cn("space-y-3 p-2", className)}><ErrorNotice error={blame.error}/><Button variant="outline" onClick={() => blame.refetch()}>다시 시도</Button></div>
   const lines = content.replace(/\n$/, "").split("\n")
   const dates = blame.data.ranges.map(range => new Date(range.date).getTime())
   const oldest = Math.min(...dates), newest = Math.max(...dates)

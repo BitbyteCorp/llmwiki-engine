@@ -28,7 +28,7 @@ function CitationLink({ citation, number }: { citation: Citation; number: number
     <Link href={href} prefetch={false} onFocus={() => setActive(true)} onBlur={() => setActive(false)} aria-describedby={active ? id : undefined} className="inline-flex max-w-full items-center gap-1 rounded border px-2 py-1 text-xs hover:bg-muted focus-visible:outline-ring">
       <span className="shrink-0 font-medium">[{number}]</span><span className="truncate">{citation.heading || title}</span>{changed && <span className="shrink-0 text-warning">변경됨</span>}
     </Link>
-    {active && <span id={id} role="tooltip" className="absolute bottom-full left-0 z-30 mb-2 flex w-[min(22rem,75vw)] flex-col gap-2 rounded-lg border bg-popover p-3 text-sm text-popover-foreground shadow-lg">
+    {active && <span id={id} role="tooltip" className="absolute bottom-full left-0 z-30 mb-2 flex w-[min(22rem,75vw)] flex-col gap-1.5 rounded-lg border bg-popover px-3 py-2 text-label-13 text-popover-foreground shadow-lg">
       <strong className="break-words">{citation.heading || title}</strong><span className="whitespace-pre-wrap break-words">{citation.excerpt || preview.data?.body.slice(0, 350) || (preview.isError ? '인용한 노트를 읽을 수 없습니다. 인용 버전 링크를 확인하세요.' : '근거를 불러오는 중입니다.')}</span><small className="break-all text-muted-foreground">{citation.path}{citation.sha ? ` · ${citation.sha.slice(0, 8)}` : ''}</small>{changed && <small>답변 이후 저장소가 변경되어 인용 시점 버전으로 이동합니다.</small>}
     </span>}
   </span>
@@ -60,8 +60,8 @@ export function ChatMessageView({ message, steps = [], onEdit, onAction, onPropo
   function regenerate() {
     if (window.confirm('이 답변을 다시 생성하면 이후 메시지도 교체됩니다. 계속하시겠습니까?')) onAction(message, 'regenerate')
   }
-  return <article aria-label={assistant ? '도니 답변' : '사용자 질문'} className={`group/message min-w-0 ${assistant ? 'w-full py-1' : 'ml-auto w-fit max-w-[90%] rounded-2xl rounded-tr-sm bg-secondary px-3 py-2.5'}`}>
-    {assistant && <header className="mb-2.5 flex items-center gap-2">
+  return <article aria-label={assistant ? '도니 답변' : '사용자 질문'} className={`group/message min-w-0 ${assistant ? 'w-full py-1' : 'ml-auto w-fit max-w-[90%] rounded-2xl rounded-tr-sm bg-secondary px-3 py-2'}`}>
+    {assistant && <header className="mb-2 flex items-center gap-2">
       <span aria-hidden="true" className="flex size-6 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"><Sparkles className="size-3.5"/></span>
       <strong className="text-xs font-semibold">도니</strong>
       <time dateTime={message.createdAt} className="ml-auto text-[10px] text-muted-foreground">{formatDate(message.createdAt)}</time>
@@ -71,7 +71,7 @@ export function ChatMessageView({ message, steps = [], onEdit, onAction, onPropo
       <Link className="mt-2 inline-block underline" href={noteHref(message.context.notePath) + (message.context.ref ? `?ref=${encodeURIComponent(message.context.ref)}` : '')}>고정 노트 열기</Link>
       {message.context.selection && <blockquote className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words border-l-2 pl-2">{message.context.selection}</blockquote>}
     </details>}
-    {assistant && (running || steps.length > 0 || noteCount > 0) && <div className="mb-2.5"><WorkSteps steps={steps} running={running} noteCount={noteCount}/></div>}
+    {assistant && (running || steps.length > 0 || noteCount > 0) && <div className="mb-2"><WorkSteps steps={steps} running={running} noteCount={noteCount}/></div>}
     {message.content ? <div className={`min-w-0 break-words text-sm ${running ? "[&>.markdown>:last-child]:after:ml-1 [&>.markdown>:last-child]:after:inline-block [&>.markdown>:last-child]:after:h-4 [&>.markdown>:last-child]:after:w-1 [&>.markdown>:last-child]:after:align-text-bottom [&>.markdown>:last-child]:after:bg-primary [&>.markdown>:last-child]:after:content-[''] motion-safe:[&>.markdown>:last-child]:after:animate-pulse" : ''}`}>
       <Markdown content={message.content}/>
       {running && <span role="status" className="sr-only">답변을 작성하고 있습니다.</span>}
