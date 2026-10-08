@@ -163,8 +163,6 @@ export const settingsApi = {
 // BEGIN imports client contracts
 export type ImportKind = 'url' | 'pdf' | 'text' | 'file' | 'obsidian' | 'notion'
 export type ImportStatus = 'extracting' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
-export interface ImportRecord {
-  id: string; userId: number; kind: ImportKind; source: string; sha: string | null
 export interface ImportJob {
   batch: number // 0-based batch index
   jobId: string
@@ -172,6 +170,8 @@ export interface ImportJob {
   error: string | null
   files: number // Count of assigned extracted Markdown files.
 }
+export interface ImportRecord {
+  id: string; userId: number; kind: ImportKind; source: string; sha: string | null
   status: ImportStatus; rawPaths: string[]; jobs: ImportJob[]; error: string | null
   createdAt: string; updatedAt: string; finishedAt: string | null
 }
