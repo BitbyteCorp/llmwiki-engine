@@ -1,6 +1,6 @@
-export const PAGE_MAX_LINES = 800;
-export const PAGE_MAX_CHARS = 30_000;
-export const TOOL_MAX_CHARS = 40_000;
+export const PAGE_MAX_LINES = 300;
+export const PAGE_MAX_CHARS = 12_000;
+export const TOOL_MAX_CHARS = 16_000;
 export const SUBAGENT_MAX_CHARS = 8_000;
 
 export interface ContentPage {

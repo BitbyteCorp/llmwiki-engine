@@ -16,7 +16,7 @@ export interface WriteJob { id: string; userId: number; kind: 'agent' | 'direct'
 export interface Conversation { id: string; title: string; createdAt: string; updatedAt: string; role?: 'owner' | 'editor' | 'viewer'; snippet?: string }
 export interface Citation { path: string; heading?: string; anchor?: string; excerpt?: string; sha?: string }
 export interface MessageContext { notePath: string; ref?: string; selection?: string }
-export interface MessageUsage { inputTokens: number; outputTokens: number; reasoningTokens: number }
+export interface MessageUsage { inputTokens: number; cachedInputTokens?: number; outputTokens: number; reasoningTokens: number }
 export interface Message { id: string; role: 'user' | 'assistant'; content: string; citations: Citation[]; attachments: string[]; context: MessageContext | null; status: 'completed' | 'running' | 'failed' | 'cancelled' | 'interrupted'; resumable?: boolean; usage: MessageUsage | null; model: string | null; effort: string | null; generationId?: string | null; createdAt: string }
 export interface Settings { allowlistEnabled: boolean; allowedDomains: string[] }
 export type Requester = Pick<User, 'email' | 'name'>

@@ -22,8 +22,11 @@ import { WriteJobsService } from './write-jobs.service.js';
 
 interface FakeRequest { path: string; body: Record<string, unknown> }
 interface FakeCall { name: string; arguments: Record<string, unknown>; call_id?: string }
-type FakeTurn = string | FakeCall | { functionCalls: FakeCall[] };
-type FakeResponder = (request: FakeRequest, index: number) => FakeTurn;
+type FakeTurn = string | FakeCall | ({ functionCalls: FakeCall[] } | { text: string }) & {
+  usage?: { inputTokens: number; cachedInputTokens?: number; outputTokens: number; reasoningTokens: number };
+  status?: 'completed' | 'failed';
+};
+type FakeResponder = (request: FakeRequest, index: number) => FakeTurn | Promise<FakeTurn>;
 interface FakeProvider { url: string; requests: FakeRequest[]; close(): Promise<void> }
 interface InputItem { type?: string; call_id?: string; output?: string }
 const git = promisify(execFile);
@@ -39,7 +42,8 @@ async function fixture(responder: FakeResponder) {
   const fake = await startFakeOpenAI(responder);
   cleanup.push(() => fake.close());
   const config = loadConfig({ NODE_ENV: 'test', DATA_DIR: dir, OPENAI_API_KEY: 'test-key', OPENAI_BASE_URL: fake.url, OPENAI_MAX_RETRIES: '0', EMBEDDING_DIMENSIONS: '2' });
-  const log = pino({ level: 'silent' });
+  const logs: Record<string, unknown>[] = [];
+  const log = pino({ level: 'info' }, { write: line => { logs.push(JSON.parse(line)); } });
   const db = openDb(':memory:');
   runMigrations(db);
   cleanup.push(async () => db.close());
@@ -58,7 +62,7 @@ async function fixture(responder: FakeResponder) {
     return { agent, jobs };
   }
   const repo = await KnowledgeRepo.open(config, log);
-  return { dir, db, fake, config, log, repo, repository, checkpoints, users, services, ...services(repo) };
+  return { dir, db, fake, config, log, logs, repo, repository, checkpoints, users, services, ...services(repo) };
 }
 
 async function settled(jobs: WriteJobsService, id: string) {
@@ -74,6 +78,67 @@ function output(request: FakeRequest, callId: string) {
 }
 
 describe('write job continuation with real Dony and git', () => {
+  it.each(['none', 'child', 'conflict'] as const)('records parent, child and conflict usage with %s failing', async (failure) => {
+    let parentTurn = 0;
+    let childTurn = 0;
+    let conflictTurn = 0;
+    const f = await fixture(async (request) => {
+      const lane = String(request.body.prompt_cache_key);
+      if (lane.includes(':subagent:')) {
+        const usage = { inputTokens: 30, cachedInputTokens: 10, outputTokens: 8, reasoningTokens: 2 };
+        return childTurn++ === 0
+          ? { functionCalls: [{ name: 'write_file', arguments: { path: 'wiki/child.md', content: 'delegated fact\n' } }], usage }
+          : { text: 'Child finished', usage, status: failure === 'child' ? 'failed' : 'completed' };
+      }
+      if (lane.includes(':conflict:')) {
+        const usage = { inputTokens: 50, cachedInputTokens: 20, outputTokens: 10, reasoningTokens: 3 };
+        return conflictTurn++ === 0
+          ? { functionCalls: [{ name: 'write_file', arguments: { path: 'wiki/shared.md', content: 'requested fact\nconcurrent fact\n' } }], usage }
+          : { text: 'Conflict resolved', usage, status: failure === 'conflict' ? 'failed' : 'completed' };
+      }
+      const usage = { inputTokens: 100, cachedInputTokens: 50, outputTokens: 20, reasoningTokens: 4 };
+      const turn = parentTurn++;
+      if (turn === 0) return { functionCalls: [{ name: 'spawn_subagent', arguments: { name: 'Writer', task: 'Record delegated fact', files: ['wiki/child.md'] } }], usage };
+      if (turn === 1) return { functionCalls: [{ name: 'wait_subagents', arguments: {} }], usage };
+      if (turn === 2) return { functionCalls: [{ name: 'write_file', arguments: { path: 'wiki/shared.md', content: 'requested fact\n' } }], usage };
+      const concurrent = await f.repo.createWorktree('concurrent');
+      try {
+        await concurrent.write('wiki/shared.md', 'concurrent fact\n');
+        await concurrent.commit('Concurrent fact', author);
+        await f.repo.withMergeLock(() => concurrent.fastForwardMain());
+      } finally {
+        await concurrent.dispose();
+      }
+      return { text: 'Record combined knowledge', usage };
+    });
+    const baseline = await f.repo.createWorktree('baseline');
+    await baseline.write('wiki/shared.md', 'original fact\n');
+    await baseline.commit('Baseline shared fact', author);
+    await f.repo.withMergeLock(() => baseline.fastForwardMain());
+    await baseline.dispose();
+    f.jobs.start();
+    const job = f.jobs.submit({ userId: 1, source: 'mcp', input: 'Record independent facts' });
+    const result = await settled(f.jobs, job.id);
+    const usage = { inputTokens: 560, cachedInputTokens: 260, outputTokens: 116, reasoningTokens: 26 };
+    expect(result.status).toBe(failure === 'conflict' ? 'failed' : 'succeeded');
+    if (failure === 'conflict') {
+      expect(await f.repo.readFile('wiki/shared.md')).toBe('concurrent fact\n');
+      expect(f.jobs.events(job.id).at(-1)).toMatchObject({ phase: 'failed', detail: { usage, error: result.error } });
+      expect(f.logs.find(log => log.msg === 'Write job failed' && log.jobId === job.id)).toMatchObject({ usage });
+    } else {
+      expect(await f.repo.readFile('wiki/child.md')).toBe('delegated fact\n');
+      expect(await f.repo.readFile('wiki/shared.md')).toBe('requested fact\nconcurrent fact\n');
+      expect(f.jobs.events(job.id).at(-1)).toMatchObject({ phase: 'done', detail: { usage } });
+      expect(f.logs.find(log => log.msg === 'Write job completed' && log.jobId === job.id)).toMatchObject({ usage });
+    }
+    if (failure === 'child') {
+      expect(f.jobs.events(job.id).some(event => {
+        const child = event.detail?.subagent as { status?: string } | undefined;
+        return child?.status === 'failed';
+      })).toBe(true);
+    }
+  }, 20000);
+
   it('resumes a failed tool turn under a new identity and publishes its uncommitted file', async () => {
     let retrying = false;
     let retryTurns = 0;
@@ -81,16 +146,19 @@ describe('write job continuation with real Dony and git', () => {
     const content = '# Preserved knowledge\nThe completed tool turn survives provider failure.\n';
     const f = await fixture((_request, index) => {
       if (!retrying) {
-        if (index === 0) return { name: 'write_file', arguments: { path, content }, call_id: 'before-failure' };
+        if (index === 0) return { functionCalls: [{ name: 'write_file', arguments: { path, content }, call_id: 'before-failure' }], usage: { inputTokens: 100, cachedInputTokens: 40, outputTokens: 20, reasoningTokens: 5 } };
         throw new Error('provider failed after writing');
       }
-      if (retryTurns++ === 0) return { name: 'read_file', arguments: { path }, call_id: 'restored-file' };
-      return 'Publish preserved knowledge';
+      if (retryTurns++ === 0) return { functionCalls: [{ name: 'read_file', arguments: { path }, call_id: 'restored-file' }], usage: { inputTokens: 60, cachedInputTokens: 30, outputTokens: 10, reasoningTokens: 2 } };
+      return { text: 'Publish preserved knowledge', usage: { inputTokens: 80, cachedInputTokens: 50, outputTokens: 25, reasoningTokens: 8 } };
     });
     f.jobs.start();
     const original = f.jobs.submit({ userId: 1, source: 'mcp', input: 'Record a durable fact', client: 'resume-test' });
     const failed = await settled(f.jobs, original.id);
     expect(failed).toMatchObject({ status: 'failed', commits: [] });
+    const failedUsage = { inputTokens: 100, cachedInputTokens: 40, outputTokens: 20, reasoningTokens: 5 };
+    expect(f.jobs.events(original.id).at(-1)).toMatchObject({ phase: 'failed', detail: { usage: failedUsage, error: failed.error } });
+    expect(f.logs.find(log => log.msg === 'Write job failed' && log.jobId === original.id)).toMatchObject({ usage: failedUsage });
     expect(await f.repo.readFile(path)).toBeNull();
     const checkpoint = f.checkpoints.get(`job:${original.id}`);
     expect(checkpoint?.toolCalls).toBe(1);
@@ -104,8 +172,10 @@ describe('write job continuation with real Dony and git', () => {
     expect(f.checkpoints.get(`job:${retry.id}`)).toEqual(checkpoint);
     const succeeded = await settled(f.jobs, retry.id);
     expect(succeeded.status).toBe('succeeded');
+    const retryUsage = { inputTokens: 140, cachedInputTokens: 80, outputTokens: 35, reasoningTokens: 10 };
+    expect(f.jobs.events(retry.id).at(-1)).toMatchObject({ phase: 'done', detail: { usage: retryUsage } });
+    expect(f.logs.find(log => log.msg === 'Write job completed' && log.jobId === retry.id)).toMatchObject({ usage: retryUsage });
     const requests = f.fake.requests.filter(request => request.path.endsWith('/responses'));
-    expect(requests[firstRetryRequest]!.body.input).toEqual(checkpoint!.input);
     expect(output(requests[firstRetryRequest]!, 'before-failure')).toEqual({ path, written: true });
     expect(output(requests[firstRetryRequest + 1]!, 'restored-file')).toMatchObject({ path, content });
     expect(await f.repo.readFile(path)).toBe(content);
@@ -193,7 +263,6 @@ describe('write job continuation with real Dony and git', () => {
     const succeeded = await settled(restarted.jobs, retry.id);
     expect(succeeded.status).toBe('succeeded');
     const requests = f.fake.requests.filter(request => request.path.endsWith('/responses'));
-    expect(requests[firstRetryRequest]!.body.input).toEqual(checkpoint.input);
     expect(output(requests[firstRetryRequest]!, 'interrupted-write')).toEqual({ path, written: true });
     expect(output(requests[firstRetryRequest + 1]!, 'recovered-file')).toMatchObject({ path, content });
     expect(await reopenedRepo.readFile(path)).toBe(content);

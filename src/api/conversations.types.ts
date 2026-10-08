@@ -1,4 +1,4 @@
-import type { Citation } from '../agent/agent.types.js';
+import type { Citation, TokenUsage } from '../agent/agent.types.js';
 
 export interface Conversation {
   id: string;
@@ -9,7 +9,7 @@ export interface Conversation {
   snippet?: string;
 }
 export interface MessageContext { notePath: string; ref?: string; selection?: string }
-export interface Usage { inputTokens: number; outputTokens: number; reasoningTokens: number }
+export type Usage = TokenUsage;
 export interface Message {
   id: string;
   role: 'user' | 'assistant';

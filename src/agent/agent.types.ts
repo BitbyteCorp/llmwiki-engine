@@ -12,6 +12,8 @@ export interface Citation {
 
 export interface TokenUsage {
   inputTokens: number;
+  /** Optional only for checkpoints and persisted usage written before cache accounting. */
+  cachedInputTokens?: number;
   outputTokens: number;
   reasoningTokens: number;
 }
@@ -81,12 +83,15 @@ export interface AgentTool<Result = string> {
 }
 
 export interface RunAgentOptions {
+  lane?: 'chat' | 'summarize' | 'proposal' | 'write' | 'subagent' | 'conflict' | 'dreaming';
   instructions: string;
   input: string | ChatMessage[];
   tools: AgentTool<string | { output: string; jobId: string }>[];
   effort?: string;
   model?: string;
   onEvent?: AgentEventHandler;
+  /** Receives this response's token delta immediately, including failed responses with usage. */
+  onUsage?: (usage: TokenUsage) => void;
   signal?: AbortSignal;
   onTextDelta?: (text: string) => void;
   maxTurns?: number;

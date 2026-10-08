@@ -12,7 +12,7 @@ import { SearchService } from '../../src/rag/search.service.js';
 import type { WriteJob } from '../../src/jobs/write-job.types.js';
 import { startFakeOpenAI, type FakeScript } from '../fake-openai.js';
 import { AgentService } from '../../src/agent/agent.service.js';
-import type { AgentCheckpoint, AgentTool } from '../../src/agent/agent.types.js';
+import type { AgentCheckpoint, AgentTool, TokenUsage } from '../../src/agent/agent.types.js';
 import { AclService } from '../../src/acl/acl.service.js';
 import { AuditService } from '../../src/audit/audit.service.js';
 import { UsersService } from '../../src/auth/users.service.js';
@@ -125,8 +125,10 @@ describe('Dony Responses tool loop', () => {
     ]);
     const checkpoints: AgentCheckpoint[] = [];
     let usage: unknown;
+    const deltas: TokenUsage[] = [];
     await expect(agent.runAgent({
       instructions: '', input: '무시할 입력', resume, tools: [lookup], maxTurns: 2,
+      onUsage: (delta) => deltas.push(delta),
       onCheckpoint: (checkpoint) => {
         checkpoints.push(JSON.parse(JSON.stringify(checkpoint)));
         checkpoint.input.length = 0;
@@ -142,12 +144,119 @@ describe('Dony Responses tool loop', () => {
     });
     expect(checkpoints).toEqual([{
       input: fake.requests[1]!.body.input, text: '이전 답변. 확인. ', toolCalls: 5,
-      usage: { inputTokens: 25, outputTokens: 14, reasoningTokens: 5 },
+      usage: { inputTokens: 25, cachedInputTokens: 0, outputTokens: 14, reasoningTokens: 5 },
     }]);
-    expect(usage).toEqual({ inputTokens: 31, outputTokens: 17, reasoningTokens: 6 });
+    expect(usage).toEqual({ inputTokens: 31, cachedInputTokens: 0, outputTokens: 17, reasoningTokens: 6 });
+    expect(deltas).toEqual([
+      { inputTokens: 5, cachedInputTokens: 0, outputTokens: 4, reasoningTokens: 2 },
+      { inputTokens: 6, cachedInputTokens: 0, outputTokens: 3, reasoningTokens: 1 },
+    ]);
   });
 
-  it('caps oversized tool results and errors with actionable truncation markers', async () => {
+  it('preserves checkpoint cached totals without charging resumed usage again', async () => {
+    const saved = { inputTokens: 100, cachedInputTokens: 75, outputTokens: 10, reasoningTokens: 4 };
+    const delta = { inputTokens: 20, cachedInputTokens: 12, outputTokens: 5, reasoningTokens: 1 };
+    const { agent } = await fixture([{ text: '계속된 답변', usage: delta }]);
+    const deltas: TokenUsage[] = [];
+    let total: unknown;
+    await agent.runAgent({
+      instructions: '', input: '', tools: [],
+      resume: { input: [{ role: 'user', content: '계속' }], text: '', toolCalls: 0, usage: saved },
+      onUsage: (usage) => deltas.push(usage),
+      onEvent: (event, data) => { if (event === 'usage') total = data; },
+    });
+    expect(deltas).toEqual([delta]);
+    expect(total).toEqual({ inputTokens: 120, cachedInputTokens: 87, outputTokens: 15, reasoningTokens: 5 });
+  });
+
+  it.each([false, true])('keeps the cache prefix stable and accounts cached tokens before tools (streaming=%s)', async (streaming) => {
+    const first = { inputTokens: 100, cachedInputTokens: 40, outputTokens: 8, reasoningTokens: 3 };
+    const second = { inputTokens: 120, cachedInputTokens: 90, outputTokens: 10, reasoningTokens: 4 };
+    const { agent, fake } = await fixture([
+      { functionCalls: [{ name: 'lookup', arguments: { key: 'capital' } }], usage: first },
+      { text: '서울이다.', usage: second },
+    ]);
+    const deltas: TokenUsage[] = [];
+    const checkpoints: AgentCheckpoint[] = [];
+    let total: unknown;
+    let turn = 0;
+    await agent.runAgent({
+      lane: 'write', model: 'selected-model', instructions: 'Stable instructions', input: '수도는?',
+      tools: [{ ...lookup, run: async (args) => {
+        expect(deltas).toEqual([first]);
+        return lookup.run(args);
+      } }],
+      beforeTurn: () => [{ role: 'user', content: `Queued message ${++turn}` }],
+      onUsage: (delta) => deltas.push(delta),
+      onCheckpoint: (checkpoint) => checkpoints.push(checkpoint),
+      onEvent: (event, data) => { if (event === 'usage') total = data; },
+      ...(streaming ? { onTextDelta: () => {} } : {}),
+    });
+    expect(deltas).toEqual([first, second]);
+    expect(checkpoints[0]!.usage).toEqual(first);
+    expect(total).toEqual({ inputTokens: 220, cachedInputTokens: 130, outputTokens: 18, reasoningTokens: 7 });
+    for (const request of fake.requests) {
+      expect(request.body.prompt_cache_key).toBe('llmwiki:write:selected-model');
+      expect(request.body.instructions).toBe('Stable instructions');
+      expect(request.body.tools).toEqual(fake.requests[0]!.body.tools);
+    }
+    expect(fake.requests[1]!.body.input).toEqual(expect.arrayContaining([
+      { role: 'user', content: 'Queued message 2' },
+    ]));
+  });
+
+  it.each([
+    [undefined, 'high'], ['chat', 'high'], ['proposal', 'high'],
+    ['summarize', 'minimal'], ['write', 'minimal'], ['subagent', 'minimal'], ['conflict', 'minimal'], ['dreaming', 'minimal'],
+  ] as const)('selects reasoning effort for lane %s', async (lane, expectedEffort) => {
+    const { agent, fake, config } = await fixture(['완료']);
+    config.llmReasoningEffort = 'high';
+    config.llmBackgroundReasoningEffort = 'minimal';
+    await agent.runAgent({ lane, instructions: '', input: '', tools: [] });
+    expect(fake.requests[0]!.body.reasoning).toEqual({ effort: expectedEffort });
+    expect(fake.requests[0]!.body.prompt_cache_key).toBe(`llmwiki:${lane ?? 'chat'}:${config.llmModel}`);
+  });
+
+  it.each(['chat', 'write'] as const)('honors explicit effort on lane %s', async (lane) => {
+    const { agent, fake, config } = await fixture(['완료']);
+    config.llmReasoningEffort = 'medium';
+    config.llmBackgroundReasoningEffort = 'low';
+    await agent.runAgent({ lane, effort: 'high', instructions: '', input: '', tools: [] });
+    expect(fake.requests[0]!.body.reasoning).toEqual({ effort: 'high' });
+  });
+
+  it.each([
+    [false, 'failed'], [true, 'failed'], [false, 'incomplete'], [true, 'incomplete'],
+  ] as const)('reports usage before rejecting a %s-streamed %s response', async (streaming, status) => {
+    const delta = { inputTokens: 80, cachedInputTokens: 60, outputTokens: 5, reasoningTokens: 2 };
+    const { agent } = await fixture([{ text: '', status, usage: delta }]);
+    const deltas: TokenUsage[] = [];
+    let total: unknown;
+    await expect(agent.runAgent({
+      instructions: '', input: '', tools: [], onUsage: (usage) => deltas.push(usage),
+      onEvent: (event, data) => { if (event === 'usage') total = data; },
+      ...(streaming ? { onTextDelta: () => {} } : {}),
+    })).rejects.toThrow(`Dony response ${status}`);
+    expect(deltas).toEqual([delta]);
+    expect(total).toBeUndefined();
+  });
+
+  it('reports usage before cancellation at a completed tool response', async () => {
+    const delta = { inputTokens: 80, cachedInputTokens: 60, outputTokens: 5, reasoningTokens: 2 };
+    const { agent } = await fixture([{ functionCalls: [{ name: 'lookup', arguments: { key: 'capital' } }], usage: delta }]);
+    const controller = new AbortController();
+    const deltas: TokenUsage[] = [];
+    let toolRuns = 0;
+    await expect(agent.runAgent({
+      instructions: '', input: '', signal: controller.signal,
+      tools: [{ ...lookup, run: async () => { toolRuns++; return 'not reached'; } }],
+      onUsage: (usage) => { deltas.push(usage); controller.abort(new Error('cancel after accounting')); },
+    })).rejects.toThrow('cancel after accounting');
+    expect(deltas).toEqual([delta]);
+    expect(toolRuns).toBe(0);
+  });
+
+  it('caps oversized tool results and errors at 16000 characters before the next request', async () => {
     const { agent, fake } = await fixture([
       { functionCalls: [{ name: 'large', arguments: {}, call_id: 'result' }, { name: 'fail', arguments: {}, call_id: 'error' }] },
       '출력을 좁혀 확인한다.',
@@ -160,10 +269,10 @@ describe('Dony Responses tool loop', () => {
     const outputs = (fake.requests[1]!.body.input as Array<{ type: string; output?: string }>).filter((item) => item.type === 'function_call_output');
     expect(outputs).toHaveLength(2);
     for (const item of outputs) {
-      expect(item.output!.length).toBeLessThanOrEqual(40000);
-      expect(item.output).toMatch(/truncated/i);
-      expect(item.output).toMatch(/pag(e|ing)|narrow/i);
+      expect(item.output!.length).toBe(16000);
     }
+    expect(outputs[0]!.output!.startsWith('x'.repeat(15000))).toBe(true);
+    expect(outputs[1]!.output!.startsWith('{"error":"' + 'e'.repeat(15000))).toBe(true);
   });
 
   it('lets the model recover from tool errors and malformed arguments', async () => {
@@ -179,8 +288,13 @@ describe('Dony Responses tool loop', () => {
   });
 
   it('stops an unfinished tool loop at maxTurns', async () => {
-    const { agent, fake } = await fixture([{ name: 'lookup', arguments: { key: 'capital' } }, 'not reached']);
-    await expect(agent.runAgent({ instructions: '', input: '계속', tools: [lookup], maxTurns: 1 })).rejects.toThrow('maxTurns (1)');
+    const delta = { inputTokens: 10, cachedInputTokens: 4, outputTokens: 3, reasoningTokens: 1 };
+    const { agent, fake } = await fixture([{ functionCalls: [{ name: 'lookup', arguments: { key: 'capital' } }], usage: delta }, 'not reached']);
+    const deltas: TokenUsage[] = [];
+    await expect(agent.runAgent({
+      instructions: '', input: '계속', tools: [lookup], maxTurns: 1, onUsage: (usage) => deltas.push(usage),
+    })).rejects.toThrow('maxTurns (1)');
+    expect(deltas).toEqual([delta]);
     expect(fake.requests).toHaveLength(1);
   });
 
@@ -254,6 +368,28 @@ describe('paged chat note reads', () => {
     expect(first.content + second.content).toBe(content);
     expect(result.citations).toEqual([{ path: 'wiki/paged.md', sha: 'test-sha' }]);
   });
+
+  it('bounds note reads at 300 lines and rejects oversized page requests without losing continuation', async () => {
+    const content = 'fact\n'.repeat(301);
+    const { agent, fake } = await fixture([
+      { name: 'read_note', arguments: { path: 'wiki/boundary.md' }, call_id: 'first' },
+      { functionCalls: [
+        { name: 'read_note', arguments: { path: 'wiki/boundary.md', limit: 301 }, call_id: 'oversized' },
+        { name: 'read_note', arguments: { path: 'wiki/boundary.md', offset: 300, limit: 300 }, call_id: 'tail' },
+      ] },
+      '[근거](wiki/boundary.md)',
+    ], { 'wiki/boundary.md': content });
+    const result = await agent.answer([{ role: 'user', content: '모든 근거를 읽는다.' }], () => {});
+    const outputs = (fake.requests[2]!.body.input as Array<{ type: string; call_id?: string; output?: string }>)
+      .filter((item) => item.type === 'function_call_output');
+    const first = JSON.parse(outputs.find((item) => item.call_id === 'first')!.output!);
+    const tail = JSON.parse(outputs.find((item) => item.call_id === 'tail')!.output!);
+    expect(first).toMatchObject({ content: 'fact\n'.repeat(300), totalLines: 301, nextOffset: 300, truncated: true });
+    expect(tail).toMatchObject({ content: 'fact\n', nextOffset: null, truncated: false });
+    expect(first.content + tail.content).toBe(content);
+    expect(JSON.parse(outputs.find((item) => item.call_id === 'oversized')!.output!)).toMatchObject({ error: expect.any(String) });
+    expect(result.citations).toEqual([{ path: 'wiki/boundary.md', sha: 'test-sha' }]);
+  });
 });
 
 describe('worktree writing and conflicts', () => {
@@ -285,10 +421,17 @@ describe('worktree writing and conflicts', () => {
 
   it('retries once and rejects unresolved conflict markers', async () => {
     const conflicted = '<<<<<<< HEAD\n워크 변경이다.\n=======\nmain 변경이다.\n>>>>>>> main\n';
-    const { agent, fake } = await fixture(['해결했다.', '해결했다.'], { 'wiki/conflict.md': 'main 변경이다.' });
+    const first: TokenUsage = { inputTokens: 40, cachedInputTokens: 20, outputTokens: 7, reasoningTokens: 3 };
+    const second: TokenUsage = { inputTokens: 60, cachedInputTokens: 30, outputTokens: 9, reasoningTokens: 4 };
+    const { agent, fake } = await fixture([
+      { text: '해결했다.', usage: first },
+      { text: '해결했다.', usage: second },
+    ], { 'wiki/conflict.md': 'main 변경이다.' });
     // Conflict resolution only needs these Worktree methods; no other slice is initialized.
     const wt = { branch: 'work/test', baseSha: 'base', read: async () => conflicted, write: async () => {}, list: async () => ['wiki/conflict.md'] } as unknown as Worktree;
-    await expect(agent.resolveConflicts(wt, ['wiki/conflict.md'])).rejects.toThrow(/conflict|충돌|marker/i);
+    const deltas: TokenUsage[] = [];
+    await expect(agent.resolveConflicts(wt, ['wiki/conflict.md'], undefined, { onUsage: (usage) => deltas.push(usage) })).rejects.toThrow(/conflict|충돌|marker/i);
+    expect(deltas).toEqual([first, second]);
     expect(fake.requests).toHaveLength(2);
   });
 
@@ -298,5 +441,30 @@ describe('worktree writing and conflicts', () => {
     const wt = { branch: 'work/test', baseSha: 'base', read: async () => content, write: async (_path: string, value: string) => { content = value; }, list: async () => ['wiki/conflict.md'] } as unknown as Worktree;
     await agent.resolveConflicts(wt, ['wiki/conflict.md']);
     expect(content).toBe('워크 변경과 main 변경을 함께 반영한다.\n');
+  });
+
+  it('rejects reads and writes outside the current conflict files at runtime', async () => {
+    let content = '<<<<<<< HEAD\nwork\n=======\nmain\n>>>>>>> main\n';
+    const accesses: string[] = [];
+    const { agent, fake } = await fixture([
+      { name: 'read_file', arguments: { path: 'wiki/private.md' } },
+      { name: 'write_file', arguments: { path: 'wiki/private.md', content: 'unauthorized' } },
+      { name: 'write_file', arguments: { path: 'wiki/conflict.md', content: 'work and main\n' } },
+      '두 변경을 반영했다.',
+    ], { 'wiki/conflict.md': 'main' });
+    const wt = {
+      branch: 'work/test', baseSha: 'base',
+      read: async (path: string) => { accesses.push(path); return content; },
+      write: async (path: string, value: string) => { accesses.push(path); content = value; },
+    } as unknown as Worktree;
+    await agent.resolveConflicts(wt, ['wiki/conflict.md']);
+    expect(accesses.every((path) => path === 'wiki/conflict.md')).toBe(true);
+    expect(content).toBe('work and main\n');
+    const input = fake.requests[2]!.body.input as Array<{ type?: string; output?: string }>;
+    const errors = input.filter((item) => item.type === 'function_call_output').map((item) => JSON.parse(item.output!));
+    expect(errors).toEqual([
+      { error: expect.stringContaining('Only the listed conflict files may be accessed') },
+      { error: expect.stringContaining('Only the listed conflict files may be accessed') },
+    ]);
   });
 });

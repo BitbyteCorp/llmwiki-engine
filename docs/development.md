@@ -110,8 +110,9 @@ fixture의 범위를 검증하는 명령은 `pnpm vitest run test/fake-openai.te
 | `OPENAI_BASE_URL` | 미설정 | OpenAI 호환 API 주소를 재정의한다. 테스트 서버 연결에도 사용한다. |
 | `OPENAI_MAX_RETRIES` | `8` | 도니와 임베딩의 최초 요청 이후 최대 재시도 횟수다. 0 이상의 정수만 허용하며 `0`이면 재시도를 끈다. 429 대기 힌트와 선택적 검색 호출의 예외는 [OpenAI 재시도 정책](agent.md#openai-재시도-정책)을 따른다. |
 | `LLM_MODELS` | `gpt-6-luna` | 쉼표로 구분하는 선택 가능 모델 목록이다. 앞뒤 공백과 빈 항목을 제거하고, 첫 항목을 기본 모델로 사용한다. 요청별 모델은 이 목록에 있어야 하며 목록은 비어 있을 수 없다. |
-| `LLM_REASONING_EFFORT` | `medium` | 도니의 기본 추론 강도다. |
-| `LLM_COMPACT_THRESHOLD` | `120000` | 도니의 입력 문맥 압축을 시작하는 토큰 임계값이다. 양의 정수만 허용한다. |
+| `LLM_REASONING_EFFORT` | `medium` | 대화 답변과 노트 제안의 기본 추론 강도다. 도니의 추론 강도 허용 값은 `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`다. 웹 요청별 선택은 [모델과 호출 방식](agent.md#모델과-호출-방식)을 따른다. |
+| `LLM_BACKGROUND_REASONING_EFFORT` | `low` | 대화 요약·부모 쓰기·서브에이전트·충돌 해결·꿈꾸기의 기본 추론 강도다. 위와 같은 허용 값으로 시작 시 검증하며 잘못된 값은 거절한다. 용도별 적용과 요청 옵션 우선순위는 [비용과 사용량](agent.md#비용과-사용량)을 따른다. |
+| `LLM_COMPACT_THRESHOLD` | `50000` | 도니의 입력 문맥 압축을 시작하는 토큰 임계값이다. 양의 정수만 허용하며, 반복 입력 비용을 줄이기 위해 기본값을 120000에서 낮췄다. 압축·도구 페이지 상한은 [문맥 크기와 도구 페이지](agent.md#문맥-크기와-도구-페이지)를 따른다. |
 | `UPLOAD_RETENTION_DAYS` | `7` | 사용하지 않는 임시 업로드의 보관 일수다. 가져온 raw 원문이나 assets git 파일의 보관 기간과 다르다. |
 | `EMBEDDING_MODEL` | `text-embedding-3-small` | 검색 임베딩 모델이다. |
 | `EMBEDDING_DIMENSIONS` | `1536` | 임베딩 벡터 차원이다. |

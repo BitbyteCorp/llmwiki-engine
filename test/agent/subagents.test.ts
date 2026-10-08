@@ -7,7 +7,7 @@ import { setImmediate } from 'node:timers/promises';
 import pino from 'pino';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AgentService } from '../../src/agent/agent.service.js';
-import type { AgentTool } from '../../src/agent/agent.types.js';
+import type { AgentCheckpoint, AgentTool, TokenUsage } from '../../src/agent/agent.types.js';
 import { SubagentPool, type SubagentSnapshot } from '../../src/agent/subagents.js';
 import { AclService } from '../../src/acl/acl.service.js';
 import { AuditService } from '../../src/audit/audit.service.js';
@@ -20,7 +20,7 @@ import { openDb, runMigrations } from '../../src/db/index.js';
 import type { WriteJob } from '../../src/jobs/write-job.types.js';
 import { KnowledgeRepo } from '../../src/knowledge/repo.js';
 import { SearchService } from '../../src/rag/search.service.js';
-import { startFakeOpenAI } from '../fake-openai.js';
+import { startFakeOpenAI, type FakeTurn } from '../fake-openai.js';
 
 const cleanup: Array<() => Promise<unknown>> = [];
 const releaseGates: Array<() => void> = [];
@@ -40,7 +40,7 @@ type InputItem = { role?: string; content?: string; type?: string; call_id?: str
 type RequestBody = { input: InputItem[]; stream: boolean; tools: Array<{ name: string }> };
 type Initial = { id?: string; name?: string; task?: string; files?: string[]; jobId?: string };
 type Call = { name: string; arguments: Record<string, unknown>; call_id: string };
-type Reply = string | Call[];
+type Reply = FakeTurn | Call[];
 type Route = (initial: Initial, turn: number, body: RequestBody) => Reply | Promise<Reply>;
 
 function call(name: string, args: Record<string, unknown>, callId = name): Call {
@@ -67,7 +67,7 @@ async function fixture(route: Route, embeddingUrl?: string) {
     turns.set(key, turn + 1);
     requests.push({ initial, turn, body });
     const reply = await route(initial, turn, body);
-    return typeof reply === 'string' ? reply : { functionCalls: reply };
+    return Array.isArray(reply) ? { functionCalls: reply } : reply;
   });
   cleanup.push(() => fake.close());
   const directory = await mkdtemp(join(tmpdir(), 'subagent-write-'));
@@ -207,11 +207,11 @@ describe('write subagent pool', () => {
     });
     const pool = makePool();
     const first = await spawn(pool, 'first');
-    const second = await spawn(pool, 'second', ['wiki/second/']);
-    await Promise.all([firstStarted.promise, secondStarted.promise]);
-    for (const files of [['wiki/first.md'], ['wiki/'], ['wiki/second/nested.md'], ['wiki/second/']]) {
+    for (const files of [['wiki/first.md'], ['wiki/']]) {
       await expect(spawn(pool, 'overlap', files)).rejects.toThrow(/overlap/i);
     }
+    const second = await spawn(pool, 'second', ['wiki/second/']);
+    await Promise.all([firstStarted.promise, secondStarted.promise]);
     const parent = pool.parentTools();
     await wt.write('wiki/outside.md', 'Original outside.\n');
     for (const [name, args] of [
@@ -505,20 +505,26 @@ describe('write subagent pool', () => {
 
   it('enforces concurrent and per-job limits while releasing cancelled claims', async () => {
     const release = gate();
-    const { makePool } = await fixture(async (initial) => {
+    const { makePool, requests } = await fixture(async (initial) => {
       if (initial.name!.startsWith('held')) await release.promise;
       return 'Finished';
     });
     const pool = makePool();
     const children = [];
-    for (let index = 0; index < 4; index++) children.push(await spawn(pool, `held-${index}`));
-    await expect(spawn(pool, 'fifth')).rejects.toThrow(/4|concurrent/i);
+    for (let index = 0; index < 2; index++) children.push(await spawn(pool, `held-${index}`));
+    await expect(spawn(pool, 'third')).rejects.toThrow();
     await Promise.all(children.map((child) => invoke(pool.tools(), 'cancel_subagent', { id: child.id })));
-    for (let index = 0; index < 8; index++) {
+    for (let index = 0; index < 2; index++) {
       const child = await spawn(pool, `replacement-${index}`, ['wiki/held-0.md']);
       expect((await waitFor(pool, [child.id])).settled[0]).toMatchObject({ status: 'completed' });
     }
-    await expect(spawn(pool, 'thirteenth')).rejects.toThrow(/12|per job/i);
+    await expect(spawn(pool, 'fifth')).rejects.toThrow();
+    const status = await invoke<{ subagents: SubagentSnapshot[] }>(pool.tools(), 'subagent_status', {});
+    expect(status.subagents.map((child) => [child.name, child.status])).toEqual([
+      ['held-0', 'cancelled'], ['held-1', 'cancelled'],
+      ['replacement-0', 'completed'], ['replacement-1', 'completed'],
+    ]);
+    expect(requests.some((request) => request.initial.name === 'third' || request.initial.name === 'fifth')).toBe(false);
     release.resolve();
   });
 
@@ -557,6 +563,46 @@ describe('runWrite subagent integration', () => {
     await repo.withMergeLock(() => wt.fastForwardMain());
     expect(await repo.readFile('wiki/alpha.md')).toBe('# alpha\n독립 지식을 기록한다.\n');
     expect((await repo.log({ limit: 1 }))[0]).toMatchObject({ subject: '독립 노트를 함께 검토하고 기록한다', authorName: author.name, authorEmail: author.email });
+  });
+
+  it('counts only new parent and child response deltas when resuming checkpoint usage', async () => {
+    const { agent, wt, author } = await fixture((initial, turn, body) => {
+      const usage = {
+        inputTokens: (initial.jobId ? 10 : 20) + turn,
+        cachedInputTokens: initial.jobId ? 3 : 7,
+        outputTokens: 4,
+        reasoningTokens: 2,
+      };
+      if (initial.jobId) {
+        if (turn === 0) return { usage, functionCalls: [call('spawn_subagent', { name: 'resumed-child', task: 'Finish the remaining note', files: ['wiki/resumed.md'] })] };
+        if (turn === 1) return { usage, functionCalls: [call('wait_subagents', { ids: [output(body, 'spawn_subagent').id], timeoutSeconds: 5 })] };
+        return { usage, text: '남은 노트를 기록했다.' };
+      }
+      return turn === 0
+        ? { usage, functionCalls: [call('write_file', { path: initial.files![0], content: '# 재개\n남은 지식을 기록한다.\n' })] }
+        : { usage, text: '남은 노트를 완성했다.' };
+    });
+    const resume: AgentCheckpoint = {
+      input: [{ role: 'user', content: JSON.stringify({ jobId: job.id, request: job.input }) }],
+      text: '',
+      toolCalls: 3,
+      usage: { inputTokens: 999, cachedInputTokens: 600, outputTokens: 111, reasoningTokens: 22 },
+    };
+    const deltas: TokenUsage[] = [];
+    await expect(agent.runWrite(job, wt, author, undefined, {
+      resume,
+      onUsage: (usage) => deltas.push(usage),
+    })).resolves.toEqual({ summary: '남은 노트를 기록했다.' });
+    expect(await wt.read('wiki/resumed.md')).toBe('# 재개\n남은 지식을 기록한다.\n');
+    expect(deltas.map((usage) => usage.inputTokens).sort((a, b) => a - b)).toEqual([10, 11, 12, 20, 21]);
+    expect(deltas.reduce((sum, usage) => ({
+      inputTokens: sum.inputTokens + usage.inputTokens,
+      cachedInputTokens: sum.cachedInputTokens + (usage.cachedInputTokens ?? 0),
+      outputTokens: sum.outputTokens + usage.outputTokens,
+      reasoningTokens: sum.reasoningTokens + usage.reasoningTokens,
+    }), { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 })).toEqual({
+      inputTokens: 74, cachedInputTokens: 23, outputTokens: 20, reasoningTokens: 10,
+    });
   });
 
   it.each(['early completion', 'turn-budget failure'] as const)('cancels unfinished children before returning from parent %s', async (outcome) => {

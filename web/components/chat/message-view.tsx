@@ -98,7 +98,7 @@ export function ChatMessageView({ message, steps = [], onEdit, onAction, onPropo
           </>}
         </div>
       </div>
-      {assistant && (message.usage || message.model || message.effort) && <p className="mt-1 break-words text-[10px] leading-relaxed text-muted-foreground">{[message.model, message.effort ? `추론 ${message.effort}` : '', message.usage ? `입력 ${message.usage.inputTokens.toLocaleString()} · 출력 ${message.usage.outputTokens.toLocaleString()} · 추론 ${message.usage.reasoningTokens.toLocaleString()} 토큰` : ''].filter(Boolean).join(' · ')}</p>}
+      {assistant && (message.usage || message.model || message.effort) && <p className="mt-1 break-words text-[10px] leading-relaxed text-muted-foreground">{[message.model, message.effort ? `추론 ${message.effort}` : '', message.usage ? `입력 ${message.usage.inputTokens.toLocaleString()} · 캐시 ${(message.usage.cachedInputTokens ?? 0).toLocaleString()} · 출력 ${message.usage.outputTokens.toLocaleString()} · 추론 ${message.usage.reasoningTokens.toLocaleString()} 토큰` : ''].filter(Boolean).join(' · ')}</p>}
     </footer>
   </article>
 }

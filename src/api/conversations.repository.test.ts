@@ -123,6 +123,25 @@ describe('ConversationsRepository', () => {
     });
   });
 
+  it('preserves cached usage and reads legacy usage JSON after reopening', () => {
+    const conversation = store.create(1);
+    const cached = store.addMessage(conversation.id, 1, 'assistant', '', [], { status: 'running' })!;
+    const legacy = store.addMessage(conversation.id, 1, 'assistant', 'Older answer')!;
+    const usage = { inputTokens: 120, cachedInputTokens: 80, outputTokens: 40, reasoningTokens: 15 };
+    const oldUsage = { inputTokens: 30, outputTokens: 10, reasoningTokens: 2 };
+    store.finish(cached.id, 'Cached answer', 'completed', [], usage);
+    db.prepare('UPDATE messages SET usage=? WHERE id=?').run(JSON.stringify(oldUsage), toStorageId(legacy.id));
+    db.close();
+    db = openDb(join(dir, 'chat.sqlite'));
+    store = new ConversationsRepository(db);
+
+    expect(store.message(conversation.id, cached.id, 1)).toMatchObject({
+      content: 'Cached answer', status: 'completed', usage,
+    });
+    expect(store.message(conversation.id, legacy.id, 1)?.usage).toEqual(oldUsage);
+    expect(store.messages(conversation.id, 1).map(message => message.usage)).toEqual([usage, oldUsage]);
+  });
+
   it('isolates every read and mutation from nonmembers, including an administrator', () => {
     const own = store.create(1, 'Private conversation');
     const other = store.create(2, 'Another conversation');

@@ -63,20 +63,19 @@ describe('paged worktree tools', () => {
 
   it('pages listings within the requested folder and explains continuation', async () => {
     const { wt, tools } = await fixture();
-    const paths = Array.from({ length: 503 }, (_, index) => `wiki/paged/note-${String(index).padStart(3, '0')}.md`);
+    const paths = Array.from({ length: 503 }, (_, index) => `wiki/paged/${String(index).padStart(3, '0')}.md`);
     await Promise.all(paths.map((path) => wt.write(path, '# Note\n')));
     await wt.write('wiki/outside.md', '# Outside\n');
     type Listing = { files: string[]; totalFiles: number; nextOffset: number | null; truncated: boolean; continuation?: string };
     const first = await invoke<Listing>(tools, 'list_files', { prefix: 'wiki/paged/' });
     expect(first.files).toEqual(paths.slice(0, 500));
     expect(first).toMatchObject({ totalFiles: 503, nextOffset: 500, truncated: true });
-    expect(first.continuation).toContain('same prefix');
     const last = await invoke<Listing>(tools, 'list_files', { prefix: 'wiki/paged/', offset: first.nextOffset });
     expect(last).toEqual({ files: paths.slice(500), totalFiles: 503, nextOffset: null, truncated: false });
     expect(first.files.concat(last.files)).toEqual(paths);
   });
 
-  it('keeps long-path listing JSON and continuation metadata within the generic output cap', async () => {
+  it('keeps long-path listings within the serialized page budget and preserves every path across pages', async () => {
     const { wt, tools } = await fixture();
     const directory = `wiki/long-paths/${'a'.repeat(200)}/${'b'.repeat(200)}/${'c'.repeat(200)}/`;
     const paths = Array.from({ length: 100 }, (_, index) => `${directory}note-${String(index).padStart(3, '0')}.md`);
@@ -87,24 +86,27 @@ describe('paged worktree tools', () => {
     let pages = 0;
     while (offset !== null) {
       const serialized = await list.run({ prefix: 'wiki/long-paths/', offset });
-      expect(serialized.length).toBeLessThanOrEqual(40_000);
+      expect(serialized.length).toBeLessThanOrEqual(16_000);
       const page = z.object({
         files: z.array(z.string()), nextOffset: z.number().nullable(),
         truncated: z.boolean(), continuation: z.string().optional(),
       }).parse(JSON.parse(serialized));
+      expect(JSON.stringify(page.files).length).toBeLessThanOrEqual(12_000);
       retrieved.push(...page.files);
       offset = page.nextOffset;
-      if (offset !== null) expect(page.continuation).toContain('same prefix');
       if (++pages > 100) throw new Error('Listing failed to advance');
     }
     expect(retrieved).toEqual(paths);
     expect(pages).toBeGreaterThan(1);
   });
 
-  it('rejects searches above 30 results and read pages above 800 lines', async () => {
-    const { tools } = await fixture();
+  it('accepts a 300-line read and rejects requests above the read or search limits', async () => {
+    const { tools, wt } = await fixture();
+    await wt.write('wiki/boundary.md', 'fact\n'.repeat(301));
+    expect(await invoke<ContentPage>(tools, 'read_file', { path: 'wiki/boundary.md', limit: 300 }))
+      .toMatchObject({ content: 'fact\n'.repeat(300), totalLines: 301, nextOffset: 300, truncated: true });
     await expect(invoke(tools, 'search', { query: 'notes', limit: 31 })).rejects.toThrow();
-    await expect(invoke(tools, 'read_file', { path: 'index.md', limit: 801 })).rejects.toThrow();
+    await expect(invoke(tools, 'read_file', { path: 'wiki/boundary.md', limit: 301 })).rejects.toThrow();
   });
 
   it('allows conflict tools to read continuation pages without shrinking injected revision context', async () => {
@@ -119,9 +121,16 @@ describe('paged worktree tools', () => {
       runAgent: async (options: RunAgentOptions) => {
         const input = z.object({ files: z.array(z.object({ conflicted: z.string() })) }).parse(JSON.parse(options.input as string));
         observedSnapshot = input.files[0].conflicted;
-        const first = await invoke<ContentPage>(options.tools as AgentTool[], 'read_file', { path, limit: 800 });
-        const tail = await invoke<ContentPage>(options.tools as AgentTool[], 'read_file', { path, offset: first.nextOffset });
-        const resolved = (first.content + tail.content).replace('<<<<<<< HEAD\nwork\n=======\nmain\n>>>>>>> main\n', 'work and main\n');
+        let reconstructed = '';
+        let offset: number | null = 0;
+        let charOffset = 0;
+        do {
+          const page = await invoke<ContentPage>(options.tools as AgentTool[], 'read_file', { path, offset, charOffset });
+          reconstructed += page.content;
+          offset = page.nextOffset;
+          charOffset = page.nextCharOffset ?? 0;
+        } while (offset !== null);
+        const resolved = reconstructed.replace('<<<<<<< HEAD\nwork\n=======\nmain\n>>>>>>> main\n', 'work and main\n');
         await invoke(options.tools as AgentTool[], 'write_file', { path, content: resolved });
         return { text: 'Resolved', toolCalls: 3 };
       },

@@ -250,6 +250,8 @@ async function fixture() {
     citations TEXT NOT NULL DEFAULT '[]', created_at TEXT NOT NULL, learned_at TEXT
   )`);
   const config = loadConfig({ NODE_ENV: 'test', DATA_DIR: root, GIT_BOT_NAME: 'Dream Bot', GIT_BOT_EMAIL: 'dream@example.test' });
+  const logs: Record<string, unknown>[] = [];
+  const log = pino({ level: 'info' }, { write: line => { logs.push(JSON.parse(line)); } });
   const repo = new TempRepo(root, config);
   await repo.init();
   const baseSha = await repo.headSha();
@@ -275,14 +277,14 @@ async function fixture() {
       { name: 'commit', description: 'Commit notes', parameters: { type: 'object' },
         run: async ({ message }: { message: string }) => JSON.stringify({ sha: await worktree.commit(message, author) }) },
     ],
-    resolveConflicts: vi.fn(async () => { throw new Error('Unexpected merge conflict'); }),
+    resolveConflicts: vi.fn(async (_worktree: Worktree, _files: string[], _user?: unknown, _options?: Pick<RunAgentOptions, 'onUsage'>) => { throw new Error('Unexpected merge conflict'); }),
   };
   const app = await NestFactory.createApplicationContext({
     module: DreamingTestModule,
     providers: [
       { provide: CONFIG, useValue: config },
       { provide: DB, useValue: db },
-      { provide: LOGGER, useValue: pino({ level: 'silent' }) },
+      { provide: LOGGER, useValue: log },
       { provide: KnowledgeRepo, useValue: repo },
       { provide: AgentService, useValue: agent },
       { provide: IndexerService, useValue: indexer },
@@ -320,7 +322,7 @@ async function fixture() {
     (id, started_at, finished_at, status, from_sha, to_sha, merge_sha, pushed)
     VALUES (?, '2020-01-01T00:00:00.000Z', '2020-01-01T00:01:00.000Z', 'succeeded', ?, ?, ?, 1)`)
     .run(toStorageId(newId()), baseSha, sha, sha);
-  return { app, dreaming, otherDreaming, db, repo, baseSha, runAgent, indexer, search, addMessage, learnedAt, checkpoint, conversationId };
+  return { app, dreaming, otherDreaming, db, repo, baseSha, runAgent, agent, logs, indexer, search, addMessage, learnedAt, checkpoint, conversationId };
 }
 
 afterEach(async () => {
@@ -332,6 +334,52 @@ afterEach(async () => {
 });
 
 describe('DreamingService.runOnce', () => {
+  it('logs complete dreaming and conflict totals after a successful merge', async () => {
+    const f = await fixture();
+    f.addMessage();
+    f.runAgent.mockImplementationOnce(async (options) => {
+      options.onUsage?.({ inputTokens: 100, cachedInputTokens: 60, outputTokens: 20, reasoningTokens: 6 });
+      await writeJournal(options);
+      const write = options.tools.find(tool => tool.name === 'write_file')!;
+      await write.run({ path: 'wiki/release.md', content: 'dreaming review\n' });
+      await f.repo.change('wiki/release.md', 'concurrent review\n');
+      options.onUsage?.({ inputTokens: 80, cachedInputTokens: 40, outputTokens: 12, reasoningTokens: 3 });
+      return { text: 'Reviewed knowledge.', toolCalls: 2 };
+    });
+    f.agent.resolveConflicts.mockImplementationOnce(async (wt, files, _user, options) => {
+      expect(files).toEqual(['wiki/release.md']);
+      options?.onUsage?.({ inputTokens: 50, cachedInputTokens: 20, outputTokens: 10, reasoningTokens: 2 });
+      await wt.write('wiki/release.md', 'dreaming review\nconcurrent review\n');
+      options?.onUsage?.({ inputTokens: 30, cachedInputTokens: 10, outputTokens: 5, reasoningTokens: 1 });
+    });
+    const run = await f.dreaming.runOnce();
+    expect(run.status).toBe('succeeded');
+    expect(await f.repo.readFile('wiki/release.md')).toBe('dreaming review\nconcurrent review\n');
+    expect(f.logs.find(log => log.msg === 'Dreaming completed' && log.runId === run.id)).toMatchObject({
+      usage: { inputTokens: 260, cachedInputTokens: 130, outputTokens: 47, reasoningTokens: 12 },
+    });
+  });
+
+  it('logs consumed responses when dreaming fails before producing a result', async () => {
+    const f = await fixture();
+    const message = f.addMessage();
+    const head = await f.repo.headSha();
+    f.runAgent.mockImplementationOnce(async (options) => {
+      options.onUsage?.({ inputTokens: 90, cachedInputTokens: 40, outputTokens: 18, reasoningTokens: 5 });
+      await writeJournal(options);
+      options.onUsage?.({ inputTokens: 70, cachedInputTokens: 30, outputTokens: 10, reasoningTokens: 2 });
+      throw new Error('Provider stopped before completion');
+    });
+    const run = await f.dreaming.runOnce();
+    expect(run.status).toBe('failed');
+    expect(await f.repo.headSha()).toBe(head);
+    expect(f.learnedAt(message)).toBeNull();
+    expect(f.logs.find(log => log.msg === 'Dreaming failed' && log.runId === run.id)).toMatchObject({
+      error: 'Provider stopped before completion',
+      usage: { inputTokens: 160, cachedInputTokens: 70, outputTokens: 28, reasoningTokens: 7 },
+    });
+  });
+
   it('pushes without an agent or worktree when there are no inputs or sweepable notes', async () => {
     const f = await fixture();
     await f.repo.git(['rm', 'wiki/release.md']);
@@ -349,6 +397,9 @@ describe('DreamingService.runOnce', () => {
     expect(f.repo.worktreeCount).toBe(0);
     expect(f.repo.pushCount).toBe(1);
     expect(await f.repo.git(['rev-parse', 'main'], f.repo.origin)).toBe(head);
+    expect(f.logs.find(log => log.msg === 'Dreaming completed' && log.runId === run.id)).toMatchObject({
+      usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 },
+    });
   });
 
   it('reviews only post-baseline changes, merges a dated journal into main, and pushes the actual result', async () => {

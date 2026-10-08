@@ -22,7 +22,8 @@ export type FakeTurn =
   | ({ text: string }
   | { output: readonly FakeOutputItem[] }
   | { functionCalls: readonly FakeFunctionCall[]; text?: string }) & {
-    usage?: { inputTokens: number; outputTokens: number; reasoningTokens: number };
+    usage?: { inputTokens: number; cachedInputTokens?: number; outputTokens: number; reasoningTokens: number };
+    status?: 'completed' | 'failed' | 'incomplete';
   };
 export type FakeScript = readonly FakeTurn[];
 
@@ -107,9 +108,12 @@ function makeResponse(turn: FakeTurn, number: number, params: z.infer<typeof res
     };
   });
   const usage = typeof turn !== 'string' && 'usage' in turn ? turn.usage : undefined;
+  const status = typeof turn !== 'string' && 'status' in turn ? turn.status ?? 'completed' : 'completed';
   return {
     id: `resp_fake_${number}`, object: 'response', created_at: 0, completed_at: 0,
-    status: 'completed', access_programs: null, error: null, incomplete_details: null,
+    status, access_programs: null,
+    error: status === 'failed' ? { code: 'server_error', message: 'Scripted response failure' } : null,
+    incomplete_details: status === 'incomplete' ? { reason: 'max_output_tokens' } : null,
     instructions: params.instructions ?? null, metadata: params.metadata ?? {}, model: params.model ?? 'gpt-6-luna',
     output, output_text: output.flatMap((item) => item.type === 'message'
       ? item.content.flatMap((part) => part.type === 'output_text' ? [part.text] : []) : []).join(''),
@@ -117,7 +121,7 @@ function makeResponse(turn: FakeTurn, number: number, params: z.infer<typeof res
     tool_choice: 'auto', tools: params.tools, top_p: params.top_p ?? 1,
     previous_response_id: params.previous_response_id ?? null, reasoning: null,
     text: { format: { type: 'text' } }, truncation: 'disabled',
-    usage: { input_tokens: usage?.inputTokens ?? 0, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 },
+    usage: { input_tokens: usage?.inputTokens ?? 0, input_tokens_details: { cached_tokens: usage?.cachedInputTokens ?? 0, cache_write_tokens: 0 },
       output_tokens: usage?.outputTokens ?? 0, output_tokens_details: { reasoning_tokens: usage?.reasoningTokens ?? 0 },
       total_tokens: (usage?.inputTokens ?? 0) + (usage?.outputTokens ?? 0) },
   };
@@ -163,7 +167,9 @@ function streamResponse(res: ServerResponse, response: Response): void {
     }
     emit({ type: 'response.output_item.done', output_index, item, sequence_number: sequence++ });
   });
-  emit({ type: 'response.completed', response, sequence_number: sequence++ });
+  if (response.status === 'failed') emit({ type: 'response.failed', response, sequence_number: sequence++ });
+  else if (response.status === 'incomplete') emit({ type: 'response.incomplete', response, sequence_number: sequence++ });
+  else emit({ type: 'response.completed', response, sequence_number: sequence++ });
   res.end();
 }
 

@@ -529,7 +529,7 @@ describe('conversation consumer contract', () => {
 
   it('replays an idempotent clientId without another turn and persists grounded citation and usage frames', async () => {
     const f = await fixture([{ name: 'read_note', arguments: { path: 'wiki/facts.md' } }, {
-      text: '[Citrine](wiki/facts.md#facts) is yellow.', usage: { inputTokens: 12, outputTokens: 8, reasoningTokens: 3 },
+      text: '[Citrine](wiki/facts.md#facts) is yellow.', usage: { inputTokens: 12, cachedInputTokens: 9, outputTokens: 8, reasoningTokens: 3 },
     }]);
     const conversation = await f.create();
     const input = { content: 'What is citrine?', clientId: 'client-turn-1', effort: 'low' as const };
@@ -543,8 +543,10 @@ describe('conversation consumer contract', () => {
     ]);
     const citation = { path: 'wiki/facts.md', heading: 'Facts', anchor: 'facts', sha: await f.repo.headSha() };
     expect(first.find(frame => frame.event === 'citation')?.data).toEqual(citation);
-    expect(first.find(frame => frame.event === 'usage')?.data).toEqual({ inputTokens: 12, outputTokens: 8, reasoningTokens: 3 });
-    expect(done(first)).toMatchObject({ status: 'completed', citations: [citation], usage: { inputTokens: 12, outputTokens: 8, reasoningTokens: 3 }, effort: 'low' });
+    const usage = { inputTokens: 12, cachedInputTokens: 9, outputTokens: 8, reasoningTokens: 3 };
+    expect(first.find(frame => frame.event === 'usage')?.data).toEqual(usage);
+    expect(done(first)).toMatchObject({ status: 'completed', citations: [citation], usage, effort: 'low' });
+    expect((await f.detail(conversation.id)).messages[1]?.usage).toEqual(usage);
     expect((await f.detail(conversation.id)).messages.map(message => [message.role, message.content])).toEqual([
       ['user', 'What is citrine?'], ['assistant', '[Citrine](wiki/facts.md#facts) is yellow.'],
     ]);

@@ -10,6 +10,7 @@ import { EventsService } from '../events/events.service.js';
 import { KnowledgeRepo, type CommitInfo, type Worktree } from '../knowledge/repo.js';
 import type { Logger } from '../log.js';
 import { AgentService } from '../agent/agent.service.js';
+import type { TokenUsage } from '../agent/agent.types.js';
 import { IndexerService } from '../rag/indexer.service.js';
 import { SearchService } from '../rag/search.service.js';
 import { CatalogService } from '../rag/catalog.service.js';
@@ -114,6 +115,13 @@ export class DreamingService implements OnApplicationShutdown {
     };
     let worktree: Worktree | undefined;
     let recorded = false;
+    const usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 };
+    const onUsage = (delta: TokenUsage) => {
+      usage.inputTokens += delta.inputTokens;
+      usage.cachedInputTokens += delta.cachedInputTokens ?? 0;
+      usage.outputTokens += delta.outputTokens;
+      usage.reasoningTokens += delta.reasoningTokens;
+    };
     // Dreaming is explicitly an unrestricted internal system process.
     const aclWarning = this.acl.list().length
       ? 'ACL warning: dreaming has unrestricted system access. Semantic paraphrase or copying across ACL boundaries cannot be guaranteed detectable.'
@@ -204,9 +212,11 @@ export class DreamingService implements OnApplicationShutdown {
         let result;
         try {
           result = await agent.runAgent({
-            instructions: `${await agent.baseInstructions()}\n\n${dreamInstructions(date, journalPath)}`,
+            lane: 'dreaming',
+            onUsage,
+            instructions: `${await agent.baseInstructions()}\n\n${dreamInstructions()}`,
             input: JSON.stringify({
-              date, fromSha: run.fromSha, toSha: run.toSha, commits, changedNotes, userMessages: messages,
+              date, journalPath, fromSha: run.fromSha, toSha: run.toSha, commits, changedNotes, userMessages: messages,
               mode: run.mode, focus: run.focus, structure: { signals, focus: run.focus, files: focusedFolder?.files ?? [] },
             }),
             tools: guarded.tools,
@@ -233,7 +243,7 @@ export class DreamingService implements OnApplicationShutdown {
           for (const target of unresolvedLinkTargets(mainPaths, mainNotes)) mergeBaseline.add(normalizeLinkTarget(target));
           const merge = await wt.mergeMain();
           if (!merge.ok) {
-            await agent.resolveConflicts(wt, merge.conflicts);
+            await agent.resolveConflicts(wt, merge.conflicts, undefined, { onUsage });
             await wt.finishMerge(author);
           }
           await rejectIntroducedLinks(mergeBaseline);
@@ -276,8 +286,8 @@ export class DreamingService implements OnApplicationShutdown {
         await this.notify(run);
       }
     }
-    if (run.status === 'failed') log.error({ runId: run.id, error: run.error }, 'Dreaming failed');
-    else log.info({ runId: run.id, mergeSha: run.mergeSha, pushed: run.pushed }, 'Dreaming completed');
+    if (run.status === 'failed') log.error({ runId: run.id, error: run.error, usage }, 'Dreaming failed');
+    else log.info({ runId: run.id, mergeSha: run.mergeSha, pushed: run.pushed, usage }, 'Dreaming completed');
     return run;
   }
 
@@ -301,8 +311,8 @@ export class DreamingService implements OnApplicationShutdown {
   }
 }
 
-function dreamInstructions(date: string, journalPath: string): string {
-  return `오늘은 한국 표준시(Asia/Seoul) ${date}다. dreaming 정리 작업을 수행한다.
+function dreamInstructions(): string {
+  return `입력 JSON의 date는 오늘의 한국 표준시(Asia/Seoul) 날짜다. dreaming 정리 작업을 수행한다.
 입력 JSON의 커밋과 changedNotes는 직전 성공한 실행 이후 main의 변경이며 similarNotes는 관련 기존 노트의 경로·제목과 최대 1500자 발췌다. 발췌를 전체 본문으로 간주하지 않고 더 많은 근거가 필요하면 read_file로 읽는다.
 변경과 관련 노트를 읽고 근거에 따라 모순과 중복을 정리한다. read_file은 페이지 JSON을 반환하므로 truncated이면 nextOffset과 nextCharOffset(있을 때)으로 이어 읽는다. 기존 파일을 write_file로 교체할 때는 모든 필요한 페이지를 읽고 유효한 기존 내용을 포함한 전체 파일을 저장한다. list_files는 같은 prefix와 nextOffset으로 이어 조회하거나 폴더를 좁힌다. 최신 근거가 불명확하면 열린 쟁점으로 남기고 지어내지 않는다.
 깨진 위키링크와 index.md를 고치고 MEMORY.md의 낡은 항목을 정리한다. raw/ 원문은 불변으로 보존한다.
@@ -323,7 +333,7 @@ raw/, journal/, MEMORY.md, AGENTS.md, index.md의 위치는 바꾸지 않는다.
 userMessages에는 아직 학습하지 않은 사용자 발언만 있다. 사용자가 직접 말한 사실과 정정만 추출한다.
 질문이나 요청을 사실로 바꾸지 않고 도니/assistant 답변을 재학습하지 않으며 대화를 덤프하지 않는다.
 대화에서 추출하는 지식은 공용 위키에 공개된다는 점을 고려하고, 비밀값은 저장하지 않으며 개인정보는 마스킹한다.
-${journalPath}에 오늘의 변경, 정리한 내용, 남은 쟁점을 요약한 한국어 일기를 반드시 작성한다.
+입력 JSON의 journalPath에 오늘의 변경, 정리한 내용, 남은 쟁점을 요약한 한국어 일기를 반드시 작성한다.
 동일 날짜 일기가 있으면 기존 내용을 보존하며 이번 정리 내용을 반영한다. 입력에 없는 새 사실은 만들지 않는다.
 작성 규칙을 지켜 도구로 실제 파일을 편집하고 필요하면 의미 단위로 커밋한다. Git author는 도구에 설정된 봇이다.`;
 }

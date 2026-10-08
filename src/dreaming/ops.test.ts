@@ -16,7 +16,7 @@ import { loadConfig } from '../config.js';
 import { EventsService } from '../events/events.service.js';
 import type { WikiEvent } from '../events/events.types.js';
 import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
-import type { AgentService } from '../agent/agent.service.js';
+import { AgentService } from '../agent/agent.service.js';
 import type { RunAgentOptions } from '../agent/agent.types.js';
 import { makeWorktreeTools } from '../agent/worktree.js';
 import type { CatalogService } from '../rag/catalog.service.js';
@@ -51,11 +51,13 @@ function runRecord(id: string, startedAt: string): DreamRun {
   };
 }
 
-async function fixture(slackWebhookUrl?: string) {
+async function fixture(slackWebhookUrl?: string, openaiBaseUrl?: string) {
   const root = await mkdtemp(join(tmpdir(), 'dream-ops-'));
   resources.push(() => rm(root, { recursive: true, force: true }));
-  const config = loadConfig({ NODE_ENV: 'test', DATA_DIR: root, SLACK_WEBHOOK_URL: slackWebhookUrl });
-  const log = pino({ level: 'silent' });
+  const config = loadConfig({ NODE_ENV: 'test', DATA_DIR: root, SLACK_WEBHOOK_URL: slackWebhookUrl,
+    ...(openaiBaseUrl ? { OPENAI_API_KEY: 'test-key', OPENAI_BASE_URL: openaiBaseUrl, OPENAI_MAX_RETRIES: '0' } : {}) });
+  const logs: Record<string, unknown>[] = [];
+  const log = pino({ level: 'info' }, { write: line => { logs.push(JSON.parse(line)); } });
   const warn = vi.spyOn(log, 'warn');
   const repo = await KnowledgeRepo.open(config, log);
   const { db, runs } = await database();
@@ -83,9 +85,10 @@ async function fixture(slackWebhookUrl?: string) {
   const comparison = { duplicates: () => [] } as unknown as ComparisonService;
   const audit = new AuditService(db);
   const acl = new AclService(db, new UsersService(new UsersRepository(db)), audit);
-  const dreaming = new DreamingService(repo, agent, indexer, search, config, log, runs, events, acl, audit, catalog, comparison);
-  const other = new DreamingService(repo, agent, indexer, search, config, log, runs, events, acl, audit, catalog, comparison);
-  return { root, repo, runs, db, dreaming, other, runAgent, events, seen, warn };
+  const serviceAgent = openaiBaseUrl ? new AgentService(config, log, repo, search, acl) : agent;
+  const dreaming = new DreamingService(repo, serviceAgent, indexer, search, config, log, runs, events, acl, audit, catalog, comparison);
+  const other = new DreamingService(repo, serviceAgent, indexer, search, config, log, runs, events, acl, audit, catalog, comparison);
+  return { root, repo, runs, db, dreaming, other, runAgent, events, seen, warn, logs };
 }
 
 async function webhook(handler: (body: string) => number) {
@@ -100,6 +103,84 @@ async function webhook(handler: (body: string) => number) {
   if (!address || typeof address === 'string') throw new Error('Missing webhook port');
   return `http://127.0.0.1:${address.port}/`;
 }
+
+it.each(['none', 'provider', 'dreaming', 'conflict'] as const)('logs aggregate dreaming and conflict usage with %s failing', async (failure) => {
+  interface Request { path: string; body: Record<string, unknown> }
+  type Turn = ({ text: string } | { functionCalls: Array<{ name: string; arguments: Record<string, unknown> }> }) & {
+    usage: { inputTokens: number; cachedInputTokens: number; outputTokens: number; reasoningTokens: number };
+    status?: 'completed' | 'failed';
+  };
+  // A static import would pull the shared test provider outside the production TypeScript root.
+  const { startFakeOpenAI }: {
+    startFakeOpenAI(responder: (request: Request) => Promise<Turn>): Promise<{ url: string; close(): Promise<void> }>;
+  } = await import(new URL('../../test/fake-openai.ts', import.meta.url).href);
+  let dreamTurn = 0;
+  let conflictTurn = 0;
+  const author = { name: 'Test', email: 'test@example.test' };
+  const fake = await startFakeOpenAI(async (request) => {
+    if (String(request.body.prompt_cache_key).includes(':conflict:')) {
+      if (conflictTurn++ === 0) return {
+        functionCalls: [{ name: 'write_file', arguments: { path: 'wiki/shared.md', content: 'reviewed fact\nconcurrent fact\n' } }],
+        usage: { inputTokens: 50, cachedInputTokens: 20, outputTokens: 10, reasoningTokens: 3 },
+      };
+      return { text: 'Conflict resolved', status: failure === 'conflict' ? 'failed' : 'completed',
+        usage: { inputTokens: 60, cachedInputTokens: 30, outputTokens: 12, reasoningTokens: 4 } };
+    }
+    if (failure === 'provider') throw new Error('Provider unavailable before usage');
+    if (dreamTurn++ === 0) {
+      const first = (request.body.input as Array<{ content: string }>)[0]!;
+      const { journalPath } = JSON.parse(first.content) as { journalPath: string };
+      return {
+        functionCalls: [
+          { name: 'write_file', arguments: { path: journalPath, content: '# Reviewed knowledge\n' } },
+          { name: 'write_file', arguments: { path: 'wiki/shared.md', content: 'reviewed fact\n' } },
+        ],
+        status: failure === 'dreaming' ? 'failed' : 'completed',
+        usage: { inputTokens: 100, cachedInputTokens: 40, outputTokens: 20, reasoningTokens: 5 },
+      };
+    }
+    const concurrent = await f.repo.createWorktree('concurrent-dream');
+    try {
+      await concurrent.write('wiki/shared.md', 'concurrent fact\n');
+      await concurrent.commit('Concurrent fact', author);
+      await f.repo.withMergeLock(() => concurrent.fastForwardMain());
+    } finally {
+      await concurrent.dispose();
+    }
+    return { text: 'Reviewed knowledge', usage: { inputTokens: 120, cachedInputTokens: 70, outputTokens: 25, reasoningTokens: 7 } };
+  });
+  resources.push(() => fake.close());
+  const f = await fixture(undefined, fake.url);
+  const baseline = await f.repo.createWorktree('baseline-dream');
+  await baseline.write('wiki/shared.md', 'original fact\n');
+  await baseline.commit('Baseline shared fact', author);
+  await f.repo.withMergeLock(() => baseline.fastForwardMain());
+  await baseline.dispose();
+  const run = await f.dreaming.runOnce();
+  const usage = failure === 'provider'
+    ? { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 }
+    : failure === 'dreaming'
+      ? { inputTokens: 100, cachedInputTokens: 40, outputTokens: 20, reasoningTokens: 5 }
+      : { inputTokens: 330, cachedInputTokens: 160, outputTokens: 67, reasoningTokens: 19 };
+  expect(run.status).toBe(failure === 'none' ? 'succeeded' : 'failed');
+  expect(f.logs.find(log => log.runId === run.id && log.msg === (failure === 'none' ? 'Dreaming completed' : 'Dreaming failed')))
+    .toMatchObject({ usage });
+  expect(f.runs.get(run.id)).toEqual(run);
+  expect(run.summary).toBe(failure === 'provider' || failure === 'dreaming' ? null : 'Reviewed knowledge');
+  expect(await f.repo.readFile('wiki/shared.md')).toBe(failure === 'none'
+    ? 'reviewed fact\nconcurrent fact\n'
+    : failure === 'conflict' ? 'concurrent fact\n' : 'original fact\n');
+}, 20000);
+
+it('logs zero usage when no inputs or wiki folders require a model run', async () => {
+  const f = await fixture();
+  f.db.prepare('DELETE FROM messages').run();
+  const run = await f.dreaming.runOnce();
+  expect(run).toMatchObject({ status: 'succeeded', mode: null, summary: null, journalPath: null });
+  expect(f.logs.find(log => log.msg === 'Dreaming completed' && log.runId === run.id)).toMatchObject({
+    usage: { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 },
+  });
+});
 
 it('persists completed details and pages tied timestamps without losing rows', async () => {
   const { runs } = await database();
@@ -315,13 +396,13 @@ it.each([false, true])('validates backlinks before merging a moved note (fixed: 
   await seed.dispose();
   const beforeHead = await f.repo.headSha();
   f.runAgent.mockImplementationOnce(async (options) => {
-    const input = JSON.parse(options.input as string) as { date: string };
+    const input = JSON.parse(options.input as string) as { journalPath: string };
     await options.tools.find((tool) => tool.name === 'move_file')!.run({ from: 'wiki/topic/old.md', to: 'wiki/topic/new.md' });
     if (fixLinks) await options.tools.find((tool) => tool.name === 'write_file')!.run({
       path: 'wiki/topic/source.md', content: '[[wiki/topic/new]]\n',
     });
     await options.tools.find((tool) => tool.name === 'write_file')!.run({
-      path: `journal/${input.date}.md`, content: '# 일기\n\n## 구조 정리\nwiki/topic/old.md → wiki/topic/new.md: 탐색 개선이다.\n',
+      path: input.journalPath, content: '# 일기\n\n## 구조 정리\nwiki/topic/old.md → wiki/topic/new.md: 탐색 개선이다.\n',
     });
     return { text: 'Reorganized', toolCalls: fixLinks ? 3 : 2 };
   });

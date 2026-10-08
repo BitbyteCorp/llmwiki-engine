@@ -50,7 +50,7 @@ export function makeWorktreeTools(
     },
     {
       name: 'list_files',
-      description: 'List up to 500 Markdown files in the confined worktree, within a 30000-character path budget. Continue at nextOffset with the same prefix, or narrow prefix to a folder.',
+      description: 'List up to 500 Markdown files in the confined worktree, within a 12000-character serialized path budget. Continue at nextOffset with the same prefix, or narrow prefix to a folder.',
       parameters: { type: 'object', properties: { prefix: { type: 'string' }, offset: { type: 'integer', minimum: 0, default: 0 } }, required: [], additionalProperties: false },
       async run(args: unknown) {
         const { prefix, offset } = listArgs.parse(args);
@@ -74,7 +74,7 @@ export function makeWorktreeTools(
     },
     {
       name: 'read_file',
-      description: 'Read a page of a worktree file: content,totalLines,nextOffset,truncated. Offset is 0-based; default/max 800 lines and max 30000 characters. Continue with nextOffset and nextCharOffset (if present). Pages preserve line endings. Assemble all needed pages before replacing via write_file. Missing content is null; empty content is an empty string.',
+      description: 'Read a page of a worktree file: content,totalLines,nextOffset,truncated. Offset is 0-based; default/max 300 lines and max 12000 characters. Continue with nextOffset and nextCharOffset (if present). Pages preserve line endings. Assemble all needed pages before replacing via write_file. Missing content is null; empty content is an empty string.',
       parameters: { type: 'object', properties: { path: { type: 'string', minLength: 1 }, ...readPageParameters }, required: ['path'], additionalProperties: false },
       async run(args: unknown) {
         const { path, offset, limit, charOffset } = readArgs.parse(args);

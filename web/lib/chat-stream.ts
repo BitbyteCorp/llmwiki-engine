@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { ApiError, request, type Message } from './api';
+import { ApiError, request, type Message, type MessageUsage } from './api';
 
 export interface ChatMessageInput {
   content: string;
@@ -11,14 +11,13 @@ export interface ChatMessageInput {
 }
 
 export interface ChatCitation { path: string; heading?: string; anchor?: string; excerpt?: string; sha?: string }
-export interface ChatUsage { inputTokens: number; outputTokens: number; reasoningTokens: number }
 export type ChatStreamEvent =
   | { id: number; event: 'generation'; data: { generationId: string; userMessageId: string | null } }
   | { id: number; event: 'status'; data: { phase: string } }
   | { id: number; event: 'tool'; data: { name: string; state: 'start' | 'end'; summary: string; path?: string; jobId?: string } }
   | { id: number; event: 'citation'; data: ChatCitation }
   | { id: number; event: 'delta'; data: { text: string; replace?: boolean } }
-  | { id: number; event: 'usage'; data: ChatUsage }
+  | { id: number; event: 'usage'; data: MessageUsage }
   | { id: number; event: 'done'; data: { message: Message } }
   | { id: number; event: 'error'; data: { code: string; message: string } };
 
@@ -29,7 +28,7 @@ const cursorPrefix = 'llmwiki.chat.generation.';
 class ConnectionLost extends Error {}
 
 const citationSchema = z.object({ path: z.string(), heading: z.string().optional(), anchor: z.string().optional(), excerpt: z.string().optional(), sha: z.string().optional() });
-const usageSchema = z.object({ inputTokens: z.number(), outputTokens: z.number(), reasoningTokens: z.number() });
+const usageSchema = z.object({ inputTokens: z.number(), cachedInputTokens: z.number().optional(), outputTokens: z.number(), reasoningTokens: z.number() });
 const messageSchema = z.object({
   id: z.string(), role: z.literal('assistant'), content: z.string(), citations: z.array(citationSchema),
   attachments: z.array(z.string()), context: z.object({ notePath: z.string(), ref: z.string().optional(), selection: z.string().optional() }).nullable(),

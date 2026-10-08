@@ -11,6 +11,7 @@ import { LOGGER } from '../common/tokens.js';
 import { EventsService } from '../events/events.service.js';
 import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
 import { AgentService } from '../agent/agent.service.js';
+import type { TokenUsage } from '../agent/agent.types.js';
 import { IndexerService } from '../rag/indexer.service.js';
 import type { JobEvent, JobPhase, SubmittedWriteJob, SubmitWriteJob, WriteJob } from './write-job.types.js';
 import { NoteWriterService } from './note-writer.service.js';
@@ -262,6 +263,13 @@ export class WriteJobsService implements OnApplicationShutdown {
   private async run(job: WriteJob): Promise<void> {
     const { repository, repo, agent, indexer, log } = this;
     let wt: Worktree | undefined;
+    const usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 };
+    const onUsage = (delta: TokenUsage) => {
+      usage.inputTokens += delta.inputTokens;
+      usage.cachedInputTokens += delta.cachedInputTokens ?? 0;
+      usage.outputTokens += delta.outputTokens;
+      usage.reasoningTokens += delta.reasoningTokens;
+    };
     repository.markRunning(job.id, new Date().toISOString());
     this.phase(job.id, 'preparing');
     try {
@@ -280,6 +288,7 @@ export class WriteJobsService implements OnApplicationShutdown {
       const { summary } = await agent.runWrite(this.get(job.id)!, wt, author, user, {
         resume: repository.checkpoints.get(`job:${job.id}`),
         onCheckpoint: checkpoint => repository.checkpoints.save(`job:${job.id}`, checkpoint),
+        onUsage,
       });
       const subject = summary.trim().split(/\r?\n/, 1)[0]?.slice(0, 200) || 'Update knowledge';
       this.phase(job.id, 'committing');
@@ -299,7 +308,7 @@ export class WriteJobsService implements OnApplicationShutdown {
           for (const path of merge.conflicts) this.acl.assertWrite(resolvingUser, path);
           repository.recordConflicts(job.id, merge.conflicts);
           this.phase(job.id, 'resolving_conflict', { files: merge.conflicts });
-          await agent.resolveConflicts(activeWorktree, merge.conflicts, resolvingUser);
+          await agent.resolveConflicts(activeWorktree, merge.conflicts, resolvingUser, { onUsage });
           await this.verifyResolution(activeWorktree, merge.conflicts);
           await activeWorktree.finishMerge(author);
         }
@@ -330,7 +339,7 @@ export class WriteJobsService implements OnApplicationShutdown {
         }
       }
       repository.markFailed(job.id, error instanceof Error ? error.message : String(error), new Date().toISOString());
-      log.error({ err: error, jobId: job.id }, 'Write job failed');
+      log.error({ err: error, jobId: job.id, usage }, 'Write job failed');
     } finally {
       if (wt) {
         this.phase(job.id, 'cleanup');
@@ -342,7 +351,8 @@ export class WriteJobsService implements OnApplicationShutdown {
         }
       }
       const result = this.get(job.id)!;
-      this.phase(job.id, result.status === 'succeeded' ? 'done' : 'failed', result.error ? { error: result.error } : null);
+      this.phase(job.id, result.status === 'succeeded' ? 'done' : 'failed', { usage, ...(result.error ? { error: result.error } : {}) });
+      if (result.status === 'succeeded') log.info({ jobId: job.id, mergeSha: result.mergeSha, usage }, 'Write job completed');
     }
   }
 }

@@ -242,9 +242,9 @@ describe('grounded chat citations', () => {
 describe('chat model requests and progress', () => {
   it('accepts image and file inputs while aggregating usage and publishing body-free tool summaries', async () => {
     const { agent } = await fixture([
-      { functionCalls: [{ name: 'search', arguments: { query: 'cache' } }], usage: { inputTokens: 10, outputTokens: 4, reasoningTokens: 2 } },
-      { functionCalls: [{ name: 'read_note', arguments: { path: 'wiki/facts.md' } }], usage: { inputTokens: 20, outputTokens: 5, reasoningTokens: 3 } },
-      { text: '[Cache](wiki/facts.md)', usage: { inputTokens: 30, outputTokens: 6, reasoningTokens: 1 } },
+      { functionCalls: [{ name: 'search', arguments: { query: 'cache' } }], usage: { inputTokens: 10, cachedInputTokens: 7, outputTokens: 4, reasoningTokens: 2 } },
+      { functionCalls: [{ name: 'read_note', arguments: { path: 'wiki/facts.md' } }], usage: { inputTokens: 20, cachedInputTokens: 12, outputTokens: 5, reasoningTokens: 3 } },
+      { text: '[Cache](wiki/facts.md)', usage: { inputTokens: 30, cachedInputTokens: 18, outputTokens: 6, reasoningTokens: 1 } },
     ], { 'wiki/facts.md': '# Cache\nPRIVATE BODY' });
     const content: ResponseInputContent[] = [
       { type: 'input_text', text: 'Describe these attachments' },
@@ -257,7 +257,7 @@ describe('chat model requests and progress', () => {
       onEvent: (type, data) => events.push({ type, data }),
     });
     expect(deltas.join('')).toBe('[Cache](wiki/facts.md)');
-    expect(result.usage).toEqual({ inputTokens: 60, outputTokens: 15, reasoningTokens: 6 });
+    expect(result.usage).toEqual({ inputTokens: 60, cachedInputTokens: 37, outputTokens: 15, reasoningTokens: 6 });
     expect(events.filter((event) => event.type === 'usage').map((event) => event.data)).toEqual([result.usage]);
     expect(events.filter((event) => event.type === 'tool').map((event) => event.data)).toEqual([
       { name: 'search', state: 'start', summary: 'cache' },
