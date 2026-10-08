@@ -78,16 +78,48 @@ function safeArchivePath(path: string): string {
   return path.normalize('NFC');
 }
 
+const NOTION_ID = /(?: |%20|[-_])(?:[a-f\d]{32}|[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12})(?=\.[^.]+$|$)/gi;
+
 /** Strip export page IDs from every path segment, not from prose. */
 export function notionPath(path: string): string {
-  return path.split('/').map((part) => part.replace(/(?: |%20|[-_])(?:[a-f\d]{32}|[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12})(?=\.[^.]+$|$)/gi, '')).join('/');
+  return path.split('/').map((part) => part.replace(NOTION_ID, '')).join('/');
 }
-function rewriteNotionLinks(markdown: string): string {
+
+/**
+ * Map archive paths to ID-free paths. Notion allows same-title siblings, so names whose stripped
+ * form is shared by distinct page IDs (or by an ID-less file) keep their export ID. A page file and
+ * its child folder share one ID; ID-less child folders (newer exports) add no identity of their own.
+ */
+function notionPaths(originals: Iterable<string>): Map<string, string> {
+  const segments = (path: string) => {
+    const parts = path.replace(/\/$/, '').split('/');
+    return parts.map((part, index) => {
+      const file = index === parts.length - 1 && !path.endsWith('/');
+      const page = file ? part.replace(/\.[^.]+$/, '') : part;
+      return { part, id: page.match(NOTION_ID)?.[0] ?? (file ? '' : undefined), group: `${parts.slice(0, index).join('/')}\0${page.replace(NOTION_ID, '')}` };
+    });
+  };
+  const ids = new Map<string, Set<string>>();
+  const paths = [...originals];
+  for (const path of paths) for (const { id, group } of segments(path)) {
+    const known = ids.get(group) ?? ids.set(group, new Set()).get(group)!;
+    if (id !== undefined) known.add(id);
+  }
+  return new Map(paths.map((path) => [path, segments(path).map(({ part, group }) => ids.get(group)!.size > 1 ? part : part.replace(NOTION_ID, ''))
+    .join('/') + (path.endsWith('/') ? '/' : '')]));
+}
+
+/** Resolve relative links against the archive so they follow the same renames as their targets. */
+function rewriteNotionLinks(markdown: string, original: string, paths: Map<string, string>): string {
+  const from = posix.dirname(`/${paths.get(original)!}`);
   const normalize = (target: string): string => {
     if (/^[a-z][a-z\d+.-]*:/i.test(target) || target.startsWith('#')) return target;
     const match = target.match(/^([^?#]*)(.*)$/)!;
-    try { return markdownHref(notionPath(decodeURIComponent(match[1]!))) + match[2]; }
+    let decoded: string;
+    try { decoded = decodeURIComponent(match[1]!).normalize('NFC'); }
     catch { return fail('Invalid encoded Notion link'); }
+    const mapped = paths.get(posix.join(posix.dirname(original), decoded));
+    return markdownHref(mapped === undefined ? notionPath(decoded) : posix.relative(from, `/${mapped}`)) + match[2];
   };
   return markdown.replace(/(!?\[[^\]\n]*\]\()(<[^>]+>|[^\s)]+)([^)]*\))/g, (_, open: string, target: string, close: string) =>
     `${open}${target.startsWith('<') ? `<${normalize(target.slice(1, -1))}>` : normalize(target)}${close}`)
@@ -135,6 +167,7 @@ function inspectZip(buffer: Buffer): Map<string, number> {
 
 export function extractVault(buffer: Buffer, kind: 'obsidian' | 'notion'): Extraction {
   const expected = inspectZip(buffer);
+  const paths = kind === 'notion' ? notionPaths(expected.keys()) : undefined;
   const files: ExtractedFile[] = [];
   const seen = new Set<string>();
   const consumed = new Set<string>();
@@ -145,7 +178,8 @@ export function extractVault(buffer: Buffer, kind: 'obsidian' | 'notion'): Extra
     const size = expected.get(original);
     if (size === undefined || consumed.has(original)) fail('ZIP local entries differ from the directory');
     consumed.add(original);
-    const path = kind === 'notion' ? safeArchivePath(notionPath(original)) : original;
+    const path = paths ? safeArchivePath(paths.get(original)!) : original;
+    // Invariant guard: renaming must never merge two entries into one path.
     if (seen.has(path)) fail('Normalized ZIP paths collide');
     seen.add(path);
     let actual = 0;
@@ -164,7 +198,7 @@ export function extractVault(buffer: Buffer, kind: 'obsidian' | 'notion'): Extra
         if (path.split('/').some((part) => part.startsWith('.')) || path.startsWith('__MACOSX/')) return;
         const markdown = /\.md$/i.test(path);
         let content = Buffer.concat(chunks, actual);
-        if (markdown) content = Buffer.from(kind === 'notion' ? rewriteNotionLinks(decodeText(content)) : decodeText(content));
+        if (markdown) content = Buffer.from(paths ? rewriteNotionLinks(decodeText(content), original, paths) : decodeText(content));
         files.push({ path, buffer: content, markdown });
       }
     };

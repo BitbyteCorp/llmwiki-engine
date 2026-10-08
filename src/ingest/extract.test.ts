@@ -73,9 +73,22 @@ describe('source extraction', () => {
     const archive = Buffer.from(zipSync({ 'huge.md': new Uint8Array(21 * 1024 * 1024) }));
     expect(() => extractVault(archive, 'obsidian')).toThrow('expanded size');
   });
-  it('rejects Notion canonical-name collisions instead of losing notes', () => {
-    const archive = Buffer.from(zipSync({ 'A 0123456789abcdef0123456789abcdef.md': strToU8('one'), 'A fedcba9876543210fedcba9876543210.md': strToU8('two') }));
-    expect(() => extractVault(archive, 'notion')).toThrow('collide');
+  it('keeps export IDs only for same-title Notion siblings and resolves links to the right page', () => {
+    const one = '0123456789abcdef0123456789abcdef';
+    const two = 'fedcba9876543210fedcba9876543210';
+    const result = extractVault(Buffer.from(zipSync({
+      [`Home ${one}.md`]: strToU8(`[first](Untitled%20${one}.md)\n[second](Untitled%20${two}.md)\n[child](Untitled%20${two}/Child%20${one}.md)\n[solo](Solo%20${one}.md)`),
+      [`Untitled ${one}.md`]: strToU8('one'),
+      [`Untitled ${two}.md`]: strToU8('two'),
+      [`Untitled ${two}/Child ${one}.md`]: strToU8(`[up](../Untitled%20${two}.md)`),
+      [`Solo ${one}.md`]: strToU8(`[note](Solo/Note%20${two}.md)`),
+      [`Solo/Note ${two}.md`]: strToU8('note'),
+    })), 'notion');
+    expect(result.files.map((file) => file.path).sort()).toEqual(['Home.md', 'Solo.md', 'Solo/Note.md', `Untitled ${one}.md`, `Untitled ${two}.md`, `Untitled ${two}/Child.md`]);
+    expect(result.files.find((file) => file.path === 'Solo.md')!.buffer.toString()).toBe('[note](Solo/Note.md)');
+    expect(result.files.find((file) => file.path === 'Home.md')!.buffer.toString())
+      .toBe(`[first](Untitled%20${one}.md)\n[second](Untitled%20${two}.md)\n[child](Untitled%20${two}/Child.md)\n[solo](Solo.md)`);
+    expect(result.files.find((file) => file.path === `Untitled ${two}/Child.md`)!.buffer.toString()).toBe(`[up](../Untitled%20${two}.md)`);
   });
   it('rejects ZIP symlinks', () => {
     const archive = Buffer.from(zipSync({ 'note.md': strToU8('# Note') }));
