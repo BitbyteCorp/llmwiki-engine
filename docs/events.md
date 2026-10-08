@@ -25,7 +25,7 @@
 ### 웹 조회 캐시와 배치 갱신
 웹의 `useLiveEvents()`는 QueryClientProvider 내부에서 한 번 실행한다. 공용 TanStack Query 기본값은 `staleTime: 30초`, 브라우저 `gcTime: 10분`, `refetchOnWindowFocus: false`, `structuralSharing: true`, `retry: false`다. 개별 조회는 필요한 옵션을 덮어쓸 수 있다. 브라우저 `EventSource`가 자동 재연결하며 두 번째 `open`부터 전체 조회 캐시를 한 번 무효화해 끊긴 동안 놓친 이벤트를 보완한다. 변경 스트림에 과거 이벤트 재생이 없으므로 정상 연결 중의 좁은 갱신과 재연결 복구를 구분한다.
 
-서버 렌더링(SSR)에서는 `environmentManager.isServer()`로 판별해 `gcTime`을 TanStack 기본값인 `Infinity`로 둔다. 유한한 `gcTime`은 렌더마다 만든 조회에 GC `setTimeout`을 예약하고, Node 24의 `AsyncContextFrame`은 그 타이머에 요청의 비동기 문맥을 붙인다. 그 결과 타이머가 만료될 때까지 React 렌더 요청·응답 객체·개발 모드 디버그 스택 전체가 해제되지 않는다. 실제로 서버 기본값을 10분으로 덮어썼을 때 개발 서버의 GC 이후 힙이 SSR 요청 하나당 약 0.65MB씩 늘어 900회 요청에 139MB에서 719MB가 되었고, 여러 개발 서버가 수 GB까지 커져 호스트가 OOM에 빠졌다. 서버의 `QueryClient`는 요청마다 새로 만들어 렌더 후 버려지므로 GC 타이머가 필요 없다. 개별 조회의 `gcTime`도 SSR에서 실행되는 조회라면 같은 이유로 서버 값을 덮어쓰지 않는다.
+서버 렌더링(SSR)에서는 `environmentManager.isServer()`로 판별해 `gcTime`을 TanStack 기본값인 `Infinity`로 둔다. 유한한 `gcTime`은 렌더마다 만든 조회에 GC `setTimeout`을 예약하고, Node 24의 `AsyncContextFrame`은 그 타이머에 요청의 비동기 문맥을 붙인다. 그 결과 타이머가 만료될 때까지 React 렌더 요청·응답 객체·개발 모드 디버그 스택 전체가 해제되지 않는다. 실제로 서버 기본값을 10분으로 덮어썼을 때 개발 서버의 GC 이후 힙이 SSR 요청 하나당 약 0.65MB씩 늘어 900회 요청에 139MB에서 719MB가 되었고, 여러 개발 서버가 수 GB까지 커져 호스트가 OOM에 빠졌다. 운영 빌드에서도 같은 경로로 HTML 응답 하나당 힙 약 71KiB와 gzip 버퍼 약 40KiB가 10분 동안 남아, 인증 화면 2,700회 후 RSS가 548MiB였다. 서버 값을 `Infinity`로 둔 뒤에는 같은 측정에서 힙이 평탄했고 RSS는 215MiB였다. 서버의 `QueryClient`는 요청마다 새로 만들어 렌더 후 버려지므로 GC 타이머가 필요 없다. 개별 조회의 `gcTime`도 SSR에서 실행되는 조회라면 같은 이유로 서버 값을 덮어쓰지 않는다.
 
 일반 변경 이벤트의 조회 무효화는 첫 이벤트부터 고정 100밀리초 창으로 모은다. 뒤따르는 이벤트가 타이머를 다시 미루지 않으므로 지속적인 이벤트에도 flush가 실행된다. 한 번의 flush에서 쌓인 ID·경로·조회 루트를 하나의 `invalidateQueries` predicate로 처리한다. `onLiveEvent` handler는 배치를 기다리지 않고 즉시 실행하며 presence는 조회 무효화 타이머를 만들지 않는다.
 

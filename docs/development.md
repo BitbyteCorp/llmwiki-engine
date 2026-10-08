@@ -159,6 +159,10 @@ VS Code의 `pnpm dev` 터미널 출력이 일시 정지되거나 계속 배출�
 
 개발 서버 하나는 경로를 컴파일할 때마다 수십 MB씩 커지며 몇 개 화면만 열어도 1~2GB를 쓴다. 확인용으로 띄운 복사본 서버는 확인이 끝나면 반드시 종료한다. 여러 확인 세션이 각자 띄운 서버를 남겨 두면 각 서버가 수 GB까지 커지고, 편집기·브라우저와 함께 호스트 메모리와 스왑을 모두 소진한다. 이 경우 커널 OOM killer가 `oom_score_adj`가 높은 작은 브라우저 프로세스만 반복해 종료하고 큰 Node 프로세스는 남기므로, 호스트가 회복하지 못하고 장시간 멈춘 것처럼 보인다. 서버 측 조회 캐시 타이머로 SSR 요청이 누적되던 원인과 규칙은 [실시간 이벤트](events.md#웹-조회-캐시와-배치-갱신)에 기록한다.
 
+요청이 없는데도 개발 서버가 수십 초 동안 CPU 50% 안팎을 쓰고 RSS가 1GB 가까이 더 올라가는 구간은 Turbopack 영속 캐시(`turbopackFileSystemCacheForDev`, 기본 켜짐)의 저장·압축 작업이다. 22개 라우트를 모두 컴파일한 서버에서 이 작업이 약 10초 동안 tokio 스레드 합계 약 490%를 쓰고 RSS가 2.9GB에서 3.8GB로 올랐다가 저장 후 0.95GB로 내려갔으며, 이후 120초 CPU는 0.05초였다. Nest의 인덱스 폴링과 SSE heartbeat의 유휴 CPU는 1% 미만이었다. Next 16.4의 `turbopackMemoryEviction: 'full'`, 캐시 끄기, `turbopackGc`, `MALLOC_ARENA_MAX=2`는 저장 후 RSS를 의미 있게 줄이지 못해 적용하지 않았으며, Turbopack의 공개 메모리 상한 설정은 없다. 따라서 메모리 대응은 동시에 띄우는 개발 서버 수를 줄이는 것이다.
+
+`turbopack.root`는 단일 루트 패키지의 `node_modules`를 해석하려고 저장소 루트로 둔다. 이 설정에서도 Turbopack은 루트 아래를 전부 재귀 감시하지 않는다. 측정 시 inotify watch 1,770개는 `node_modules`·`web`·`src`에만 있었고 `data/`에는 없었으며, 루트 `data/` 아래에 30초 동안 299회 써도 CPU 증가는 0.01초였다.
+
 Next 16 개발 모드는 HTML 요청마다 React 디버그 채널을 메모리에 두고, 해당 페이지의 HMR WebSocket이 연결 후 닫힐 때만 지운다. 따라서 `curl` 같은 HTML 조회나 hydration 전에 닫힌 페이지는 요청당 약 50KB를 프로세스 종료까지 남긴다. 반복 생존 확인에는 HTML 화면 대신 `/healthz`나 `/readyz`를 사용한다. 이 누적은 Next 개발 서버 내부 동작이며 운영 빌드와는 관계없다.
 
 ### Docker 이미지와 영속 볼륨
