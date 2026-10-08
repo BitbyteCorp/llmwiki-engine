@@ -31,9 +31,10 @@ import { EventsService } from '../src/events/events.service.js';
 import type { EventAudience, WikiEvent } from '../src/events/events.types.js';
 import { KnowledgeRepo } from '../src/knowledge/repo.js';
 import { AgentService } from '../src/agent/agent.service.js';
+import { AgentCheckpointsRepository } from '../src/agent/checkpoints.repository.js';
 import { SearchService } from '../src/rag/search.service.js';
 import { UploadsService } from '../src/uploads/uploads.service.js';
-import { startFakeOpenAI, type FakeScript } from './fake-openai.js';
+import { startFakeOpenAI, type FakeResponder, type FakeScript } from './fake-openai.js';
 import { AclService } from '../src/acl/acl.service.js';
 import { AuditService } from '../src/audit/audit.service.js';
 import { UsersService } from '../src/auth/users.service.js';
@@ -60,12 +61,12 @@ afterEach(async () => {
   for (const dispose of disposals.splice(0).reverse()) await dispose();
 });
 
-async function fixture(script: FakeScript, authorRole: 'viewer' | 'editor' = 'viewer') {
+async function fixture(script: FakeScript | FakeResponder, authorRole: 'viewer' | 'editor' = 'viewer') {
   const fake = await startFakeOpenAI(script);
   disposals.push(() => fake.close());
   const directory = await mkdtemp(join(tmpdir(), 'conversation-http-'));
   disposals.push(() => rm(directory, { recursive: true, force: true }));
-  const config = loadConfig({ NODE_ENV: 'test', DATA_DIR: directory, OPENAI_API_KEY: 'test-key', OPENAI_BASE_URL: fake.url });
+  const config = loadConfig({ NODE_ENV: 'test', DATA_DIR: directory, OPENAI_API_KEY: 'test-key', OPENAI_BASE_URL: fake.url, OPENAI_MAX_RETRIES: '0' });
   const log = pino({ level: 'silent' });
   const repo = await KnowledgeRepo.open(config, log);
   const wt = await repo.createWorktree('conversation-fixture');
@@ -96,7 +97,7 @@ async function fixture(script: FakeScript, authorRole: 'viewer' | 'editor' = 'vi
   let origin = '';
   const module = await Test.createTestingModule({
     controllers: [ConversationsController, GenerationsController],
-    providers: [ConversationsRepository, ConversationsService, GenerationsService, SessionGuard, RolesGuard,
+    providers: [ConversationsRepository, ConversationsService, GenerationsService, AgentCheckpointsRepository, SessionGuard, RolesGuard,
       { provide: DB, useValue: db }, { provide: LOGGER, useValue: log },
       { provide: AclService, useValue: acl },
       { provide: AgentService, useValue: agent }, { provide: EventsService, useValue: events },
@@ -143,7 +144,8 @@ async function fixture(script: FakeScript, authorRole: 'viewer' | 'editor' = 'vi
     return result;
   }
   async function send(id: string, input: SubmitMessage) { return stream(`/conversations/${id}/messages`, 'POST', input); }
-  return { request, create, detail, stream, send, agent, fake, repo, published, db, acl, users, jobs, jobRepository, tokens };
+  return { request, create, detail, stream, send, agent, fake, repo, published, db, acl, users, jobs, jobRepository, tokens,
+    checkpoints: module.get(AgentCheckpointsRepository), generations: module.get(GenerationsService), conversations: module.get(ConversationsRepository) };
 }
 async function expectError(response: Response, status: number, code: string) {
   expect(response.status).toBe(status);
@@ -604,6 +606,240 @@ describe('conversation consumer contract', () => {
     ]);
     await expectError(await f.request(`/generations/${generationId}/events`, 'GET', undefined, 2), 404, 'not_found');
     await expectError(await f.request(`/conversations/${conversation.id}`, 'GET', undefined, 2), 404, 'not_found');
+  });
+
+  it('resumes a failed tool turn on the same assistant with preserved provider input, text and citation ref', async () => {
+    let fail = true;
+    const preserved = '[Citrine](wiki/facts.md#facts) is yellow. ';
+    const f = await fixture((_request, index) => {
+      if (index === 0) return { text: preserved, functionCalls: [{ name: 'read_note', arguments: { path: 'wiki/facts.md' }, call_id: 'original-read' }] };
+      if (fail) throw new SyntaxError('private provider failure');
+      return 'It is quartz.';
+    });
+    const conversation = await f.create();
+    const originalSha = await f.repo.headSha();
+    const failed = await f.send(conversation.id, { content: 'Explain citrine', model: 'gpt-6-luna', effort: 'low' });
+    expect(failed.at(-1)).toMatchObject({ event: 'error', data: { code: 'generation_failed' } });
+    const before = (await f.detail(conversation.id)).messages;
+    expect(before[1]).toMatchObject({ status: 'failed', content: preserved, resumable: true });
+    expect(f.checkpoints.get(`message:${before[1].id}`)).toMatchObject({ text: preserved });
+    const originalInput = f.fake.requests[1].body.input;
+    const wt = await f.repo.createWorktree('change-before-chat-resume');
+    try {
+      await wt.write('wiki/facts.md', '# Facts\nThe current fact has changed.');
+      await wt.commit('Change citation source', { name: 'Fixture', email: 'fixture@example.test' });
+      await wt.fastForwardMain();
+    } finally { await wt.dispose(); }
+    fail = false;
+    const requestCount = f.fake.requests.length;
+    const resumed = await f.stream(`/conversations/${conversation.id}/messages/${before[1].id}/retry`);
+    expect(done(resumed)).toMatchObject({
+      id: before[1].id, content: `${preserved}It is quartz.`, status: 'completed', model: 'gpt-6-luna', effort: 'low', resumable: false,
+      citations: [{ path: 'wiki/facts.md', heading: 'Facts', anchor: 'facts', sha: originalSha }],
+    });
+    expect(f.fake.requests[requestCount].body).toMatchObject({ model: 'gpt-6-luna', reasoning: { effort: 'low' }, input: originalInput });
+    expect(originalInput).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'function_call', name: 'read_note', call_id: 'original-read' }),
+      expect.objectContaining({ type: 'function_call_output', call_id: 'original-read', output: expect.stringContaining('yellow quartz') }),
+    ]));
+    expect(resumed.filter(frame => frame.event === 'delta')[0].data).toEqual({ text: preserved, replace: true });
+    expect(resumed.filter(frame => frame.event === 'delta').slice(1).every(frame => frame.data.replace === undefined)).toBe(true);
+    expect(await f.stream(`/generations/${resumed[0].data.generationId}/events`, 'GET')).toEqual(resumed);
+    expect((await f.detail(conversation.id)).messages.map(message => message.id)).toEqual(before.map(message => message.id));
+    expect(f.checkpoints.get(`message:${before[1].id}`)).toBeUndefined();
+  });
+
+  it('starts a fresh assistant when the first provider turn fails before any checkpoint', async () => {
+    const f = await fixture((_request, index) => {
+      if (index === 0) throw new SyntaxError('First turn rejected');
+      return 'Fresh answer.';
+    });
+    const conversation = await f.create();
+    await f.send(conversation.id, { content: 'Original question' });
+    const before = (await f.detail(conversation.id)).messages;
+    expect(before[1]).toMatchObject({ status: 'failed', content: '', resumable: false });
+    expect(f.checkpoints.get(`message:${before[1].id}`)).toBeUndefined();
+    const resumed = await f.stream(`/conversations/${conversation.id}/messages/${before[1].id}/retry`);
+    expect(done(resumed)).toMatchObject({ content: 'Fresh answer.', resumable: false });
+    expect(done(resumed).id).not.toBe(before[1].id);
+    expect(f.fake.requests[1].body.input).toEqual([{ role: 'user', content: 'Original question' }]);
+    expect(resumed.filter(frame => frame.event === 'delta').every(frame => !frame.data.replace)).toBe(true);
+  });
+
+  it('resumes startup-interrupted checkpoints and replays an empty preserved snapshot before new text', async () => {
+    let fail = true;
+    const f = await fixture((_request, index) => {
+      if (index === 0) return { name: 'read_note', arguments: { path: 'wiki/facts.md' } };
+      if (fail) throw new SyntaxError('Provider rejected continuation');
+      return '[Facts](wiki/facts.md#facts) remain available.';
+    });
+    const conversation = await f.create();
+    const failed = await f.send(conversation.id, { content: 'Explain facts' });
+    const assistant = (await f.detail(conversation.id)).messages[1];
+    const originalInput = f.fake.requests[1].body.input;
+    f.db.prepare("UPDATE generations SET status = 'running', finished_at = NULL WHERE id = ?").run(toStorageId(failed[0].data.generationId as string));
+    f.db.prepare("UPDATE messages SET status = 'running' WHERE id = ?").run(toStorageId(assistant.id));
+    f.generations.onModuleInit();
+    expect((await f.detail(conversation.id)).messages[1]).toMatchObject({ id: assistant.id, status: 'interrupted', resumable: true });
+    expect((await f.stream(`/generations/${failed[0].data.generationId}/events`, 'GET')).at(-1)).toMatchObject({
+      event: 'error', data: { code: 'generation_interrupted' },
+    });
+    fail = false;
+    const resumed = await f.stream(`/conversations/${conversation.id}/messages/${assistant.id}/retry`);
+    expect(done(resumed)).toMatchObject({ id: assistant.id, status: 'completed' });
+    expect(f.fake.requests[2].body.input).toEqual(originalInput);
+    expect(resumed.filter(frame => frame.event === 'delta')[0].data).toEqual({ text: '', replace: true });
+    expect(await f.stream(`/generations/${resumed[0].data.generationId}/events`, 'GET')).toEqual(resumed);
+    expect(f.checkpoints.get(`message:${assistant.id}`)).toBeUndefined();
+  });
+
+  it('resumes a cancelled checkpoint without allowing the old runner to overwrite the completed replacement', async () => {
+    const providerEntered = Promise.withResolvers<void>();
+    const providerRelease = Promise.withResolvers<void>();
+    const oldCaught = Promise.withResolvers<void>();
+    const oldRelease = Promise.withResolvers<void>();
+    const oldFinished = Promise.withResolvers<void>();
+    const preserved = 'Preserved partial. ';
+    const f = await fixture(async (_request, index) => {
+      if (index === 0) return { text: preserved, functionCalls: [{ name: 'read_note', arguments: { path: 'wiki/facts.md' } }] };
+      if (index === 1) {
+        providerEntered.resolve();
+        await providerRelease.promise;
+        return 'Discarded continuation.';
+      }
+      return 'Resumed completion.';
+    });
+    const answer = f.agent.answer.bind(f.agent);
+    vi.spyOn(f.agent, 'answer').mockImplementationOnce(async (...args) => {
+      try { return await answer(...args); }
+      catch (error) {
+        oldCaught.resolve();
+        await oldRelease.promise;
+        throw error;
+      } finally { oldFinished.resolve(); }
+    });
+    disposals.push(async () => { providerRelease.resolve(); oldRelease.resolve(); });
+    const conversation = await f.create();
+    const response = await f.request(`/conversations/${conversation.id}/messages`, 'POST', { content: 'Explain facts' });
+    await providerEntered.promise;
+    const assistant = (await f.detail(conversation.id)).messages[1];
+    const originalInput = f.fake.requests[1].body.input;
+    expect(f.checkpoints.get(`message:${assistant.id}`)).toMatchObject({ text: preserved });
+    const generationId = assistant.generationId!;
+    expect((await f.request(`/generations/${generationId}/cancel`, 'POST')).status).toBe(204);
+    expect(frames(await response.text()).at(-1)).toMatchObject({ event: 'error', data: { code: 'generation_cancelled' } });
+    await oldCaught.promise;
+    expect((await f.detail(conversation.id)).messages[1]).toMatchObject({ id: assistant.id, status: 'cancelled', resumable: true });
+    const resumed = await f.stream(`/conversations/${conversation.id}/messages/${assistant.id}/retry`);
+    expect(f.fake.requests[2].body.input).toEqual(originalInput);
+    expect(resumed.filter(frame => frame.event === 'delta')[0].data).toEqual({ text: preserved, replace: true });
+    expect(done(resumed)).toMatchObject({ id: assistant.id, content: `${preserved}Resumed completion.`, status: 'completed', resumable: false });
+    providerRelease.resolve();
+    oldRelease.resolve();
+    await oldFinished.promise;
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect((await f.detail(conversation.id)).messages[1]).toMatchObject({ id: assistant.id, content: `${preserved}Resumed completion.`, status: 'completed', resumable: false });
+    expect(f.checkpoints.get(`message:${assistant.id}`)).toBeUndefined();
+  });
+
+  it.each(['edit', 'regenerate', 'truncate', 'delete'] as const)('%s discards abandoned checkpoints without feeding saved tool input to a fresh answer', async action => {
+    let fail = true;
+    const f = await fixture((_request, index) => {
+      if (index === 0) return { text: 'Discarded partial. ', functionCalls: [{ name: 'read_note', arguments: { path: 'wiki/facts.md' } }] };
+      if (fail) throw new SyntaxError('Provider rejected continuation');
+      return 'Fresh replacement.';
+    });
+    const conversation = await f.create();
+    await f.send(conversation.id, { content: 'Original question' });
+    const [user, assistant] = (await f.detail(conversation.id)).messages;
+    expect(f.checkpoints.get(`message:${assistant.id}`)).toBeDefined();
+    fail = false;
+    if (action === 'delete') {
+      expect((await f.request(`/conversations/${conversation.id}`, 'DELETE')).status).toBe(204);
+    } else {
+      const replacement = action === 'edit'
+        ? await f.stream(`/conversations/${conversation.id}/messages/${user.id}`, 'PATCH', { content: 'Corrected question' })
+        : await f.stream(`/conversations/${conversation.id}/messages/${action === 'regenerate' ? assistant.id : user.id}/${action === 'regenerate' ? 'regenerate' : 'retry'}`);
+      expect(done(replacement)).toMatchObject({ content: 'Fresh replacement.' });
+      expect(done(replacement).id).not.toBe(assistant.id);
+      expect(f.fake.requests[2].body.input).toEqual([{ role: 'user', content: action === 'edit' ? 'Corrected question' : 'Original question' }]);
+    }
+    expect(f.checkpoints.get(`message:${assistant.id}`)).toBeUndefined();
+  });
+
+  it('denies checkpoint retry after a previously read source is revoked without losing saved work', async () => {
+    const f = await fixture((_request, index) => {
+      if (index === 0) return { text: 'PRIVATE_SAVED_FACT', functionCalls: [{ name: 'read_note', arguments: { path: 'wiki/facts.md' } }] };
+      throw new SyntaxError('Provider rejected continuation');
+    });
+    const conversation = await f.create();
+    const failed = await f.send(conversation.id, { content: 'Explain facts' });
+    const assistant = (await f.detail(conversation.id)).messages[1];
+    const checkpoint = f.checkpoints.get(`message:${assistant.id}`);
+    f.acl.create({ prefix: 'wiki/facts.md', subjectType: 'user', subject: '1', access: 'none' }, f.users.get(4)!);
+    const hidden = (await f.detail(conversation.id)).messages[1];
+    expect(hidden).toMatchObject({ content: '', resumable: false });
+    await expectError(await f.request(`/conversations/${conversation.id}/messages/${assistant.id}/retry`, 'POST'), 404, 'not_found');
+    expect(JSON.stringify(await f.stream(`/generations/${failed[0].data.generationId}/events`, 'GET'))).not.toContain('PRIVATE_SAVED_FACT');
+    expect(f.fake.requests).toHaveLength(2);
+    expect(f.checkpoints.get(`message:${assistant.id}`)).toEqual(checkpoint);
+  });
+
+  it('keeps source ACL, citation refs and write ordinals after provider compaction removes the original calls', async () => {
+    let fail = true;
+    const preserved = '[Citrine](wiki/facts.md#facts) is yellow. ';
+    const write = { name: 'write_knowledge', arguments: { content: 'The same independently requested fact.' } };
+    const compaction = { type: 'compaction' as const, id: 'saved-compaction', encrypted_content: 'opaque-provider-state' };
+    const f = await fixture((_request, index) => {
+      if (index === 0) return { text: preserved, functionCalls: [
+        { name: 'read_note', arguments: { path: 'wiki/facts.md' } }, write,
+      ] };
+      if (index === 1) return { output: [compaction, { name: 'read_note', arguments: { path: 'wiki/updates.md' } }] };
+      if (fail) throw new SyntaxError('Provider rejected compacted continuation');
+      if (index === 3) return write;
+      if (index === 5) return { functionCalls: [write, write] };
+      return 'Both writes are queued.';
+    }, 'editor');
+    const conversation = await f.create();
+    await f.request(`/conversations/${conversation.id}/members`, 'POST', { email: 'user2@example.test', role: 'editor' });
+    const originalSha = await f.repo.headSha();
+    const failed = await f.send(conversation.id, { content: 'Save two independent facts.' });
+    const [user, assistant] = (await f.detail(conversation.id)).messages;
+    const firstJob = f.jobRepository.list()[0];
+    expect(firstJob).toMatchObject({ status: 'queued', input: write.arguments.content });
+    const compactedInput = f.fake.requests[2].body.input;
+    expect(compactedInput).toEqual(expect.arrayContaining([compaction]));
+    expect(JSON.stringify(compactedInput)).not.toContain('wiki/facts.md');
+    expect(JSON.stringify(compactedInput)).not.toContain('write_knowledge');
+    f.acl.create({ prefix: 'wiki/facts.md', subjectType: 'user', subject: '2', access: 'none' }, f.users.get(4)!);
+    expect((await f.detail(conversation.id, 2)).messages[1]).toMatchObject({ content: '', resumable: false });
+    expect(JSON.stringify(await f.stream(`/generations/${failed[0].data.generationId}/events`, 'GET', undefined, 2))).not.toContain(preserved);
+    await expectError(await f.request(`/conversations/${conversation.id}/messages/${assistant.id}/retry`, 'POST', undefined, 2), 404, 'not_found');
+    const wt = await f.repo.createWorktree('change-compacted-chat-source');
+    try {
+      await wt.write('wiki/facts.md', '# Changed\nThe original heading no longer exists.');
+      await wt.commit('Change compacted source', { name: 'Fixture', email: 'fixture@example.test' });
+      await wt.fastForwardMain();
+    } finally { await wt.dispose(); }
+    fail = false;
+    const resumed = await f.stream(`/conversations/${conversation.id}/messages/${assistant.id}/retry`);
+    expect(f.fake.requests[3].body.input).toEqual(compactedInput);
+    expect(done(resumed)).toMatchObject({
+      id: assistant.id, content: `${preserved}Both writes are queued.`,
+      citations: [{ path: 'wiki/facts.md', heading: 'Facts', anchor: 'facts', sha: originalSha }],
+    });
+    const resumedWrite = resumed.filter(frame => frame.event === 'tool' && frame.data.name === 'write_knowledge' && frame.data.state === 'end');
+    expect(resumedWrite.map(frame => frame.data.jobId)).toEqual([expect.any(String)]);
+    const secondJobId = resumedWrite[0].data.jobId as string;
+    expect(secondJobId).not.toBe(firstJob.id);
+    expect(f.jobRepository.list().map(job => job.id).sort()).toEqual([firstJob.id, secondJobId].sort());
+    expect(f.checkpoints.get(`message:${assistant.id}`)).toBeUndefined();
+    expect((await f.detail(conversation.id, 2)).messages[1]).toMatchObject({ content: '', resumable: false });
+    expect(JSON.stringify(await f.stream(`/generations/${resumed[0].data.generationId}/events`, 'GET', undefined, 2))).not.toContain(preserved);
+    const regenerated = await f.stream(`/conversations/${conversation.id}/messages/${assistant.id}/regenerate`);
+    expect(f.fake.requests[5].body.input).toEqual([{ role: 'user', content: user.content }]);
+    expect(regenerated.filter(frame => frame.event === 'tool' && frame.data.name === 'write_knowledge' && frame.data.state === 'end').map(frame => frame.data.jobId)).toEqual([firstJob.id, secondJobId]);
+    expect(f.jobRepository.list()).toHaveLength(2);
   });
 
   it('keeps a failed partial answer and retries its user turn without duplication or leaking provider errors', async () => {

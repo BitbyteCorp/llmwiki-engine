@@ -4,6 +4,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator.js';
 import { Roles } from '../auth/decorators/roles.decorator.js';
 import type { User } from '../auth/users.types.js';
 import { NoteWriterService } from '../jobs/note-writer.service.js';
+import { WriteJobsService } from '../jobs/write-jobs.service.js';
 import { RolesGuard } from '../auth/guards/roles.guard.js';
 import { SessionGuard } from '../auth/guards/session.guard.js';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe.js';
@@ -13,7 +14,7 @@ import { HistoryService } from './history.service.js';
 @Controller('api')
 @UseGuards(SessionGuard, RolesGuard)
 export class HistoryController {
-  constructor(private readonly history: HistoryService, private readonly writer: NoteWriterService) {}
+  constructor(private readonly history: HistoryService, private readonly writer: NoteWriterService, private readonly jobs: WriteJobsService) {}
 
   @Get('history')
   async list(@Query(new ZodValidationPipe(historyQuerySchema)) query: z.infer<typeof historyQuerySchema>, @CurrentUser() user: User) {
@@ -21,12 +22,15 @@ export class HistoryController {
   }
 
   @Get('history/commits/:sha')
-  get(
+  async get(
     @Param('sha', new ZodValidationPipe(shaSchema)) sha: z.infer<typeof shaSchema>,
     @Query(new ZodValidationPipe(commitParentQuerySchema)) query: z.infer<typeof commitParentQuerySchema>,
     @CurrentUser() user: User,
   ) {
-    return this.history.getCommit(sha, query.parent, user);
+    const detail = await this.history.getCommit(sha, query.parent, user);
+    return { ...detail, job: detail.job
+      ? { ...detail.job, resumable: await this.jobs.isResumable(this.jobs.get(detail.job.id)!) }
+      : null };
   }
 
   @Get('history/compare')

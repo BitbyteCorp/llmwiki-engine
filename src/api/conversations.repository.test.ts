@@ -6,7 +6,7 @@ import { newId, toStorageId } from '../common/ids.js';
 import { openDb, type Db } from '../db/index.js';
 import { ConversationsRepository } from './conversations.repository.js';
 
-const schemas = ['001_core.sql', '004_chat.sql', '010_chat.sql'].map((name) =>
+const schemas = ['001_core.sql', '004_chat.sql', '010_chat.sql', '019_agent_checkpoints.sql'].map((name) =>
   readFileSync(new URL(`../db/migrations/${name}`, import.meta.url), 'utf8'),
 );
 let dir: string;

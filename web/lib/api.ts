@@ -11,13 +11,13 @@ export interface KnowledgeGraph { nodes: Array<CatalogNote & { tags: string[] }>
 export interface DuplicatePair { left: CatalogNote; right: CatalogNote; score: number; reason: 'exact' | 'semantic'; passages: Array<{ left: { anchor: string | null; excerpt: string }; right: { anchor: string | null; excerpt: string } }> }
 export interface CommitInfo { sha: string; parents: string[]; authorName: string; authorEmail: string; date: string; committerName: string; committerEmail: string; committedAt: string; subject: string; body: string; trailers: Record<string, string>; path?: string; oldPath?: string }
 export interface FileChange { status: 'A' | 'M' | 'D' | 'R'; path: string; oldPath?: string }
-export interface WriteJob { id: string; userId: number; kind: 'agent' | 'direct' | 'revert'; source: 'mcp' | 'web' | 'chat' | 'dreaming' | 'import' | 'revert'; client: string | null; input: string; status: 'queued' | 'running' | 'merging' | 'succeeded' | 'failed'; summary: string | null; commits: string[]; conflicts: string[]; mergeSha: string | null; error: string | null; createdAt: string; startedAt: string | null; finishedAt: string | null }
+export interface WriteJob { id: string; userId: number; kind: 'agent' | 'direct' | 'revert'; source: 'mcp' | 'web' | 'chat' | 'dreaming' | 'import' | 'revert'; client: string | null; input: string; status: 'queued' | 'running' | 'merging' | 'succeeded' | 'failed'; resumable: boolean; summary: string | null; commits: string[]; conflicts: string[]; mergeSha: string | null; error: string | null; createdAt: string; startedAt: string | null; finishedAt: string | null }
 // Dony conversation and persisted generation contracts.
 export interface Conversation { id: string; title: string; createdAt: string; updatedAt: string; role?: 'owner' | 'editor' | 'viewer'; snippet?: string }
 export interface Citation { path: string; heading?: string; anchor?: string; excerpt?: string; sha?: string }
 export interface MessageContext { notePath: string; ref?: string; selection?: string }
 export interface MessageUsage { inputTokens: number; outputTokens: number; reasoningTokens: number }
-export interface Message { id: string; role: 'user' | 'assistant'; content: string; citations: Citation[]; attachments: string[]; context: MessageContext | null; status: 'completed' | 'running' | 'failed' | 'cancelled' | 'interrupted'; usage: MessageUsage | null; model: string | null; effort: string | null; generationId?: string | null; createdAt: string }
+export interface Message { id: string; role: 'user' | 'assistant'; content: string; citations: Citation[]; attachments: string[]; context: MessageContext | null; status: 'completed' | 'running' | 'failed' | 'cancelled' | 'interrupted'; resumable?: boolean; usage: MessageUsage | null; model: string | null; effort: string | null; generationId?: string | null; createdAt: string }
 export interface Settings { allowlistEnabled: boolean; allowedDomains: string[] }
 export type Requester = Pick<User, 'email' | 'name'>
 
@@ -79,6 +79,7 @@ export const api = {
 export interface OpsJob {
   id: string; userId: number; kind: 'agent' | 'direct' | 'revert'; source: 'mcp' | 'web' | 'chat' | 'dreaming' | 'import' | 'revert'; client: string | null
   status: 'queued' | 'running' | 'merging' | 'succeeded' | 'failed'; summary: string | null; error: string | null
+  resumable: boolean
   mergeSha: string | null; createdAt: string; startedAt: string | null; finishedAt: string | null
 }
 export interface OpsDreamRun {

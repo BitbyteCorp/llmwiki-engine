@@ -172,6 +172,8 @@ it('retries failed Dony with provenance, cancels only queued jobs and keeps fail
   f.jobs.start();
   await vi.waitFor(() => expect(f.jobs.get(retried.id)?.status).toBe('succeeded'));
   await expect(Promise.resolve().then(() => f.jobs.cancel(retried.id))).rejects.toMatchObject({ code: 'job_not_cancelable' });
+  expect(await f.repo.readFile('wiki/failed.md')).toBe('inspect me');
+  expect(f.jobs.get(retried.id)?.commits).toContain(failed.commits[0]);
 });
 
 it('replays direct and revert failures immediately outside the Dony queue with original payload and metadata', async () => {
@@ -215,6 +217,7 @@ it('preserves legacy rows through history and agent migrations and accepts legac
     db.exec(await readFile(new URL('../db/migrations/007_history.sql', import.meta.url), 'utf8'));
     db.exec(await readFile(new URL('../db/migrations/016_agent_job_kind.sql', import.meta.url), 'utf8'));
     db.exec(await readFile(new URL('../db/migrations/017_write_job_dedupe.sql', import.meta.url), 'utf8'));
+    db.exec(await readFile(new URL('../db/migrations/019_agent_checkpoints.sql', import.meta.url), 'utf8'));
     const repository = new WriteJobsRepository(db);
     expect(repository.get(legacyId)).toMatchObject({ userId: 99, kind: 'agent', source: 'mcp', client: null, input: 'original input', status: 'failed', summary: 'original summary', commits: ['abc'], conflicts: [], error: 'original error' });
     repository.enqueue(newId(), 99, 'new input', '2026-02-01T00:00:00.000Z', 'web');

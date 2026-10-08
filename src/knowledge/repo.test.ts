@@ -1,11 +1,12 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 import pino from 'pino';
 import { afterEach, expect, it } from 'vitest';
 import { loadConfig } from '../config.js';
+import { legacyUuidToApi } from '../common/ids.js';
 import { KnowledgeRepo } from './repo.js';
 
 const git = promisify(execFile);
@@ -150,7 +151,10 @@ it('prunes crash worktrees and abandoned work branches without changing main', a
   const { repo, cfg, dir } = await fixture();
   const head = await repo.headSha();
   const abandoned = await repo.createWorktree('crashed');
-  await abandoned.write('wiki/uncommitted.md', 'lost edit');
+  await abandoned.write('wiki/tracked.md', 'partial progress\n');
+  const partial = (await abandoned.commit('Partial crash progress', author))!;
+  await abandoned.write('wiki/tracked.md', 'unfinished tracked edit\n');
+  await abandoned.write('wiki/uncommitted.md', 'unfinished new note\n');
   const missingTree = await repo.createWorktree('missing-tree');
   await rm(missingTree.path, { recursive: true, force: true });
   await git('git', ['branch', 'work/orphan'], { cwd: join(dir, 'knowledge') });
@@ -158,10 +162,130 @@ it('prunes crash worktrees and abandoned work branches without changing main', a
   const reopened = await KnowledgeRepo.open(cfg, pino({ level: 'silent' }));
   expect(await reopened.headSha()).toBe(head);
   expect(await reopened.readFile('wiki/uncommitted.md')).toBeNull();
+  expect(await reopened.resolveRef('refs/wiki/failed/crashed')).toBe(partial);
+  expect(await reopened.failedState('crashed')).toEqual({ commits: true, wip: true });
+  expect((await reopened.show('refs/wiki/failed-wip/crashed')).commit.parents).toEqual([partial]);
+  expect(await reopened.failedState('missing-tree')).toEqual({ commits: false, wip: false });
   expect(await readdir(join(dir, 'worktrees'))).toEqual([]);
   expect((await git('git', ['for-each-ref', '--format=%(refname)', 'refs/heads/work/'], { cwd: join(dir, 'knowledge') })).stdout).toBe('');
-  const recovered = await reopened.createWorktree('crashed');
+  const recovered = await reopened.createWorktree('crashed', 'crashed');
+  expect(recovered.baseSha).toBe(head);
+  expect(await recovered.read('wiki/tracked.md')).toBe('unfinished tracked edit\n');
+  expect(await recovered.read('wiki/uncommitted.md')).toBe('unfinished new note\n');
+  expect((await git('git', ['rev-parse', 'HEAD'], { cwd: recovered.path })).stdout.trim()).toBe(partial);
+  expect((await git('git', ['diff', '--cached', '--name-only'], { cwd: recovered.path })).stdout).toBe('');
   await recovered.dispose();
+});
+
+it('preserves failed commits and full working edits without changing HEAD or the index', async () => {
+  const { repo, dir } = await fixture();
+  const main = await repo.headSha();
+  const wt = await repo.createWorktree('failed-edits');
+  await wt.write('wiki/tracked.md', 'committed\n');
+  await wt.write('wiki/deleted.md', 'remove me\n');
+  await wt.write('assets/tracked.bin', Buffer.from([0, 255, 1]));
+  const committed = (await wt.commit('Partial progress', author))!;
+  await wt.write('wiki/tracked.md', 'staged\n');
+  await git('git', ['add', '--', 'wiki/tracked.md'], { cwd: wt.path });
+  await wt.write('wiki/tracked.md', 'working edit\n');
+  await wt.remove('wiki/deleted.md');
+  const binary = Buffer.from([0, 128, 254, 10, 255]);
+  await wt.write('assets/tracked.bin', binary);
+  await wt.write('assets/untracked.bin', binary);
+  await wt.write('wiki/untracked.md', 'new note\n');
+  const index = (await git('git', ['ls-files', '--stage', '-z'], { cwd: wt.path })).stdout;
+  expect(await wt.preserveFailed('failed-edits')).toBe(committed);
+  expect((await git('git', ['rev-parse', 'HEAD'], { cwd: wt.path })).stdout.trim()).toBe(committed);
+  expect((await git('git', ['ls-files', '--stage', '-z'], { cwd: wt.path })).stdout).toBe(index);
+  const snapshot = await repo.show('refs/wiki/failed-wip/failed-edits');
+  expect(snapshot.commit.parents).toEqual([committed]);
+  expect(await repo.readFile('wiki/tracked.md', snapshot.commit.sha)).toBe('working edit\n');
+  expect(await repo.readFile('wiki/deleted.md', snapshot.commit.sha)).toBeNull();
+  expect(await repo.failedState('failed-edits')).toEqual({ commits: true, wip: true });
+  await wt.dispose();
+
+  const retry = await repo.createWorktree('retry-edits', 'failed-edits');
+  expect(retry.baseSha).toBe(main);
+  expect((await git('git', ['rev-parse', 'HEAD'], { cwd: retry.path })).stdout.trim()).toBe(committed);
+  expect((await git('git', ['diff', '--cached', '--name-only'], { cwd: retry.path })).stdout).toBe('');
+  expect(await retry.read('wiki/tracked.md')).toBe('working edit\n');
+  expect(await retry.read('wiki/deleted.md')).toBeNull();
+  expect(await retry.read('wiki/untracked.md')).toBe('new note\n');
+  expect(await readFile(join(retry.path, 'assets/tracked.bin'))).toEqual(binary);
+  expect(await readFile(join(retry.path, 'assets/untracked.bin'))).toEqual(binary);
+  expect(await repo.headSha()).toBe(main);
+  expect((await repo.log({ ref: committed, sinceSha: retry.baseSha })).map((commit) => commit.sha)).toEqual([committed]);
+  const resumed = (await retry.commit('Finish restored edits', author))!;
+  expect((await repo.show(resumed)).commit.parents).toEqual([committed]);
+  await retry.dispose();
+  expect(await readdir(join(dir, 'worktrees'))).toEqual([]);
+});
+
+it('resumes clean failed commits from their merge base and counts only commits outside main', async () => {
+  const { repo } = await fixture();
+  const base = await repo.headSha();
+  const failed = await repo.createWorktree('clean-failure');
+  await failed.write('wiki/progress.md', 'preserved progress\n');
+  await failed.preserveFailed('clean-failure');
+  expect(await repo.failedState('clean-failure')).toEqual({ commits: false, wip: true });
+  const wipOnly = await repo.createWorktree('wip-only-retry', 'clean-failure');
+  expect(wipOnly.baseSha).toBe(base);
+  expect((await git('git', ['rev-parse', 'HEAD'], { cwd: wipOnly.path })).stdout.trim()).toBe(base);
+  expect(await wipOnly.read('wiki/progress.md')).toBe('preserved progress\n');
+  await wipOnly.dispose();
+  const progress = (await failed.commit('Progress before failure', author))!;
+  await failed.preserveFailed('clean-failure');
+  expect(await repo.failedState('clean-failure')).toEqual({ commits: true, wip: false });
+  await failed.dispose();
+  const concurrent = await repo.createWorktree('main-progress');
+  await concurrent.write('wiki/concurrent.md', 'concurrent change\n');
+  const advanced = (await concurrent.commit('Concurrent main change', author))!;
+  await concurrent.fastForwardMain();
+  await concurrent.dispose();
+  const retry = await repo.createWorktree('clean-retry', 'clean-failure');
+  expect(retry.baseSha).toBe(base);
+  expect(retry.baseSha).not.toBe(advanced);
+  expect((await git('git', ['rev-parse', 'HEAD'], { cwd: retry.path })).stdout.trim()).toBe(progress);
+  expect(await retry.read('wiki/progress.md')).toBe('preserved progress\n');
+  expect(await retry.read('wiki/concurrent.md')).toBeNull();
+  expect(await repo.diffNames(retry.baseSha, progress)).toEqual([{ status: 'A', path: 'wiki/progress.md' }]);
+  expect(await retry.mergeMain()).toEqual({ ok: true });
+  await retry.fastForwardMain();
+  expect(await repo.failedState('clean-failure')).toEqual({ commits: false, wip: false });
+  await retry.dispose();
+  expect(await repo.failedState('unknown-failure')).toEqual({ commits: false, wip: false });
+  const fresh = await repo.createWorktree('missing-retry', 'unknown-failure');
+  expect(fresh.baseSha).toBe(await repo.headSha());
+  expect(await fresh.read('wiki/progress.md')).toBe('preserved progress\n');
+  expect(await fresh.read('wiki/concurrent.md')).toBe('concurrent change\n');
+  await fresh.dispose();
+});
+
+it('restores UUID-named failure refs and clears stale WIP when the worktree becomes clean', async () => {
+  const { repo, dir } = await fixture();
+  const uuid = '550e8400-e29b-41d4-a716-446655440000';
+  const jobId = legacyUuidToApi(uuid);
+  const wt = await repo.createWorktree('legacy-snapshot');
+  await wt.write('wiki/legacy.md', 'committed legacy\n');
+  const head = (await wt.commit('Legacy progress', author))!;
+  await wt.write('wiki/legacy.md', 'unfinished legacy\n');
+  await wt.preserveFailed(uuid);
+  const snapshot = await repo.resolveRef(`refs/wiki/failed-wip/${jobId}`);
+  const cwd = join(dir, 'knowledge');
+  for (const [namespace, sha] of [['failed', head], ['failed-wip', snapshot]]) {
+    await git('git', ['update-ref', `refs/wiki/${namespace}/${uuid}`, sha!], { cwd });
+    await git('git', ['update-ref', '-d', `refs/wiki/${namespace}/${jobId}`], { cwd });
+  }
+  await wt.dispose();
+  expect(await repo.failedState(jobId)).toEqual({ commits: true, wip: true });
+  const retry = await repo.createWorktree('legacy-retry', jobId);
+  expect(await retry.read('wiki/legacy.md')).toBe('unfinished legacy\n');
+  expect((await git('git', ['rev-parse', 'HEAD'], { cwd: retry.path })).stdout.trim()).toBe(head);
+  await retry.write('wiki/legacy.md', 'committed legacy\n');
+  await retry.preserveFailed(jobId);
+  expect(await repo.failedState(uuid)).toEqual({ commits: true, wip: false });
+  await expect(repo.resolveRef(`refs/wiki/failed-wip/${jobId}`)).rejects.toMatchObject({ code: 'NOT_FOUND' });
+  await retry.dispose();
 });
 
 it('parses renames, unusual filenames, full messages, and history cursors', async () => {

@@ -79,7 +79,12 @@ export class ConversationsRepository {
     return row ? decode(row) : null;
   }
   delete(id: string, userId: number): boolean {
-    return this.db.prepare('DELETE FROM conversations WHERE id=? AND user_id=?').run(toStorageId(id),userId).changes > 0;
+    return this.db.transaction(() => {
+      const stored = toStorageId(id);
+      if (!this.db.prepare('SELECT 1 FROM conversations WHERE id=? AND user_id=?').get(stored,userId)) return false;
+      this.deleteCheckpoints(this.db.prepare('SELECT id FROM messages WHERE conversation_id=?').all(stored) as Array<{id:string}>);
+      return this.db.prepare('DELETE FROM conversations WHERE id=? AND user_id=?').run(stored,userId).changes > 0;
+    })();
   }
   rename(id: string, title: string): void {
     this.db.prepare('UPDATE conversations SET title=?,updated_at=? WHERE id=?').run(title,new Date().toISOString(),toStorageId(id));
@@ -106,7 +111,15 @@ export class ConversationsRepository {
   }
   truncate(id: string, mid: string, include = false): void {
     const stored = toStorageId(id);
-    this.db.prepare(`DELETE FROM messages WHERE conversation_id=? AND rowid ${include ? '>=' : '>'} (SELECT rowid FROM messages WHERE id=? AND conversation_id=?)`).run(stored,toStorageId(mid),stored);
+    const condition = `conversation_id=? AND rowid ${include ? '>=' : '>'} (SELECT rowid FROM messages WHERE id=? AND conversation_id=?)`;
+    this.db.transaction(() => {
+      this.deleteCheckpoints(this.db.prepare(`SELECT id FROM messages WHERE ${condition}`).all(stored,toStorageId(mid),stored) as Array<{id:string}>);
+      this.db.prepare(`DELETE FROM messages WHERE ${condition}`).run(stored,toStorageId(mid),stored);
+    })();
+  }
+  private deleteCheckpoints(messages: Array<{id:string}>): void {
+    const remove = this.db.prepare('DELETE FROM agent_checkpoints WHERE owner=?');
+    for (const message of messages) remove.run(`message:${fromStorageId(message.id)}`);
   }
   edit(mid: string, content: string): void {
     this.db.prepare('UPDATE messages SET content=?,learned_at=NULL WHERE id=?').run(content,toStorageId(mid));

@@ -35,7 +35,17 @@ export class IngestService implements OnApplicationBootstrap, OnModuleDestroy {
   }
   start(): void {
     if (!this.unsubscribe) this.unsubscribe = this.events.subscribe((event) => {
-      if (event.type === 'job.updated') for (const item of this.imports.forJob(event.jobId)) this.reconcile(item);
+      if (event.type !== 'job.updated') return;
+      if (event.phase === 'queued') {
+        const retryOf = this.jobs.events(event.jobId).find((entry) => entry.phase === 'queued')?.detail?.retryOf;
+        const job = this.jobRepository.get(event.jobId);
+        if (typeof retryOf === 'string' && job?.kind === 'agent' && job.source === 'import' && this.jobRepository.get(retryOf)?.status === 'failed') {
+          for (const item of this.imports.forJob(retryOf)) {
+            if (item.userId === event.userId) this.imports.queued(item.id, event.jobId);
+          }
+        }
+      }
+      for (const item of this.imports.forJob(event.jobId)) this.reconcile(item);
     });
     for (const item of this.imports.pending()) this.reconcile(item, true);
   }
@@ -143,7 +153,13 @@ export class IngestService implements OnApplicationBootstrap, OnModuleDestroy {
   }
   private reconcile(item: ImportRecord, startup = false): ImportRecord {
     if (item.jobId) {
-      const job = this.jobRepository.get(item.jobId);
+      let job = this.jobRepository.get(item.jobId);
+      while (job?.status === 'failed') {
+        const retryId = this.imports.latestRetryJobId(job.id, item.userId);
+        if (!retryId) break;
+        this.imports.queued(item.id, retryId);
+        job = this.jobRepository.get(retryId);
+      }
       if (!job) this.imports.update(item.id, 'failed', 'Integration job no longer exists');
       else {
         const status = job.status === 'merging' ? 'running' : job.status;

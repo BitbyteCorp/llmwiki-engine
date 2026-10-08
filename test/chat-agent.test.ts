@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { newId } from '../src/common/ids.js';
 import { loadConfig } from '../src/config.js';
 import type { ResponseInputContent } from 'openai/resources/responses/responses';
+import type { AnswerCheckpoint } from '../src/agent/agent.types.js';
 import { KnowledgeRepo } from '../src/knowledge/repo.js';
 import { AgentService } from '../src/agent/agent.service.js';
 import { SearchService } from '../src/rag/search.service.js';
@@ -40,7 +41,7 @@ async function fixture(script: FakeScript, notes: Record<string, string> = {}, m
   runMigrations(db);
   disposals.push(async () => db.close());
   const acl = new AclService(db, new UsersService(new UsersRepository(db)), new AuditService(db));
-  return { agent: new AgentService(config, log, repo, search, acl), fake, config, repo };
+  return { agent: new AgentService(config, log, repo, search, acl), fake, config, repo, acl, db };
 }
 
 describe('grounded chat citations', () => {
@@ -103,6 +104,124 @@ describe('grounded chat citations', () => {
     ]);
     expect(JSON.stringify(events)).not.toContain('SOURCE BODY');
     expect(JSON.stringify(events)).not.toContain('Ignore rules');
+  });
+
+  it.each(['snapshot', 'legacy'] as const)('restores %s paged evidence and pinned context after main changes without rebuilding the original input', async (mode) => {
+    const { agent, repo, fake } = await fixture([
+      { name: 'read_note', arguments: { path: 'wiki/facts.md', offset: 2, limit: 1 } },
+      { name: 'read_note', arguments: { path: 'wiki/pinned.md' } },
+      '[second](wiki/facts.md#shared-1) [pin](wiki/pinned.md#old-pin)',
+    ], {
+      'wiki/facts.md': '# Shared\nFirst fact.\n## Shared\nSecond fact.',
+      'wiki/pinned.md': '# Old pin\nOriginal pinned body.',
+    });
+    const oldSha = await repo.headSha();
+    let checkpoint: AnswerCheckpoint | undefined;
+    const controller = new AbortController();
+    await expect(agent.answer([{ role: 'user', content: 'Original question' }], () => {}, controller.signal, {
+      context: { notePath: 'wiki/pinned.md', selection: 'Original selection' },
+      onCheckpoint: (snapshot) => { checkpoint = snapshot; controller.abort(); },
+    })).rejects.toThrow();
+    expect(checkpoint).toBeDefined();
+    const wt = await repo.createWorktree('change-resume-evidence');
+    try {
+      await wt.write('wiki/facts.md', '# New fact\nChanged body.');
+      await wt.write('wiki/pinned.md', '# New pin\nChanged pinned body.');
+      await wt.commit('Change resume evidence', { name: 'Chat fixture', email: 'chat@example.test' });
+      await wt.fastForwardMain();
+    } finally { await wt.dispose(); }
+    const sources: string[] = [];
+    const checkpoints: AnswerCheckpoint[] = [];
+    const { readNotes: _snapshots, ...legacyCheckpoint } = checkpoint!;
+    const result = await agent.answer([{ role: 'user', content: 'Replacement question' }], () => {}, undefined, {
+      resume: mode === 'legacy' ? legacyCheckpoint : checkpoint,
+      context: { notePath: 'wiki/missing.md' },
+      summary: 'Replacement summary',
+      onSource: (path) => sources.push(path),
+      onCheckpoint: (snapshot) => checkpoints.push(snapshot),
+    });
+    expect(result.citations).toEqual([
+      { path: 'wiki/facts.md', sha: oldSha, anchor: 'shared-1', heading: 'Shared' },
+      { path: 'wiki/pinned.md', sha: oldSha, anchor: 'old-pin', heading: 'Old pin' },
+    ]);
+    expect(fake.requests[1]!.body.input).toEqual(checkpoint!.input);
+    const resumedInput = JSON.stringify(fake.requests[2]!.body.input);
+    expect(resumedInput).toContain('Original pinned body.');
+    expect(resumedInput).toContain('Original selection');
+    expect(resumedInput).not.toContain('Changed pinned body.');
+    expect(resumedInput).not.toContain('Replacement');
+    expect(checkpoints[0]!.toolCalls).toBe(2);
+    expect(sources).toContain('wiki/facts.md');
+    expect(sources).toContain('wiki/pinned.md');
+  });
+
+  it('keeps verified citation snapshots when model compaction removes their original input items', async () => {
+    const { agent, repo, fake } = await fixture([
+      { name: 'read_note', arguments: { path: 'wiki/facts.md' } },
+      { output: [
+        { type: 'compaction', id: 'compact_answer', encrypted_content: 'encrypted-original-evidence' },
+        { name: 'search', arguments: { query: 'facts' } },
+      ] },
+      '[fact](wiki/facts.md#old-fact) [pin](wiki/pinned.md#old-pin)',
+    ], {
+      'wiki/facts.md': '# Old fact\nOriginal fact.',
+      'wiki/pinned.md': '# Old pin\nOriginal pin.',
+    });
+    const sha = await repo.headSha();
+    let checkpoint: AnswerCheckpoint | undefined;
+    const controller = new AbortController();
+    await expect(agent.answer([{ role: 'user', content: 'Facts?' }], () => {}, controller.signal, {
+      context: { notePath: 'wiki/pinned.md' },
+      onCheckpoint: (snapshot) => {
+        if (snapshot.toolCalls === 2) { checkpoint = snapshot; controller.abort(); }
+      },
+    })).rejects.toThrow();
+    expect(checkpoint!.input[0]!.type).toBe('compaction');
+    expect(JSON.stringify(checkpoint!.input)).not.toContain('Original fact.');
+    expect(JSON.stringify(checkpoint!.input)).not.toContain('Original pin.');
+    const result = await agent.answer([], () => {}, undefined, { resume: checkpoint });
+    expect(fake.requests[2]!.body.input).toEqual(checkpoint!.input);
+    expect(result.citations).toEqual([
+      { path: 'wiki/facts.md', sha, anchor: 'old-fact', heading: 'Old fact' },
+      { path: 'wiki/pinned.md', sha, anchor: 'old-pin', heading: 'Old pin' },
+    ]);
+  });
+
+  it('resumes after a failed read without treating its error output as citation evidence', async () => {
+    const { agent } = await fixture([
+      { name: 'read_note', arguments: '{"path":' },
+      '[unread](wiki/facts.md#facts)',
+    ], { 'wiki/facts.md': '# Facts\nUnread body.' });
+    let checkpoint: AnswerCheckpoint | undefined;
+    const controller = new AbortController();
+    await expect(agent.answer([{ role: 'user', content: 'Facts?' }], () => {}, controller.signal, {
+      onCheckpoint: (snapshot) => { checkpoint = snapshot; controller.abort(); },
+    })).rejects.toThrow();
+    const { readNotes: _snapshots, ...legacyCheckpoint } = checkpoint!;
+    const result = await agent.answer([], () => {}, undefined, { resume: legacyCheckpoint });
+    expect(result.text).toBe('[unread](wiki/facts.md#facts)');
+    expect(result.citations).toEqual([]);
+  });
+
+  it.each(['tool', 'context'] as const)('checks restored %s evidence against current read permissions before the model sees it', async (kind) => {
+    const { agent, fake, acl, db } = await fixture([
+      { name: kind === 'tool' ? 'read_note' : 'search', arguments: kind === 'tool' ? { path: 'wiki/facts.md' } : { query: 'facts' } },
+      '[facts](wiki/facts.md#facts)',
+    ], { 'wiki/facts.md': '# Facts\nPrivate evidence.' });
+    db.prepare('INSERT INTO users(id,email,role,created_at) VALUES(?,?,?,?)').run(1, 'reader@example.test', 'viewer', '2026-10-08T00:00:00Z');
+    db.prepare('INSERT INTO users(id,email,role,created_at) VALUES(?,?,?,?)').run(2, 'admin@example.test', 'admin', '2026-10-08T00:00:00Z');
+    const user = { id: 1, role: 'viewer' as const };
+    let checkpoint: AnswerCheckpoint | undefined;
+    const controller = new AbortController();
+    await expect(agent.answer([{ role: 'user', content: 'Facts?' }], () => {}, controller.signal, {
+      user,
+      ...(kind === 'context' ? { context: { notePath: 'wiki/facts.md' } } : {}),
+      onCheckpoint: (snapshot) => { checkpoint = snapshot; controller.abort(); },
+    })).rejects.toThrow();
+    expect(checkpoint).toBeDefined();
+    acl.create({ prefix: 'wiki/facts.md', subjectType: 'everyone', subject: '', access: 'none' }, { id: 2, role: 'admin' });
+    await expect(agent.answer([], () => {}, undefined, { user, resume: checkpoint })).rejects.toThrow();
+    expect(fake.requests).toHaveLength(1);
   });
 
   it('ends the pinned read lifecycle on a missing note without calling the model', async () => {

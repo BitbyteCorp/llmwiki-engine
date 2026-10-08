@@ -4,7 +4,7 @@ import { Test } from '@nestjs/testing';
 import type { Request, Response, NextFunction } from 'express';
 import pino from 'pino';
 import request from 'supertest';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { AclService } from '../acl/acl.service.js';
 import { ApiError } from '../api/api-error.js';
 import { AuditService } from '../audit/audit.service.js';
@@ -49,7 +49,7 @@ describe('operations activity and REST', () => {
   let app: INestApplication | undefined;
   let manual: ReturnType<typeof vi.fn<() => Promise<DreamRun>>>;
   let index: { status: ReturnType<typeof vi.fn>; reindex: ReturnType<typeof vi.fn> };
-  let jobs: { retry: ReturnType<typeof vi.fn>; cancel: ReturnType<typeof vi.fn> };
+  let jobs: { retry: Mock; cancel: Mock; get: Mock; isResumable: Mock };
 
   beforeEach(() => {
     db = openDb(':memory:');
@@ -74,6 +74,8 @@ describe('operations activity and REST', () => {
     manual = vi.fn(async () => dream('0000000000000000000005'));
     index = { status: vi.fn(async () => ({ indexedSha: 'main', syncing: false })), reindex: vi.fn(async () => {}) };
     jobs = {
+      get: vi.fn((id: string) => jobRows.get(id)),
+      isResumable: vi.fn(async () => false),
       retry: vi.fn((id: string) => {
         const original = jobRows.get(id);
         if (!original) throw new ApiError(404, 'not_found', 'Write job not found');

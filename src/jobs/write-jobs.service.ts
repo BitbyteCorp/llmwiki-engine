@@ -45,8 +45,9 @@ export class WriteJobsService implements OnApplicationShutdown {
 
   private enqueue(input: SubmitWriteJob, retryOf?: string): WriteJob {
     const id = newId();
-    this.repository.enqueue(id, input.userId, input.input, new Date().toISOString(), input.source, input.client, 'agent', input.dedupeKey);
-    this.phase(id, 'queued', { sourceProvenanceComplete: true, ...(input.sourcePaths?.length ? { sourcePaths: input.sourcePaths } : {}), ...(retryOf ? { retryOf } : {}) });
+    const detail = { sourceProvenanceComplete: true, ...(input.sourcePaths?.length ? { sourcePaths: input.sourcePaths } : {}), ...(retryOf ? { retryOf } : {}) };
+    this.repository.enqueue(id, input.userId, input.input, new Date().toISOString(), input.source, input.client, 'agent', input.dedupeKey, retryOf, detail);
+    this.publishPhase(id, 'queued');
     const job = this.get(id)!;
     this.kick();
     return job;
@@ -91,6 +92,29 @@ export class WriteJobsService implements OnApplicationShutdown {
 
   get(id: string): WriteJob | null {
     return this.repository.get(id);
+  }
+
+  async isResumable(job: WriteJob): Promise<boolean> {
+    if (job.kind !== 'agent' || job.status !== 'failed') return false;
+    if (this.repository.checkpoints.get(`job:${job.id}`)) return true;
+    return (await this.retryBase(job.id)) !== undefined;
+  }
+
+  private retryOf(id: string): string | undefined {
+    const value = this.repository.events(id).find(event => event.phase === 'queued')?.detail?.retryOf;
+    return typeof value === 'string' ? value : undefined;
+  }
+
+  private async retryBase(id: string): Promise<string | undefined> {
+    const visited = new Set<string>();
+    let current: string | undefined = id;
+    while (current && !visited.has(current)) {
+      visited.add(current);
+      const state = await this.repo.failedState(current);
+      if (state.commits || state.wip) return current;
+      current = this.retryOf(current);
+    }
+    return undefined;
   }
 
   async waitForSettled(id: string, timeoutMs: number, signal?: AbortSignal): Promise<{ job: WriteJob; timedOut: boolean }> {
@@ -248,11 +272,15 @@ export class WriteJobsService implements OnApplicationShutdown {
       }
       for (const path of this.sourcePaths(job.id)) this.acl.assertRead(user, path);
       const author = { name: user.name || user.email, email: user.email };
-      wt = await repo.createWorktree(job.id);
+      const retryOf = this.retryOf(job.id);
+      wt = await repo.createWorktree(job.id, retryOf ? await this.retryBase(retryOf) : undefined);
       wt.setCommitMetadata({ jobId: job.id, source: job.source, requester: user.email, ...(job.client === null ? {} : { client: job.client }) });
       wt.onPhase = (phase, detail) => this.phase(job.id, phase, detail);
       this.phase(job.id, 'editing');
-      const { summary } = await agent.runWrite(this.get(job.id)!, wt, author, user);
+      const { summary } = await agent.runWrite(this.get(job.id)!, wt, author, user, {
+        resume: repository.checkpoints.get(`job:${job.id}`),
+        onCheckpoint: checkpoint => repository.checkpoints.save(`job:${job.id}`, checkpoint),
+      });
       const subject = summary.trim().split(/\r?\n/, 1)[0]?.slice(0, 200) || 'Update knowledge';
       this.phase(job.id, 'committing');
       await wt.commit(subject, author);
@@ -290,6 +318,7 @@ export class WriteJobsService implements OnApplicationShutdown {
         }
       });
       repository.markSucceeded(job.id, new Date().toISOString());
+      repository.checkpoints.delete(`job:${job.id}`);
     } catch (error) {
       // Preserve Dony's commits for diagnosis even if it threw before producing a summary.
       if (wt) {

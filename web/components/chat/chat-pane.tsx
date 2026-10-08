@@ -135,9 +135,9 @@ export function ChatPane({ variant, conversationId, onClose }: { variant: 'panel
               return {...previous,[stream.answerId]:list};
             }); break;
           case 'citation':
-            updateAnswer(message => ({...message, citations:[...message.citations, event.data]}));
+            updateAnswer(message => message.citations.some(citation => citation.path === event.data.path && citation.heading === event.data.heading && citation.anchor === event.data.anchor && citation.sha === event.data.sha) ? message : {...message, citations:[...message.citations, event.data]});
             appendStep({kind:'citation',label:`인용 · ${event.data.heading || event.data.path}`,path:event.data.path,status:'done'}); break;
-          case 'delta': updateAnswer(message => ({...message,content:message.content + event.data.text})); break;
+          case 'delta': updateAnswer(message => ({...message,content:event.data.replace ? event.data.text : message.content + event.data.text})); break;
           case 'usage': updateAnswer(message => ({...message,usage:event.data})); break;
           case 'done':
             updateAnswer(() => event.data.message);
@@ -197,7 +197,8 @@ export function ChatPane({ variant, conversationId, onClose }: { variant: 'panel
   const action = async (message: Message, kind: 'retry' | 'regenerate') => {
     if (!id || active.current) return;
     const index = messages.findIndex(item => item.id === message.id);
-    const answer = {...message,id:`local-answer-${crypto.randomUUID()}`,role:'assistant' as const,content:'',citations:[],attachments:[],context:null,usage:null,status:'running' as const};
+    const resume = kind === 'retry' && message.role === 'assistant' && message.resumable;
+    const answer = resume ? {...message,usage:null,status:'running' as const,resumable:false} : {...message,id:`local-answer-${crypto.randomUUID()}`,role:'assistant' as const,content:'',citations:[],attachments:[],context:null,usage:null,status:'running' as const,resumable:false};
     setLocalMessages([...messages.slice(0,message.role === 'user' ? index+1 : index),answer]);
     await run({conversationId:id,controller:new AbortController(),answerId:answer.id},(handlers,signal) => streamMessageAction(id,message.id,kind,{},handlers,signal));
   };

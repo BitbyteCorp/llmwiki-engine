@@ -101,6 +101,43 @@ class Git {
       throw error;
     }
   }
+  async preserveFailed(cwd: string, primary: string, jobId: string): Promise<string> {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(jobId)) throw new Error('Job ID must be a safe identifier');
+    const id = legacyUuidToApi(jobId);
+    const sha = await this.sha(cwd, 'HEAD');
+    await this.run(primary, ['update-ref', `refs/wiki/failed/${id}`, sha]);
+    const temporary = await mkdtemp(join(dirname(cwd), 'failed-index-'));
+    const env = { GIT_INDEX_FILE: join(temporary, 'index') };
+    try {
+      await this.run(cwd, ['read-tree', sha], env);
+      await this.run(cwd, ['add', '-A'], env);
+      const tree = (await this.run(cwd, ['write-tree'], env)).trim();
+      const headTree = (await this.run(cwd, ['rev-parse', `${sha}^{tree}`])).trim();
+      if (tree === headTree) {
+        await this.run(primary, ['update-ref', '-d', `refs/wiki/failed-wip/${id}`]);
+        const legacy = apiIdToLegacyUuid(id);
+        if (legacy) await this.run(primary, ['update-ref', '-d', `refs/wiki/failed-wip/${legacy}`]);
+      } else {
+        const snapshot = (await this.run(cwd, ['commit-tree', tree, '-p', sha, '-m', `Preserve unfinished edits for ${id}`], this.identity())).trim();
+        await this.run(primary, ['update-ref', `refs/wiki/failed-wip/${id}`, snapshot]);
+      }
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+    return sha;
+  }
+  async restoreWip(cwd: string, snapshot: string): Promise<void> {
+    const temporary = await mkdtemp(join(dirname(cwd), 'restore-index-'));
+    const env = { GIT_INDEX_FILE: join(temporary, 'index') };
+    try {
+      await this.run(cwd, ['read-tree', 'HEAD'], env);
+      // Only the temporary index takes the snapshot tree; HEAD and the real
+      // index stay at the failed commit, so restored additions are untracked.
+      await this.run(cwd, ['read-tree', '--reset', '-u', snapshot], env);
+    } finally {
+      await rm(temporary, { recursive: true, force: true });
+    }
+  }
 }
 function changes(output: string): FileChange[] {
   const tokens = output.split('\0');
@@ -237,6 +274,9 @@ export class KnowledgeRepo {
       const location = lines.find((line) => line.startsWith('worktree '))?.slice(9);
       const branch = lines.find((line) => line.startsWith('branch '))?.slice(7);
       if (location && branch?.startsWith('refs/heads/work/') && inside(this.worktrees, resolve(location)) && resolve(location) !== this.worktrees) {
+        let exists = true;
+        try { await lstat(location); } catch (error) { if (!missing(error)) throw error; exists = false; }
+        if (exists) await this.git.preserveFailed(location, this.path, branch.slice('refs/heads/work/'.length));
         try { await this.git.run(this.path, ['worktree', 'remove', '--force', '--force', location]); }
         catch (error) { if (await this.git.hasRef(this.path, branch)) { await rm(location, { recursive: true, force: true }); await this.git.run(this.path, ['worktree', 'prune', '--expire', 'now']); } else throw error; }
       }
@@ -267,10 +307,12 @@ export class KnowledgeRepo {
     const pending = this.resolving.get(ref);
     if (pending) return pending;
     const promise = this.git.sha(this.path, ref).catch(async (error: unknown) => {
-      if (!(error instanceof Error) || !('code' in error) || error.code !== 'NOT_FOUND' || !ref.startsWith('refs/wiki/failed/')) throw error;
-      const legacy = apiIdToLegacyUuid(ref.slice('refs/wiki/failed/'.length));
+      if (!(error instanceof Error) || !('code' in error) || error.code !== 'NOT_FOUND') throw error;
+      const namespace = ['refs/wiki/failed/', 'refs/wiki/failed-wip/'].find((prefix) => ref.startsWith(prefix));
+      if (!namespace) throw error;
+      const legacy = apiIdToLegacyUuid(ref.slice(namespace.length));
       if (!legacy) throw error;
-      return this.git.sha(this.path, `refs/wiki/failed/${legacy}`);
+      return this.git.sha(this.path, `${namespace}${legacy}`);
     }).then((sha) => {
       this.rememberSha(sha);
       return sha;
@@ -459,13 +501,38 @@ export class KnowledgeRepo {
     });
     return { ref: resolved, ranges: ranges.map((range) => ({ ...range })) };
   }
-  async createWorktree(name: string): Promise<Worktree> {
+  private async failedRef(jobId: string, namespace: 'failed' | 'failed-wip'): Promise<string | null> {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(jobId)) throw new Error('Job ID must be a safe identifier');
+    try { return await this.resolveRef(`refs/wiki/${namespace}/${legacyUuidToApi(jobId)}`); }
+    catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'NOT_FOUND') return null;
+      throw error;
+    }
+  }
+  async failedState(jobId: string): Promise<{ commits: boolean; wip: boolean }> {
+    const head = await this.failedRef(jobId, 'failed');
+    const snapshot = await this.failedRef(jobId, 'failed-wip');
+    const commits = head !== null && (await this.git.run(this.path, ['rev-list', '--max-count=1', head, '--not', 'refs/heads/main', '--'])).trim() !== '';
+    return { commits, wip: snapshot !== null };
+  }
+  async createWorktree(name: string, failedJobId?: string): Promise<Worktree> {
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name)) throw new Error('Worktree name must be a safe identifier');
     const path = join(this.worktrees, name);
     const branch = `work/${name}`;
-    const baseSha = await this.headSha();
-    await this.git.run(this.path, ['worktree', 'add', '-b', branch, '--', path, baseSha]);
-    return new Worktree(path, branch, baseSha, this.path, this.git);
+    const main = await this.headSha();
+    const failedHead = failedJobId === undefined ? null : await this.failedRef(failedJobId, 'failed');
+    const snapshot = failedJobId === undefined ? null : await this.failedRef(failedJobId, 'failed-wip');
+    const head = failedHead ?? main;
+    const baseSha = failedHead === null ? main : (await this.git.run(this.path, ['merge-base', head, main])).trim();
+    await this.git.run(this.path, ['worktree', 'add', '-b', branch, '--', path, head]);
+    const worktree = new Worktree(path, branch, baseSha, this.path, this.git);
+    try {
+      if (snapshot !== null) await this.git.restoreWip(path, snapshot);
+      return worktree;
+    } catch (error) {
+      await worktree.dispose();
+      throw error;
+    }
   }
   async withMergeLock<T>(fn: () => Promise<T>): Promise<T> {
     const previous = mergeTail;
@@ -579,10 +646,7 @@ export class Worktree {
     return this.git.sha(this.primary, 'refs/heads/main');
   }
   async preserveFailed(jobId: string): Promise<string> {
-    if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(jobId)) throw new Error('Job ID must be a safe identifier');
-    const sha = await this.git.sha(this.path, 'HEAD');
-    await this.git.run(this.primary, ['update-ref', `refs/wiki/failed/${legacyUuidToApi(jobId)}`, sha]);
-    return sha;
+    return this.git.preserveFailed(this.path, this.primary, jobId);
   }
   async revert(sha: string, paths?: string[]): Promise<void> {
     const resolved = await this.git.sha(this.path, sha);

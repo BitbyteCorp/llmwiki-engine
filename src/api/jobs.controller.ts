@@ -26,12 +26,16 @@ export class JobsController {
     @Query(new ZodValidationPipe(jobsQuerySchema)) query: z.infer<typeof jobsQuerySchema>,
     @CurrentUser() user: User,
   ) {
-    return { jobs: await this.history.listJobs(query, user) };
+    const jobs = await this.history.listJobs(query, user);
+    return { jobs: await Promise.all(jobs.map(async (job) => ({
+      ...job, resumable: await this.jobs.isResumable(this.jobs.get(job.id)!),
+    }))) };
   }
 
   @Get(':id')
-  get(@Param('id', new ZodValidationPipe(idSchema)) id: z.infer<typeof idSchema>, @CurrentUser() user: User) {
-    return this.history.getJob(id, user);
+  async get(@Param('id', new ZodValidationPipe(idSchema)) id: z.infer<typeof idSchema>, @CurrentUser() user: User) {
+    const detail = await this.history.getJob(id, user);
+    return { ...detail, job: { ...detail.job, resumable: await this.jobs.isResumable(this.jobs.get(id)!) } };
   }
 
   @Post(':id/retry')
@@ -42,7 +46,7 @@ export class JobsController {
       if (visible.input !== this.jobs.get(id)!.input) notFound('Write job not found');
       const job = await this.jobs.retry(id);
       this.audit?.record({ actorId: user.id, action: 'job.retry', target: id, outcome: 'success' });
-      return { job: await this.jobs.visible(user, job) };
+      return { job: { ...await this.jobs.visible(user, job), resumable: await this.jobs.isResumable(job) } };
     } catch (error) {
       this.audit?.record({ actorId: user.id, action: 'job.retry', target: id, outcome: 'error' });
       throw error;
@@ -56,7 +60,7 @@ export class JobsController {
       await this.history.getJob(id, user);
       const job = await this.jobs.cancel(id);
       this.audit?.record({ actorId: user.id, action: 'job.cancel', target: id, outcome: 'success' });
-      return { job: await this.jobs.visible(user, job) };
+      return { job: { ...await this.jobs.visible(user, job), resumable: await this.jobs.isResumable(job) } };
     } catch (error) {
       this.audit?.record({ actorId: user.id, action: 'job.cancel', target: id, outcome: 'error' });
       throw error;

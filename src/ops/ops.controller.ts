@@ -42,11 +42,14 @@ export class OpsController {
   }
 
   @Get('activity')
-  listActivity(
+  async listActivity(
     @Query(new ZodValidationPipe(activityQuerySchema)) query: z.infer<typeof activityQuerySchema>,
     @CurrentUser() user: User,
   ) {
-    return this.activity.list(query, user);
+    const page = await this.activity.list(query, user);
+    return { ...page, items: await Promise.all(page.items.map(async (item) => item.job
+      ? { ...item, job: { ...item.job, resumable: await this.jobs.isResumable(this.jobs.get(item.job.id)!) } }
+      : item)) };
   }
 
   @Get('journal')
@@ -57,7 +60,10 @@ export class OpsController {
   @Get('admin/ops')
   @Roles('admin')
   async ops() {
-    return { ...this.activity.opsJobs(), index: await this.indexer.status(),
+    const { queue, failedJobs } = this.activity.opsJobs();
+    return { queue, failedJobs: await Promise.all(failedJobs.map(async (job) => ({
+      ...job, resumable: await this.jobs.isResumable(this.jobs.get(job.id)!),
+    }))), index: await this.indexer.status(),
       dreams: { last: this.dreams.latest(), running: this.dreams.running() }, backup: this.dreams.backupStatus() };
   }
 
@@ -81,7 +87,7 @@ export class OpsController {
     try {
       const job = await this.jobs.retry(id);
       this.audit.record({ actorId: user.id, action: 'job.retry', target: id, outcome: 'succeeded' });
-      return { job };
+      return { job: { ...job, resumable: await this.jobs.isResumable(job) } };
     } catch (error) {
       this.audit.record({ actorId: user.id, action: 'job.retry', target: id, outcome: 'failed' });
       throw error;
@@ -94,7 +100,7 @@ export class OpsController {
     try {
       const job = await this.jobs.cancel(id);
       this.audit.record({ actorId: user.id, action: 'job.cancel', target: id, outcome: 'succeeded' });
-      return { job };
+      return { job: { ...job, resumable: await this.jobs.isResumable(job) } };
     } catch (error) {
       this.audit.record({ actorId: user.id, action: 'job.cancel', target: id, outcome: 'failed' });
       throw error;

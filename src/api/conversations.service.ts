@@ -6,6 +6,7 @@ import { parseApiId } from '../common/ids.js';
 import { DB, LOGGER } from '../common/tokens.js';
 import { EventsService } from '../events/events.service.js';
 import { AgentService } from '../agent/agent.service.js';
+import { AgentCheckpointsRepository } from '../agent/checkpoints.repository.js';
 import { UploadsService } from '../uploads/uploads.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { ApiError, notFound } from './api-error.js';
@@ -16,8 +17,10 @@ import { AclService } from '../acl/acl.service.js';
 import type { Db } from '../db/index.js';
 import { chatUser, messageSources, readableTurns, redactMessage } from './acl-chat.js';
 import { WriteJobsService } from '../jobs/write-jobs.service.js';
-import type { ChatWriteStatus, ChatWriteSubagent } from '../agent/agent.types.js';
+import type { AnswerCheckpoint, ChatWriteStatus, ChatWriteSubagent } from '../agent/agent.types.js';
 import { projectSubagent } from '../jobs/write-job.projection.js';
+
+type ChatCheckpoint = AnswerCheckpoint & {sourcePaths?:string[];writeCalls?:number};
 
 @Injectable()
 export class ConversationsService implements OnModuleDestroy {
@@ -33,6 +36,7 @@ export class ConversationsService implements OnModuleDestroy {
     private readonly acl: AclService,
     @Inject(DB) private readonly db: Db,
     private readonly writeJobs: WriteJobsService,
+    private readonly checkpoints: AgentCheckpointsRepository,
     @Optional() private readonly audit?: AuditService,
   ) { this.presenceTimer.unref(); }
   onModuleDestroy(): void { clearInterval(this.presenceTimer); }
@@ -72,7 +76,10 @@ export class ConversationsService implements OnModuleDestroy {
     const turns=readableTurns(this.db,this.acl,actor,this.repository.messages(id,userId));
     const conversation=this.repository.get(id,userId)!;
     return {conversation:{...conversation,title:turns.some(turn=>!turn.readable) ? '' : conversation.title},
-      messages:turns.map(turn=>turn.readable ? {...turn.message,citations:turn.message.citations.filter(c=>this.acl.canRead(actor,c.path))} : redactMessage(this.acl,actor,turn.message))};
+      messages:turns.map(turn=>{
+        const message=turn.readable ? {...turn.message,citations:turn.message.citations.filter(c=>this.acl.canRead(actor,c.path))} : redactMessage(this.acl,actor,turn.message);
+        return message.role==='assistant' ? {...message,resumable:turn.readable && ['failed','cancelled','interrupted'].includes(message.status) && !!this.checkpoints.get(`message:${message.id}`)} : message;
+      })};
   }
   delete(id:string,userId:number):void {
     id=this.access(id,userId,false,true);
@@ -105,7 +112,7 @@ export class ConversationsService implements OnModuleDestroy {
     this.changed(id,user.id);
     return this.begin(id,userId,user,model,effort,input.clientId);
   }
-  private begin(id:string,userId:number,user:Message,model?:string,effort?:string,clientId?:string) {
+  private begin(id:string,userId:number,user:Message,model?:string,effort?:string,clientId?:string,resume?:{message:Message;checkpoint:ChatCheckpoint;sourcePaths:string[]}) {
     const actor=chatUser(this.db,userId);
     for(const path of messageSources(this.db,user)) this.acl.assertRead(actor,path);
     const policyKey=this.acl.policyKey(actor);
@@ -113,16 +120,20 @@ export class ConversationsService implements OnModuleDestroy {
       const current=chatUser(this.db,userId);
       if(this.acl.policyKey(current)!==policyKey) notFound('Message not found');
     };
-    const assistant=this.repository.addMessage(id,userId,'assistant','',[],{status:'running',model,effort})!;
+    const assistant=resume?.message ?? this.repository.addMessage(id,userId,'assistant','',[],{status:'running',model,effort})!;
+    for(const path of resume?.sourcePaths ?? []) this.acl.assertRead(actor,path);
+    if(resume) this.repository.finish(assistant.id,resume.checkpoint.text,'running');
     const revision=createHash('sha256').update(user.content).digest('hex');
-    return this.generations.start({conversationId:id,userMessageId:user.id,assistantMessageId:assistant.id,userId,clientId,model,effort},async(signal,emit)=>{
-      let partial='';
-      let writeCalls=0;
+    const generation=this.generations.start({conversationId:id,userMessageId:user.id,assistantMessageId:assistant.id,userId,clientId,model,effort},async(signal,emit)=>{
+      let partial=resume?.checkpoint.text ?? '';
+      let writeCalls=resume?.checkpoint.writeCalls ?? resume?.checkpoint.input.filter(item=>item.type==='function_call' && item.name==='write_knowledge').length ?? 0;
       try {
-        const turns=readableTurns(this.db,this.acl,actor,this.repository.messages(id,userId));
+        const turns=resume ? [] : readableTurns(this.db,this.acl,actor,this.repository.messages(id,userId));
         const readable=turns.filter(turn=>turn.readable && turn.message.id!==assistant.id && (turn.message.role==='user'||turn.message.status==='completed'));
-        const sources=new Set(readable.flatMap(turn=>turn.sources));
+        const sources=new Set([...(resume?.sourcePaths ?? []),...readable.flatMap(turn=>turn.sources)]);
         if(sources.size) emit('sources',{paths:[...sources]});
+        assertAccess();
+        if(resume) emit('delta',{text:partial,replace:true});
         let history=readable.map(turn=>turn.message);
         // Stored summaries may contain another member's sources. Derive summaries only from this reader's visible turns.
         let summary='';
@@ -199,6 +210,8 @@ export class ConversationsService implements OnModuleDestroy {
           if(signal.aborted)return;
           partial+=text;this.repository.finish(assistant.id,partial,'running');emit('delta',{text});
         },signal,{user:actor,model,effort,context:user.context ?? undefined,summary,assertAccess,
+          resume:resume?.checkpoint,
+          onCheckpoint:checkpoint=>{if(!signal.aborted)this.checkpoints.save<ChatCheckpoint>(`message:${assistant.id}`,{...checkpoint,sourcePaths:[...sources],writeCalls});},
           ...(actor.role==='editor'||actor.role==='admin' ? {
             submitKnowledge:async(content:string)=>{
               signal.throwIfAborted();
@@ -223,16 +236,20 @@ export class ConversationsService implements OnModuleDestroy {
         assertAccess();
         for(const citation of answer.citations) this.acl.assertRead(actor,citation.path);
         this.repository.finish(assistant.id,answer.text,'completed',answer.citations,answer.usage);
+        this.checkpoints.delete(`message:${assistant.id}`);
         this.changed(id,assistant.id);
-        emit('done',{message:{...assistant,content:answer.text,status:'completed',citations:answer.citations,usage:answer.usage ?? null}});
+        emit('done',{message:{...assistant,content:answer.text,status:'completed',citations:answer.citations,usage:answer.usage ?? null,generationId:generation.id,resumable:false}});
       } catch(error) {
         const cancelled=signal.aborted;
-        this.repository.finish(assistant.id,partial,cancelled?'cancelled':'failed');
-        this.changed(id,assistant.id);
+        if(this.repository.message(id,assistant.id,userId)?.generationId===generation.id) {
+          this.repository.finish(assistant.id,partial,cancelled?'cancelled':'failed');
+          this.changed(id,assistant.id);
+        }
         if(!cancelled)this.log.error({err:error,conversationId:id},'Chat answer failed');
         emit('error',{code:cancelled?'generation_cancelled':'generation_failed',message:cancelled?'Answer generation cancelled':'Unable to generate an answer. Please retry.'});
       }
     });
+    return generation;
   }
   retry(id:string,mid:string,userId:number) {
     id=this.access(id,userId,true);this.idle(id);
@@ -247,6 +264,13 @@ export class ConversationsService implements OnModuleDestroy {
     if(message.role==='assistant' && !['failed','cancelled','interrupted'].includes(message.status))throw new ApiError(409,'not_retryable','Only unsuccessful answers can be retried');
     const model=this.agent.validateModel(user.model ?? undefined);
     const effort=this.agent.validateEffort(user.effort ?? undefined);
+    const checkpoint=message.role==='assistant' ? this.checkpoints.get<ChatCheckpoint>(`message:${message.id}`) : undefined;
+    if(checkpoint) {
+      const sourcePaths=[...new Set([...(checkpoint.sourcePaths ?? []),...messageSources(this.db,message)])];
+      for(const path of sourcePaths) this.acl.assertRead(chatUser(this.db,userId),path);
+      this.repository.truncate(id,message.id);
+      return this.begin(id,userId,user,model,effort,undefined,{message,checkpoint,sourcePaths});
+    }
     this.repository.truncate(id,user.id);
     return this.begin(id,userId,user,model,effort);
   }

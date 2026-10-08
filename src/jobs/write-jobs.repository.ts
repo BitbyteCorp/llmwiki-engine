@@ -4,6 +4,7 @@ import { fromStorageId, toStorageId } from '../common/ids.js';
 import type { Db } from '../db/index.js';
 import type { JobEvent, JobKind, JobPhase, JobSource, WriteJob } from './write-job.types.js';
 import { projectSubagent, type ProjectedSubagent } from './write-job.projection.js';
+import { AgentCheckpointsRepository } from '../agent/checkpoints.repository.js';
 
 interface JobRow {
   id: string; user_id: number; kind: JobKind; source: JobSource; client: string | null; input: string; conflicts: string;
@@ -24,13 +25,23 @@ function toJob(row: JobRow): WriteJob {
 
 @Injectable()
 export class WriteJobsRepository {
-  constructor(@Inject(DB) private readonly db: Db) {}
+  readonly checkpoints: AgentCheckpointsRepository;
 
-  enqueue(id: string, userId: number, input: string, createdAt: string, source: JobSource, client?: string, kind: JobKind = 'agent', dedupeKey?: string): void {
-    this.db.prepare(`
-      INSERT INTO write_jobs (id, user_id, kind, source, client, input, status, created_at, dedupe_key)
-      VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)
-    `).run(toStorageId(id), userId, kind, source, client ?? null, input, createdAt, dedupeKey ?? null);
+  constructor(@Inject(DB) private readonly db: Db) {
+    this.checkpoints = new AgentCheckpointsRepository(db);
+  }
+
+  enqueue(id: string, userId: number, input: string, createdAt: string, source: JobSource, client?: string, kind: JobKind = 'agent', dedupeKey?: string, resumeFrom?: string, queuedDetail?: Record<string, unknown>): boolean {
+    return this.db.transaction(() => {
+      this.db.prepare(`
+        INSERT INTO write_jobs (id, user_id, kind, source, client, input, status, created_at, dedupe_key)
+        VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)
+      `).run(toStorageId(id), userId, kind, source, client ?? null, input, createdAt, dedupeKey ?? null);
+      const resumed = resumeFrom !== undefined && this.checkpoints.copy(`job:${resumeFrom}`, `job:${id}`);
+      if (resumed) this.checkpoints.delete(`job:${resumeFrom}`);
+      if (queuedDetail) this.addEvent(id, 'queued', { ...queuedDetail, ...(resumed ? { resumedFrom: resumeFrom } : {}) }, createdAt);
+      return resumed;
+    })();
   }
 
   getByDedupeKey(key: string): WriteJob | null {

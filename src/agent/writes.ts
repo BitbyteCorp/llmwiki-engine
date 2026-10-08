@@ -3,7 +3,7 @@ import type { Logger } from 'pino';
 import type { WriteJob } from '../jobs/write-job.types.js';
 import type { KnowledgeRepo, Worktree } from '../knowledge/repo.js';
 import type { AgentService } from './agent.service.js';
-import type { AgentTool } from './agent.types.js';
+import type { AgentTool, RunAgentOptions } from './agent.types.js';
 import type { AclService, AclUser } from '../acl/acl.service.js';
 import { visibleLog } from '../api/acl-history.js';
 import { SubagentPool } from './subagents.js';
@@ -37,8 +37,9 @@ export async function runWrite(
   author: { name: string; email: string },
   user?: AclUser,
   log?: Pick<Logger, 'error'>,
+  options: Pick<RunAgentOptions, 'resume' | 'onCheckpoint'> = {},
 ): Promise<{ summary: string }> {
-  const instructions = `${await agent.baseInstructions(user, user ? (path) => wt.onPhase?.('editing', { sourcePath: path }) : undefined)}\n\n${writeInstructions}`;
+  const instructions = `${await agent.baseInstructions(user, user ? (path) => wt.onPhase?.('editing', { sourcePath: path }) : undefined)}\n\n${writeInstructions}${options.resume ? `\n\n중단된 부모 실행을 이어간다. 이번 작업 ID는 ${job.id}다. 이전 실행의 서브에이전트는 재개되지 않으며 이전 자식 ID는 현재 풀에서 unknown이다. 워크트리에 보존된 실제 파일을 확인하고 필요한 작업만 새 자식에 위임한다. 이번 커밋과 결과는 현재 작업 ID로 기록한다.` : ''}`;
   const pool = new SubagentPool({
     agent, instructions, tools: agent.worktreeTools(wt, author, user), wt, log,
     onChange: (snapshot) => {
@@ -53,6 +54,7 @@ export async function runWrite(
       input: JSON.stringify({ jobId: job.id, source: job.source, request: job.input }),
       tools: [...pool.parentTools(), ...pool.tools()],
       maxTurns: 96,
+      ...options,
     });
     return { summary: result.text.trim() };
   } finally {

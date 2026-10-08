@@ -83,7 +83,7 @@ export function ChatMessageView({ message, steps = [], onEdit, onAction, onPropo
     </section>}
     {unfinished && <div className="mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-warning/30 bg-warning/5 px-2 py-1.5">
       <p role="status" className="min-w-0 flex-1 text-xs text-muted-foreground">{message.status === 'failed' ? '답변 생성에 실패했습니다.' : message.status === 'cancelled' ? '답변 생성이 중지되었습니다.' : '서버 연결 중단으로 생성이 완료되지 않았습니다.'} 부분 답변입니다.</p>
-      <Button variant="ghost" size="xs" disabled={disabled} onClick={() => onAction(message, 'retry')}><RefreshCw/>다시 시도</Button>
+      <Button variant="ghost" size="xs" disabled={disabled} onClick={() => onAction(message, 'retry')}><RefreshCw/>{message.resumable ? '이어서 다시 시도' : '다시 시도'}</Button>
     </div>}
     <footer className="mt-1.5">
       <div className={`flex flex-wrap items-center gap-0.5 ${assistant ? '' : 'justify-end'}`}>

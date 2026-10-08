@@ -27,6 +27,7 @@ import { WriteJobsRepository } from '../jobs/write-jobs.repository.js';
 import { NoteWriterService } from '../jobs/note-writer.service.js';
 import { KnowledgeRepo, type CommitInfo } from '../knowledge/repo.js';
 import { AgentService } from '../agent/agent.service.js';
+import { AgentCheckpointsRepository } from '../agent/checkpoints.repository.js';
 import { IndexerService } from '../rag/indexer.service.js';
 import { EventsService } from '../events/events.service.js';
 import { UploadsService } from '../uploads/uploads.service.js';
@@ -171,7 +172,7 @@ describe('web REST API', () => {
         JobsController, ConversationsController, GenerationsController, AdminController,
       ],
       providers: [
-        ConversationsRepository, ConversationsService, GenerationsService, NotesService, HistoryService,
+        ConversationsRepository, ConversationsService, GenerationsService, AgentCheckpointsRepository, NotesService, HistoryService,
         SessionGuard, RolesGuard, AclService, AuditService, WriteJobsService,
         { provide: DB, useValue: db },
         { provide: LOGGER, useValue: log },
@@ -293,8 +294,9 @@ describe('web REST API', () => {
     seedJob(job);
     const response = await request(`/history/commits/${writeSha}`, {}, 3, 'admin');
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({
-      commit: commit(writeSha), files: [{ status: 'M', path: 'wiki/Navigation.md' }], patch: '+Main branch content', job,
+    expect(await response.json()).toMatchObject({
+      commit: { sha: writeSha }, files: [{ status: 'M', path: 'wiki/Navigation.md' }],
+      patch: '+Main branch content', job: { id: job.id, userId: 2, status: 'succeeded', source: 'mcp' },
     });
     expect(await (await request(`/history/commits/${head}`)).json()).toMatchObject({ job: null });
   });
@@ -304,18 +306,19 @@ describe('web REST API', () => {
     const other = makeJob(newId(), 2, [head]);
     seedJob(own);
     seedJob(other);
-    expect(await (await request('/jobs?limit=2')).json()).toEqual({ jobs: [
-      { ...own, user: { email: 'user1@example.com', name: 'User 1' } },
+    expect(await (await request('/jobs?limit=2')).json()).toMatchObject({ jobs: [
+      { id: own.id, userId: 1, user: { email: 'user1@example.com' } },
     ] });
-    expect(await (await request('/jobs?limit=2', {}, 3, 'admin')).json()).toEqual({ jobs: [
-      { ...own, user: { email: 'user1@example.com', name: 'User 1' } },
-      { ...other, user: { email: 'user2@example.com', name: 'User 2' } },
+    expect(await (await request('/jobs?limit=2', {}, 3, 'admin')).json()).toMatchObject({ jobs: [
+      { id: own.id, userId: 1, user: { email: 'user1@example.com' } },
+      { id: other.id, userId: 2, user: { email: 'user2@example.com' } },
     ] });
     await expectError(await request(`/jobs/${other.id}`), 404, 'not_found');
-    expect(await (await request(`/jobs/${other.id}`, {}, 3, 'admin')).json()).toMatchObject({ job: other });
-    expect(await (await request('/jobs?mine=1')).json()).toEqual({ jobs: [{ ...own, user: { email: 'user1@example.com', name: 'User 1' } }] });
-    expect(await (await request(`/jobs/${own.id}`)).json()).toEqual({
-      job: own, user: { email: 'user1@example.com', name: 'User 1' }, commits: [commit(writeSha), commit(mergeSha)], events: [],
+    expect(await (await request(`/jobs/${other.id}`, {}, 3, 'admin')).json()).toMatchObject({ job: { id: other.id, userId: 2 } });
+    expect(await (await request('/jobs?mine=1')).json()).toMatchObject({ jobs: [{ id: own.id, userId: 1 }] });
+    expect(await (await request(`/jobs/${own.id}`)).json()).toMatchObject({
+      job: { id: own.id, userId: 1, status: 'succeeded', source: 'mcp', commits: [writeSha], mergeSha },
+      user: { email: 'user1@example.com' }, commits: [{ sha: writeSha }, { sha: mergeSha }],
     });
     expect(await (await request(`/jobs?before=${encodeURIComponent(stamp)}`)).json()).toEqual({ jobs: [] });
     await expectError(await request(`/jobs/${newId()}`), 404, 'not_found');

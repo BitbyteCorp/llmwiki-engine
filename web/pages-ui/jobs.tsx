@@ -116,7 +116,7 @@ function JobDetailPage({ id }: { id: string }) {
     <PageHeader title="쓰기 작업" description={<span className="break-all font-mono text-xs">{job.id}</span>} actions={<>
       <Button variant="outline" nativeButton={false} render={<Link href={jobsHref()} />}>내 작업 목록</Button>
       <Button variant="ghost" disabled={detail.isFetching} onClick={() => void detail.refetch()}>새로고침</Button>
-      {canAct && job.status === 'failed' && <Button disabled={action.isPending} onClick={() => action.mutate('retry')}>{action.isPending ? '요청 중…' : '새 작업으로 재시도'}</Button>}
+      {canAct && job.status === 'failed' && <Button disabled={action.isPending} onClick={() => action.mutate('retry')}>{action.isPending ? '요청 중…' : job.resumable ? '이어서 재시도' : '새 작업으로 재시도'}</Button>}
       {canAct && job.status === 'queued' && <Button variant="destructive" disabled={action.isPending} onClick={() => { action.reset(); setConfirmCancel(true) }}>대기 작업 취소</Button>}
     </>} />
     <ErrorNotice error={detail.error || action.error} />

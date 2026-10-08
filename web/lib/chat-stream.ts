@@ -17,7 +17,7 @@ export type ChatStreamEvent =
   | { id: number; event: 'status'; data: { phase: string } }
   | { id: number; event: 'tool'; data: { name: string; state: 'start' | 'end'; summary: string; path?: string; jobId?: string } }
   | { id: number; event: 'citation'; data: ChatCitation }
-  | { id: number; event: 'delta'; data: { text: string } }
+  | { id: number; event: 'delta'; data: { text: string; replace?: boolean } }
   | { id: number; event: 'usage'; data: ChatUsage }
   | { id: number; event: 'done'; data: { message: Message } }
   | { id: number; event: 'error'; data: { code: string; message: string } };
@@ -34,6 +34,7 @@ const messageSchema = z.object({
   id: z.string(), role: z.literal('assistant'), content: z.string(), citations: z.array(citationSchema),
   attachments: z.array(z.string()), context: z.object({ notePath: z.string(), ref: z.string().optional(), selection: z.string().optional() }).nullable(),
   status: z.enum(['completed', 'running', 'failed', 'cancelled', 'interrupted']), usage: usageSchema.nullable(),
+  resumable: z.boolean().optional(),
   model: z.string().nullable(), effort: z.string().nullable(), generationId: z.string().nullable().optional(), createdAt: z.string(),
 });
 const streamEventSchema = z.discriminatedUnion('event', [
@@ -41,7 +42,7 @@ const streamEventSchema = z.discriminatedUnion('event', [
   z.object({ id: z.number(), event: z.literal('status'), data: z.object({ phase: z.string() }) }),
   z.object({ id: z.number(), event: z.literal('tool'), data: z.object({ name: z.string(), state: z.enum(['start', 'end']), summary: z.string(), path: z.string().optional(), jobId: z.string().optional() }) }),
   z.object({ id: z.number(), event: z.literal('citation'), data: citationSchema }),
-  z.object({ id: z.number(), event: z.literal('delta'), data: z.object({ text: z.string() }) }),
+  z.object({ id: z.number(), event: z.literal('delta'), data: z.object({ text: z.string(), replace: z.boolean().optional() }) }),
   z.object({ id: z.number(), event: z.literal('usage'), data: usageSchema }),
   z.object({ id: z.number(), event: z.literal('done'), data: z.object({ message: messageSchema }) }),
   z.object({ id: z.number(), event: z.literal('error'), data: z.object({ code: z.string(), message: z.string() }) }),

@@ -21,13 +21,13 @@ export class AgentCheckpointsRepository {
       ON CONFLICT(owner) DO UPDATE SET data=excluded.data, updated_at=excluded.updated_at`);
   }
 
-  save(owner: string, checkpoint: AgentCheckpoint): void {
+  save<T extends AgentCheckpoint>(owner: string, checkpoint: T): void {
     this.saveCheckpoint.run(owner, JSON.stringify(checkpoint), new Date().toISOString());
   }
 
-  get(owner: string): AgentCheckpoint | undefined {
+  get<T extends AgentCheckpoint = AgentCheckpoint>(owner: string): T | undefined {
     const row = this.getCheckpoint.get(owner);
-    return row ? JSON.parse(row.data) as AgentCheckpoint : undefined;
+    return row ? JSON.parse(row.data) as T : undefined;
   }
 
   delete(owner: string): void {

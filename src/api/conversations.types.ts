@@ -22,6 +22,7 @@ export interface Message {
   model: string | null;
   effort: string | null;
   generationId?: string | null;
+  resumable?: boolean;
   createdAt: string;
 }
 export interface SubmitMessage {

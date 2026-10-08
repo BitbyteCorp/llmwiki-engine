@@ -135,7 +135,8 @@ describe('public operations, live events and archives obey folder ACL', () => {
         { provide: SessionsService, useValue: new SessionsService(config, db, users) },
         { provide: KnowledgeRepo, useValue: repo }, { provide: DreamRunsRepository, useValue: dreams },
         { provide: DreamingService, useValue: { runManual: async () => dreams.get('000000000000000000000H')! } },
-        { provide: WriteJobsService, useValue: {} }, { provide: IndexerService, useValue: {} },
+        { provide: WriteJobsService, useValue: { get: (id: string) => jobs.get(id), isResumable: async () => false } },
+        { provide: IndexerService, useValue: {} },
         { provide: EventsService, useValue: events }],
     }).compile();
     app = module.createNestApplication();

@@ -24,7 +24,7 @@ export class ImportsRepository {
     this.db.prepare('UPDATE imports SET sha=?, raw_paths=?, updated_at=? WHERE id=?').run(sha, JSON.stringify(paths), new Date().toISOString(), toStorageId(id));
   }
   queued(id: string, jobId: string): void {
-    this.db.prepare("UPDATE imports SET status='queued', job_id=?, updated_at=? WHERE id=?").run(toStorageId(jobId), new Date().toISOString(), toStorageId(id));
+    this.db.prepare("UPDATE imports SET status='queued', job_id=?, error=NULL, finished_at=NULL, updated_at=? WHERE id=?").run(toStorageId(jobId), new Date().toISOString(), toStorageId(id));
   }
   update(id: string, status: ImportRecord['status'], error: string | null = null): void {
     const now = new Date().toISOString();
@@ -35,10 +35,20 @@ export class ImportsRepository {
     return row ? record(row) : null;
   }
   pending(): ImportRecord[] {
-    return (this.db.prepare("SELECT * FROM imports WHERE status IN ('extracting','queued','running')").all() as ImportRow[]).map(record);
+    return (this.db.prepare("SELECT * FROM imports WHERE status IN ('extracting','queued','running') OR (status='failed' AND job_id IS NOT NULL)").all() as ImportRow[]).map(record);
   }
   forJob(jobId: string): ImportRecord[] {
     return (this.db.prepare('SELECT * FROM imports WHERE job_id=?').all(toStorageId(jobId)) as ImportRow[]).map(record);
+  }
+  latestRetryJobId(jobId: string, userId: number): string | null {
+    const row = this.db.prepare(`
+      SELECT jobs.id FROM write_job_events events
+      JOIN write_jobs jobs ON jobs.id=events.job_id
+      WHERE events.phase='queued' AND json_extract(events.detail, '$.retryOf')=?
+        AND jobs.user_id=? AND jobs.kind='agent' AND jobs.source='import'
+      ORDER BY events.seq DESC LIMIT 1
+    `).get(jobId, userId) as { id: string } | undefined;
+    return row ? fromStorageId(row.id) : null;
   }
   list(opts: { userId?: number; limit?: number; before?: string }): ImportRecord[] {
     const clauses: string[] = [];

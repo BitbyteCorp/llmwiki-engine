@@ -91,6 +91,56 @@ describe('IngestService with real uploads, SQLite and git', () => {
     expect(ctx.agent.runWrite).toHaveBeenCalledTimes(1);
     expect(ctx.jobs.list().filter((job) => job.kind === 'agent')).toHaveLength(1);
   });
+  it('links an import to each retried integration job and clears its previous failure', async () => {
+    const ctx = await fixture();
+    vi.mocked(ctx.agent.runWrite).mockRejectedValueOnce(new Error('First integration failed')).mockRejectedValueOnce(new Error('Second integration failed'));
+    const result = await ctx.ingest.ingest({ userId: ctx.owner.id, kind: 'text', text: 'Retryable source' });
+    const original = ctx.ingest.get(result.importId, ctx.owner.id);
+    ctx.jobs.start();
+    await vi.waitFor(() => expect(ctx.ingest.get(result.importId, ctx.owner.id)).toMatchObject({ jobId: result.jobId, status: 'failed', error: 'First integration failed' }), { timeout: 10_000 });
+    await ctx.jobs.stop();
+    expect(ctx.ingest.get(result.importId, ctx.owner.id).finishedAt).not.toBeNull();
+
+    const retry = ctx.jobs.retry(result.jobId);
+    expect(ctx.imports.get(result.importId)).toMatchObject({ jobId: retry.id, status: 'queued', error: null, finishedAt: null });
+    expect(ctx.ingest.list(ctx.owner.id)[0]).toMatchObject({ jobId: retry.id, status: 'queued', rawPaths: original.rawPaths, sha: original.sha });
+    ctx.jobs.start();
+    await vi.waitFor(() => expect(ctx.ingest.get(result.importId, ctx.owner.id)).toMatchObject({ jobId: retry.id, status: 'failed', error: 'Second integration failed' }), { timeout: 10_000 });
+    await ctx.jobs.stop();
+
+    const nextRetry = ctx.jobs.retry(retry.id);
+    expect(ctx.imports.get(result.importId)).toMatchObject({ jobId: nextRetry.id, status: 'queued', error: null, finishedAt: null });
+    ctx.jobs.start();
+    await vi.waitFor(() => expect(ctx.ingest.get(result.importId, ctx.owner.id)).toMatchObject({ jobId: nextRetry.id, status: 'succeeded', error: null }), { timeout: 10_000 });
+    expect(ctx.jobs.get(result.jobId)!.status).toBe('failed');
+    expect(ctx.jobs.get(retry.id)!.status).toBe('failed');
+    expect(await ctx.repo.readFile('wiki/imported.md')).toContain(original.rawPaths[1]);
+  });
+  it.each(['read', 'startup'] as const)('recovers missed integration retry chains on %s', async (recovery) => {
+    const ctx = await fixture();
+    vi.mocked(ctx.agent.runWrite).mockRejectedValueOnce(new Error('Original failed')).mockRejectedValueOnce(new Error('Retry failed'));
+    const result = await ctx.ingest.ingest({ userId: ctx.owner.id, kind: 'text', text: 'Recoverable source' });
+    ctx.jobs.start();
+    await vi.waitFor(() => expect(ctx.ingest.get(result.importId, ctx.owner.id).status).toBe('failed'), { timeout: 10_000 });
+    await ctx.jobs.stop();
+    ctx.ingest.onModuleDestroy();
+
+    const retry = ctx.jobs.retry(result.jobId);
+    ctx.jobs.start();
+    await vi.waitFor(() => expect(ctx.jobs.get(retry.id)!.status).toBe('failed'), { timeout: 10_000 });
+    await ctx.jobs.stop();
+    const nextRetry = ctx.jobs.retry(retry.id);
+    expect(ctx.imports.get(result.importId)).toMatchObject({ jobId: result.jobId, status: 'failed', error: 'Original failed' });
+
+    if (recovery === 'startup') {
+      ctx.ingest.start();
+      expect(ctx.imports.get(result.importId)).toMatchObject({ jobId: nextRetry.id, status: 'queued', error: null, finishedAt: null });
+    } else {
+      expect(ctx.ingest.list(ctx.owner.id)[0]).toMatchObject({ jobId: nextRetry.id, status: 'queued', error: null, finishedAt: null });
+    }
+    ctx.jobs.start();
+    await vi.waitFor(() => expect(ctx.ingest.get(result.importId, ctx.owner.id)).toMatchObject({ jobId: nextRetry.id, status: 'succeeded', error: null }), { timeout: 10_000 });
+  });
   it('reuses identical immutable originals without rewriting and preserves each provenance record', async () => {
     const ctx = await fixture();
     const first = await ctx.ingest.ingest({ userId: ctx.owner.id, kind: 'text', text: 'Identical content', filename: 'same.md' });

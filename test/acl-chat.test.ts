@@ -32,6 +32,7 @@ import { WriteJobsRepository } from '../src/jobs/write-jobs.repository.js';
 import { WriteJobsService } from '../src/jobs/write-jobs.service.js';
 import { KnowledgeRepo } from '../src/knowledge/repo.js';
 import { AgentService } from '../src/agent/agent.service.js';
+import { AgentCheckpointsRepository } from '../src/agent/checkpoints.repository.js';
 import { IndexerService } from '../src/rag/indexer.service.js';
 import { SearchService } from '../src/rag/search.service.js';
 import { UploadsService } from '../src/uploads/uploads.service.js';
@@ -110,7 +111,7 @@ async function fixture(script: FakeScript = [], gate?: { received: () => void; r
   const repository = new ConversationsRepository(db);
   const module = await Test.createTestingModule({
     controllers: [ConversationsController, GenerationsController, UploadsController],
-    providers: [ConversationsService, GenerationsService, UploadsService, RolesGuard,
+    providers: [ConversationsService, GenerationsService, AgentCheckpointsRepository, UploadsService, RolesGuard,
       { provide: ConversationsRepository, useValue: repository }, { provide: CONFIG, useValue: config },
       { provide: DB, useValue: db }, { provide: LOGGER, useValue: log }, { provide: AclService, useValue: acl },
       { provide: AgentService, useValue: agent }, { provide: EventsService, useValue: events },

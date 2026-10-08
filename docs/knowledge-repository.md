@@ -27,13 +27,13 @@
 `GIT_SSH_KEY_PATH`가 있으면 clone과 push를 포함한 git 명령에 `GIT_SSH_COMMAND`를 적용한다. 지정 키만 쓰도록 `IdentitiesOnly=yes`를 설정하고, `StrictHostKeyChecking=accept-new`로 처음 보는 호스트 키는 등록하되 이미 등록된 키의 변경은 거부한다. git 자체는 셸 문자열이 아니라 `execFile` 인자로 실행한다. 원격 저장소가 없으면 push는 오류가 아니라 `{ pushed: false, reason }` 결과를 반환한다. 성공한 `pushMain()`은 실제 사용한 `remote`와 원격 main으로 보낸 `sha`를 함께 반환한다.
 
 ### 격리 편집과 복구
-워크트리는 생성 시점의 main 커밋에서 파생하고, 수정·삭제·이동은 해당 워크트리 안에서만 수행한다. 일반 커밋의 author는 요청자이고 committer의 기본값은 `도니 <dony@llmwiki.local>`다. 변경이 없는 `commit` 호출도 요청자를 기억하므로, main을 작업 브랜치로 병합하면서 자동으로 생기는 머지 커밋에도 요청자를 기록한다. 충돌 해결을 마친 `finishMerge`는 전달받은 요청자를 author로 기록한다.
+일반 워크트리는 생성 시점의 main 커밋에서 파생하고, 수정·삭제·이동은 해당 워크트리 안에서만 수행한다. 실패 작업을 재시도할 때는 보존한 작업 HEAD와 미커밋 편집에서 이어간다. 일반 커밋의 author는 요청자이고 committer의 기본값은 `도니 <dony@llmwiki.local>`다. 변경이 없는 `commit` 호출도 요청자를 기억하므로, main을 작업 브랜치로 병합하면서 자동으로 생기는 머지 커밋에도 요청자를 기록한다. 충돌 해결을 마친 `finishMerge`는 전달받은 요청자를 author로 기록한다.
 
-`setCommitMetadata({ jobId, source, requester, client? })`는 일반 커밋뿐 아니라 자동 머지와 `finishMerge`에도 같은 작업 출처를 적용한다. 모든 엔진 커밋은 `Wiki-Job`, `Wiki-Source`, `Wiki-Requester` trailer를 남기며 클라이언트가 있으면 `Wiki-Client`도 남긴다. 공용 `commitTrailers` 함수는 본문과 빈 줄로 구분하여 붙이는 trailer 블록을 만든다. 메타데이터를 지정하지 않은 저수준 워크트리 호출은 작업 브랜치 이름과 요청자 이메일을 사용하고 source를 `web`으로 기록한다.
+`setCommitMetadata({ jobId, source, requester, client? })`는 일반 커밋뿐 아니라 자동 머지와 `finishMerge`에도 같은 작업 출처를 적용한다. main에 반영하는 모든 엔진 커밋은 `Wiki-Job`, `Wiki-Source`, `Wiki-Requester` trailer를 남기며 클라이언트가 있으면 `Wiki-Client`도 남긴다. 공용 `commitTrailers` 함수는 본문과 빈 줄로 구분하여 붙이는 trailer 블록을 만든다. 메타데이터를 지정하지 않은 저수준 워크트리 호출은 작업 브랜치 이름과 요청자 이메일을 사용하고 source를 `web`으로 기록한다.
 
 머지는 먼저 작업 브랜치 안에서 `main`을 병합한다. 충돌이 나면 main은 그대로 두고 충돌 파일 목록을 반환한다. 작업 워크트리에서 충돌을 해결하고 머지 커밋을 만든 뒤, 주 클론의 main을 작업 브랜치로 `--ff-only` 전진시킨다. main이 이미 갈라졌다면 fast-forward는 실패한다. 저장소 객체 사이에서도 공유하는 프로세스 단위 Promise 큐가 머지 락을 직렬화하며, 락 안의 작업이 실패해도 다음 작업에 락을 넘긴다. 호출자는 최신 main 병합부터 fast-forward와 인덱스 동기화까지 이 락 안에서 수행한다.
 
-부팅 시 `open`은 전용 워크트리 디렉터리의 남은 작업 워크트리와 `work/` 브랜치를 정리하고 git 워크트리 메타데이터를 prune한다. 브랜치를 삭제하기 전에 각 작업 브랜치 HEAD를 `refs/wiki/failed/<작업 이름>`에 보존하므로 크래시로 중단된 작업의 커밋도 도달 가능한 상태로 남는다. 크래시로 남은 미커밋 편집은 복구 대상으로 보존하지 않으며, main은 바꾸지 않는다. 정상 실패 처리의 `preserveFailed(jobId)`도 현재 HEAD를 `refs/wiki/failed/<jobId>`로 보존하므로 작업 워크트리와 브랜치를 제거하거나 재부팅한 뒤에도 실패 커밋을 조회할 수 있다. 따라서 `open`은 실행 중인 작업을 다시 여는 함수가 아니라 부팅 초기화 함수다.
+부팅 시 `open`은 전용 워크트리 디렉터리의 남은 작업 워크트리와 `work/` 브랜치를 정리하고 git 워크트리 메타데이터를 prune한다. 정리 전에 각 작업 브랜치 HEAD와 남은 워크트리의 미커밋 편집을 보존하며 main은 바꾸지 않는다. 정상 실패 처리의 `preserveFailed(jobId)`도 같은 보존 경로를 사용한다. 실패 HEAD·WIP 참조와 재시도 복원 규칙은 [쓰기 흐름의 실패 복구](write-flow.md#요청자-추적과-실패-복구)에 설명한다. `open`은 실행 중인 작업을 다시 여는 함수가 아니라 부팅 초기화 함수다.
 
 ### 파일 경계와 이력 조회
 모든 파일 경로는 저장소 상대 경로다. 절대 경로, Windows 절대 경로, 역슬래시, NUL, `..` 세그먼트와 `.git` 세그먼트를 거부한다. 워크트리 파일 연산은 기존 경로 구성 요소의 실제 경로를 확인하여 외부로 향하는 심볼릭 링크와 git 메타데이터로 향하는 링크를 거부하며, 끊어진 심볼릭 링크도 거부한다. 내부의 일반 파일로 향하는 링크는 워크트리에서 읽을 수 있다.

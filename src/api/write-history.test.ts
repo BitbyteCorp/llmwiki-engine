@@ -28,6 +28,7 @@ import { loadConfig } from '../config.js';
 import { openDb, runMigrations, type Db } from '../db/index.js';
 import { EventsService } from '../events/events.service.js';
 import { DreamRunsRepository } from '../dreaming/dream-runs.repository.js';
+import { DreamingService } from '../dreaming/dreaming.service.js';
 import { NoteWriterService } from '../jobs/note-writer.service.js';
 import type { JobEvent, WriteJob } from '../jobs/write-job.types.js';
 import { WriteJobsRepository } from '../jobs/write-jobs.repository.js';
@@ -36,6 +37,7 @@ import { KnowledgeRepo, type BlameRange, type CommitInfo, type FileChange } from
 import { AgentService } from '../agent/agent.service.js';
 import { IndexerService } from '../rag/indexer.service.js';
 import { ActivityService } from '../ops/activity.service.js';
+import { OpsController } from '../ops/ops.controller.js';
 import { HistoryController } from './history.controller.js';
 import { HistoryService } from './history.service.js';
 import { JobsController } from './jobs.controller.js';
@@ -44,8 +46,9 @@ import { NotesService } from './notes.service.js';
 
 interface WriteResponse { jobId: string; mergeSha: string }
 interface NoteResponse { path: string; content: string; frontmatter: Record<string, unknown>; body: string; updatedSha: string; ref: string }
-interface JobDetail { job: WriteJob; user: { email: string; name: string | null }; commits: CommitInfo[]; events: JobEvent[] }
-interface CommitDetail { commit: CommitInfo; files: FileChange[]; patch: string; job: WriteJob | null }
+type JobPayload = WriteJob & { resumable: boolean };
+interface JobDetail { job: JobPayload; user: { email: string; name: string | null }; commits: CommitInfo[]; events: JobEvent[] }
+interface CommitDetail { commit: CommitInfo; files: FileChange[]; patch: string; job: JobPayload | null }
 const original = '---\ntitle: Navigation\n---\n# Navigation\n\nOld directions.\n';
 const updated = '---\ntitle: Navigation\n---\n# Navigation\n\nNew directions.\n';
 
@@ -77,17 +80,22 @@ describe('write and history HTTP acceptance with real Git and SQLite', () => {
       resolveConflicts: vi.fn<AgentService['resolveConflicts']>(async () => { throw new Error('Unexpected Dony conflict-resolution call'); }),
     };
     const module = await Test.createTestingModule({
-      controllers: [NotesController, HistoryController, JobsController],
+      controllers: [NotesController, HistoryController, JobsController, OpsController],
       providers: [
         NotesService, HistoryService, NoteWriterService, WriteJobsService, WriteJobsRepository,
         UsersService, UsersRepository, SessionsService, ApiTokensService, ApiTokensRepository,
         SessionGuard, RolesGuard, EventsService, AuditService, AclService,
+        ActivityService, DreamRunsRepository,
+        { provide: DreamingService, useValue: {} },
         { provide: CONFIG, useValue: config },
         { provide: DB, useValue: db },
         { provide: LOGGER, useValue: log },
         { provide: KnowledgeRepo, useValue: repo },
         { provide: AgentService, useValue: agent },
-        { provide: IndexerService, useValue: { syncToHead: async () => ({ indexedSha: await repo.headSha(), changedFiles: 1 }) } },
+        { provide: IndexerService, useValue: {
+          syncToHead: async () => ({ indexedSha: await repo.headSha(), changedFiles: 1 }),
+          status: async () => ({ indexedSha: await repo.headSha(), syncing: false }),
+        } },
       ],
     }).compile();
     const users = module.get(UsersService);
@@ -234,7 +242,7 @@ describe('write and history HTTP acceptance with real Git and SQLite', () => {
     const queued = jobs.submit({ userId: editor.id, input: 'Cancel this request', source: 'web', client: 'web' });
     await error(await request(`/jobs/${queued.id}/cancel`, { method: 'POST' }, other), 404, 'not_found');
     const canceled = await json<{ job: WriteJob }>(await request(`/jobs/${queued.id}/cancel`, { method: 'POST' }), 201);
-    expect(canceled.job).toMatchObject({ id: queued.id, userId: editor.id, status: 'failed', error: 'canceled' });
+    expect(canceled.job).toMatchObject({ id: queued.id, userId: editor.id, status: 'failed', error: 'canceled', resumable: false });
     expect((await json<JobDetail>(await request(`/jobs/${queued.id}`))).job).toEqual(canceled.job);
     await error(await request(`/jobs/${queued.id}/cancel`, { method: 'POST' }), 409, 'job_not_cancelable');
 
@@ -250,7 +258,7 @@ describe('write and history HTTP acceptance with real Git and SQLite', () => {
     expect(retried.job.id).not.toBe(failed.id);
     expect(retried.job).toMatchObject({
       userId: editor.id, input: 'Retry the original source', status: 'queued', kind: 'agent',
-      source: 'chat', client: 'conversation-editor', error: null,
+      source: 'chat', client: 'conversation-editor', error: null, resumable: false,
     });
     const detail = await json<JobDetail>(await request(`/jobs/${retried.job.id}`));
     expect(detail.events.map((event) => event.phase)).toContain('queued');
@@ -258,6 +266,55 @@ describe('write and history HTTP acceptance with real Git and SQLite', () => {
       id: failed.id, status: 'failed', error: 'External model unavailable',
     });
   });
+
+  it('exposes resumability for preserved failed work and continues both committed and unfinished changes under a new identity', async () => {
+    agent.runWrite.mockImplementationOnce(async (_job, wt, author) => {
+      await wt.write('wiki/preserved.md', 'Committed before failure\n');
+      await wt.commit('Preserved progress', author);
+      await wt.write('wiki/unfinished.md', 'Uncommitted before failure\n');
+      throw new Error('Provider interrupted after editing');
+    });
+    const submitted = jobs.submit({ userId: editor.id, input: 'Continue preserved progress', source: 'chat', client: 'conversation-editor' });
+    jobs.start();
+    await vi.waitFor(() => expect(jobs.get(submitted.id)?.status).toBe('failed'), { timeout: 15000 });
+    await jobs.stop();
+    const failed = await json<JobDetail>(await request(`/jobs/${submitted.id}`));
+    expect(failed.job).toMatchObject({ status: 'failed', resumable: true, error: 'Provider interrupted after editing' });
+    expect(await repo.readFile('wiki/preserved.md')).toBeNull();
+    expect(await repo.readFile('wiki/unfinished.md')).toBeNull();
+    const list = await json<{ jobs: JobPayload[] }>(await request('/jobs'));
+    expect(list.jobs.find(job => job.id === submitted.id)?.resumable).toBe(true);
+    await error(await request('/admin/ops'), 403, 'forbidden');
+    const ops = await json<{ failedJobs: JobPayload[] }>(await request('/admin/ops', {}, admin));
+    expect(ops.failedJobs.find(job => job.id === submitted.id)).toMatchObject({ resumable: true });
+    expect(ops.failedJobs.find(job => job.id === submitted.id)).not.toHaveProperty('input');
+    const activity = await json<{ items: Array<{ job?: JobPayload }> }>(await request('/activity?type=job'));
+    expect(activity.items.find(item => item.job?.id === submitted.id)?.job).toMatchObject({ resumable: true });
+    await error(await request(`/jobs/${submitted.id}`, {}, other), 404, 'not_found');
+    await error(await request(`/jobs/${submitted.id}/retry`, { method: 'POST' }, other), 404, 'not_found');
+    const retried = await json<{ job: JobPayload }>(await request(`/jobs/${submitted.id}/retry`, { method: 'POST' }), 201);
+    expect(retried.job.id).not.toBe(submitted.id);
+    expect(retried.job).toMatchObject({ status: 'queued', resumable: false, source: 'chat', client: 'conversation-editor' });
+    const adminRetry = await json<{ job: JobPayload }>(await request(`/admin/jobs/${submitted.id}/retry`, { method: 'POST' }, admin), 201);
+    expect(adminRetry.job).toMatchObject({ status: 'queued', resumable: false });
+    const adminCanceled = await json<{ job: JobPayload }>(await request(`/admin/jobs/${adminRetry.job.id}/cancel`, { method: 'POST' }, admin), 201);
+    expect(adminCanceled.job).toMatchObject({ status: 'failed', error: 'canceled', resumable: true });
+    agent.runWrite.mockImplementationOnce(async (_job, wt) => {
+      expect(await wt.read('wiki/preserved.md')).toBe('Committed before failure\n');
+      expect(await wt.read('wiki/unfinished.md')).toBe('Uncommitted before failure\n');
+      await wt.write('wiki/unfinished.md', 'Uncommitted before failure\nCompleted continuation\n');
+      return { summary: 'Continue preserved progress' };
+    });
+    jobs.start();
+    await vi.waitFor(() => expect(jobs.get(retried.job.id)?.status).toBe('succeeded'), { timeout: 15000 });
+    await jobs.stop();
+    expect(await repo.readFile('wiki/preserved.md')).toBe('Committed before failure\n');
+    expect(await repo.readFile('wiki/unfinished.md')).toBe('Uncommitted before failure\nCompleted continuation\n');
+    expect((await json<JobDetail>(await request(`/jobs/${submitted.id}`))).job).toEqual(failed.job);
+    const completed = await json<JobDetail>(await request(`/jobs/${retried.job.id}`));
+    expect(completed.job).toMatchObject({ status: 'succeeded', resumable: false });
+    expect((await json<CommitDetail>(await request(`/history/commits/${completed.job.mergeSha}`))).job).toMatchObject({ id: retried.job.id, resumable: false });
+  }, 20000);
 
   it('creates and updates a note while preserving ref snapshots and rejecting stale edits and duplicate creation', async () => {
     const baseSha = (await note('index.md')).updatedSha;

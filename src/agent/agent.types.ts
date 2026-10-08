@@ -23,6 +23,11 @@ export interface AgentCheckpoint {
   usage?: TokenUsage;
 }
 
+export interface AnswerCheckpoint extends AgentCheckpoint {
+  /** Verified full-note evidence survives model input compaction. */
+  readNotes?: Array<{ path: string; content: string; sha: string }>;
+}
+
 export type ChatMessage = { role: 'user' | 'assistant'; content: string | ResponseInputContent[] };
 export type AgentEventHandler = (event: 'tool' | 'citation' | 'usage' | 'status', data: unknown) => void;
 
@@ -61,6 +66,8 @@ export interface AnswerOptions {
   context?: { notePath: string; ref?: string; selection?: string };
   summary?: string;
   onEvent?: AgentEventHandler;
+  resume?: AnswerCheckpoint;
+  onCheckpoint?: (checkpoint: AnswerCheckpoint) => void;
 }
 
 export interface AgentTool<Result = string> {

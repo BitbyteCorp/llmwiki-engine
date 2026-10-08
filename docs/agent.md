@@ -35,6 +35,8 @@
 
 `AgentCheckpointsRepository`는 `save(owner, checkpoint)`, `get(owner)`, `delete(owner)`, `copy(from, to)`를 제공한다. 없는 owner의 `get`은 `undefined`, 없는 원본의 `copy`는 `false`다. `019_agent_checkpoints.sql`의 `agent_checkpoints` 테이블에 owner별 JSON 문서와 갱신 시각을 저장한다. owner는 `message:<메시지 ID>` 또는 `job:<작업 ID>` 같은 불투명 문자열이며 서비스에서 이미 사용하는 base62 ID 표현을 그대로 붙인다. 접두사를 포함한 owner나 체크포인트의 재생 문서는 SQLite의 UUID 열처럼 다시 인코딩하지 않는다. 식별자 표현 경계는 [식별자](identifiers.md)를 따른다.
 
+체크포인트를 쓰는 호출자는 두 곳이다. 실패·취소·중단된 대화 답변의 이어서 재시도는 [웹](web.md)의 대화 절에서, 실패한 지식 쓰기 작업의 이어서 재시도는 [쓰기 흐름](write-flow.md)에서 설명한다. 꿈꾸기는 체크포인트를 저장하지 않는다. 실패한 꿈꾸기는 다음 실행이 마지막 성공 지점 이후의 변경과 아직 학습하지 않은 메시지를 다시 모으므로 같은 실행을 이어갈 필요가 없다.
+
 #### OpenAI 재시도 정책
 도니의 Responses 호출과 문서·질의 임베딩은 `src/common/openai.ts`의 공용 클라이언트 팩터리와 fetch 어댑터를 사용한다. 최대 재시도 횟수는 [환경 변수](development.md#환경-변수)의 `OPENAI_MAX_RETRIES`로 정하며, 실제 재시도·백오프·취소는 OpenAI SDK가 담당한다. 어댑터는 SDK가 전달한 요청 인자와 취소 신호를 그대로 fetch에 전달한다.
 
