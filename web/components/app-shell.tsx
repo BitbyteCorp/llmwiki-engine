@@ -6,7 +6,7 @@ import { usePathname, useSearchParams } from 'next/navigation'
 import { BookOpen } from 'lucide-react'
 import { api, ApiError } from '@/lib/api'
 import { Button } from '@/components/ui/button'
-import { ErrorNotice, Loading } from '@/components/common'
+import { ErrorNotice, SplashScreen } from '@/components/common'
 import { WorkspaceProvider } from '@/components/workspace/context'
 import { WorkspaceShell } from '@/components/workspace/shell'
 
@@ -34,7 +34,7 @@ export function AppShell({ children, publicUrl }: { children: ReactNode; publicU
     return () => window.removeEventListener('session-expired', onExpired)
   }, [queryClient])
   if (expired || (me.error instanceof ApiError && me.error.status === 401)) return <LoginPage />
-  if (me.isPending) return <main className="flex min-h-dvh items-center justify-center bg-secondary px-4 py-12"><div className="w-full max-w-sm rounded-lg border bg-card p-4"><Loading /></div></main>
+  if (me.isPending) return <SplashScreen />
   if (me.error) return <main className="flex min-h-dvh items-center justify-center bg-secondary px-4 py-12"><div className="w-full max-w-sm space-y-3 rounded-lg border bg-card p-4"><ErrorNotice error={me.error} /><Button size="lg" variant="outline" onClick={() => void me.refetch()}>다시 시도</Button></div></main>
   return <PublicUrlContext value={publicUrl}><WorkspaceProvider userId={me.data.user.id}><WorkspaceShell user={me.data.user}>{children}</WorkspaceShell></WorkspaceProvider></PublicUrlContext>
 }

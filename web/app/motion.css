@@ -8,9 +8,52 @@
   --ease-spring: cubic-bezier(.34, 1.36, .64, 1);
 }
 
+/* Boot splash waits out fast loads, then enters without a persistent hidden state. */
+.splash-enter {
+  opacity: 1;
+  transform: none;
+  animation: splash-enter var(--motion-slow) var(--ease-out) var(--motion-base) both;
+}
+@keyframes splash-enter {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* A quiet, theme-aware halo stays behind the brand mark. */
+.splash-glow {
+  width: 26rem;
+  height: 26rem;
+  border-radius: 50%;
+  background: radial-gradient(circle, color-mix(in srgb, var(--primary) 5%, transparent), transparent 70%);
+  pointer-events: none;
+}
+.splash-pulse {
+  opacity: .5;
+  animation: splash-pulse 1.6s var(--ease-in-out) infinite;
+}
+@keyframes splash-pulse {
+  0%, 100% { opacity: .35; transform: scale(1); }
+  50% { opacity: .8; transform: scale(1.08); }
+}
+
+/* The one-third-width segment crosses the track without implying progress. */
+.splash-bar {
+  transform: translateX(100%);
+  animation: splash-bar 1.4s var(--ease-in-out) infinite;
+}
+@keyframes splash-bar {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(300%); }
+}
+
 @media (prefers-reduced-motion: reduce) {
   :root { --motion-fast: 0ms; --motion-base: 0ms; --motion-slow: 0ms; }
   *, *::before, *::after { animation-duration: 0ms !important; animation-iteration-count: 1 !important; transition-duration: 0ms !important; scroll-behavior: auto !important; }
+  /* Keep the splash visible and its bar centered, not at an offscreen keyframe. */
+  .splash-enter, .splash-glow, .splash-pulse, .splash-bar { animation: none !important; }
+  .splash-enter { opacity: 1; transform: none; }
+  .splash-pulse { opacity: .5; transform: none; }
+  .splash-bar { transform: translateX(100%); }
 }
 
 /* Drag image for notes and tabs; created off-screen by `dnd.ts`. */
