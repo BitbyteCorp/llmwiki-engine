@@ -127,7 +127,7 @@ export function AclRules() {
         <h4 className="break-all border-b px-2 py-1.5 font-mono text-label-13 font-semibold">{groupPrefix === '/' ? '/ (전체 저장소)' : groupPrefix}</h4>
         <Table className="min-w-[600px] text-label-13">
           <TableHeader><TableRow><TableHead scope="col" className="h-7 px-2 py-1.5 text-xs">대상</TableHead><TableHead scope="col" className="h-7 px-2 py-1.5 text-xs">권한</TableHead><TableHead scope="col" className="h-7 px-2 py-1.5 text-xs">등록 시각</TableHead><TableHead scope="col" className="h-7 px-2 py-1.5"><span className="sr-only">규칙 삭제</span></TableHead></TableRow></TableHeader>
-          <TableBody className="divide-y border-y">{entries.map(rule => <TableRow key={rule.id}>
+          <TableBody>{entries.map(rule => <TableRow key={rule.id}>
             <TableCell className="min-w-48 max-w-xs whitespace-normal break-all px-2 py-1.5">{subjectLabel(rule, userList)}</TableCell>
             <TableCell className="px-2 py-1.5">{accessLabels[rule.access]}</TableCell>
             <TableCell className="px-2 py-1.5 text-xs text-muted-foreground">{formatDate(rule.createdAt)}</TableCell>

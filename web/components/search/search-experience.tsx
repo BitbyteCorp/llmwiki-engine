@@ -353,7 +353,7 @@ export function SearchExperience({ value, onSubmit, compact = false }: {
       <section id={`${id}-results`} aria-label="검색 결과" className="space-y-2" aria-busy={search.isFetching}>
         {search.isError && !search.isFetchNextPageError && <><ErrorNotice error={search.error} /><Button variant="outline" size="sm" onClick={() => void search.refetch()}>검색 다시 시도</Button></>}
         {metadata && !hits.length && !search.isFetching && <EmptyState title="검색 결과가 없습니다" description="다른 표현을 사용하거나 필터를 줄여 보세요." />}
-        <ul className={`divide-y border-y ${search.isPlaceholderData ? 'opacity-60' : ''}`}>
+        <ul className={`divide-y ${!degraded && suggestions.length === 0 && !(suggest.isError && !suggestionsDismissed) && !(search.isError && !search.isFetchNextPageError) && hits.length > 0 ? 'border-b' : 'border-y'} ${search.isPlaceholderData ? 'opacity-60' : ''}`}>
           {hits.map((hit, index) => {
             const isActive = active === suggestions.length + index
             return <li key={`${hit.path}:${hit.anchor ?? hit.heading}:${index}`} id={`${id}-option-${suggestions.length + index}`} className={`group relative px-2 py-1.5 ${isActive ? 'bg-accent ring-1 ring-inset ring-ring' : 'hover:bg-accent'}`}>

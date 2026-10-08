@@ -102,7 +102,7 @@ function Heading({ level, id, children, onFragment }: { level: number; id?: stri
   return createElement(`h${level}`, { id }, children, id && <a className="heading-anchor" data-heading-anchor="true" href={`#${encodeURIComponent(id)}`} aria-label="이 제목으로 이동" onClick={(event) => { event.preventDefault(); onFragment(id) }} />)
 }
 
-function imageSource(src: string | undefined, path?: string, ref?: string): string | undefined {
+export function imageSource(src: string | undefined, path?: string, ref?: string): string | undefined {
   if (!src) return undefined
   if (/^https:\/\//i.test(src)) {
     try {

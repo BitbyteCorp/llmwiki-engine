@@ -45,9 +45,7 @@ export function saveDirtyGroups(workspace: Workspace): void {
 export const workspaceKeybindings: readonly Binding[] = [
   { id: 'editor-save', label: '현재 그룹 노트 저장', shortcuts: [{ key: 's', mod: true }], run: context => noteCommand(context, 'save') },
   { id: 'editor-save-all', label: '열린 그룹의 변경된 노트 모두 저장', shortcuts: [{ key: 's', mod: true, alt: true }], run: context => saveDirtyGroups(context.workspace) },
-  { id: 'editor-edit', label: '편집 / 읽기 전환', shortcuts: [{ key: 'e', mod: true }], run: context => noteCommand(context, getEditorStatus(context.workspace.activePath)?.mode === 'edit' || getEditorStatus(context.workspace.activePath)?.mode === 'split' ? 'view' : 'edit') },
-  { id: 'editor-preview', label: '원문 + 미리보기', shortcuts: [{ key: 'v', mod: true, shift: true }], run: context => noteCommand(context, 'preview') },
-  { id: 'editor-discard', label: '변경 버리기', shortcuts: [{ key: 'd', mod: true, alt: true }], run: context => noteCommand(context, 'discard') },
+  { id: 'editor-source', label: '원문 편집 전환', shortcuts: [{ key: 'e', mod: true }], run: context => noteCommand(context, 'source') },
   { id: 'editor-new', label: '새 노트', shortcuts: [{ key: 'n', alt: true }], outsideInput: true, run: context => noteCommand(context, 'new') },
   { id: 'close', label: '현재 탭 닫기', shortcuts: [{ key: 'w', alt: true }], outsideInput: true, run: closeActiveTab },
   { id: 'previous-tab', label: '이전 탭', shortcuts: [{ key: 'ArrowLeft', alt: true }], outsideInput: true, run: context => {

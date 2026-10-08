@@ -2,21 +2,18 @@
 
 import { useEffect, useState, type RefObject } from 'react'
 
-type Heading = { element: HTMLHeadingElement; id: string; title: string; level: number }
+type Heading = { id: string; title: string; level: number }
 
-export function Outline({ contentRef, scrollerRef, revision }: {
-  contentRef: RefObject<HTMLDivElement | null>
-  scrollerRef: RefObject<HTMLDivElement | null>
-  revision: string
-}) {
+/** The DOM reader owns collection; the live editor supplies its syntax headings. */
+export function useDomHeadings(contentRef: RefObject<HTMLElement | null>, scrollerRef: RefObject<HTMLElement | null>, revision: string | null) {
   const [headings, setHeadings] = useState<Heading[]>([])
   const [active, setActive] = useState('')
-
   useEffect(() => {
+    if (revision === null) return
     const content = contentRef.current
     const scroller = scrollerRef.current
     if (!content || !scroller) return
-    let collected: Heading[] = []
+    let collected: (Heading & { element: HTMLHeadingElement })[] = []
     let frame = 0
     const updateActive = () => {
       frame = 0
@@ -43,32 +40,25 @@ export function Outline({ contentRef, scrollerRef, revision }: {
     const mutation = new MutationObserver(collect)
     mutation.observe(content, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['id'] })
     scroller.addEventListener('scroll', schedule, { passive: true })
+    window.addEventListener('resize', schedule)
     return () => {
       mutation.disconnect()
       intersection.disconnect()
       scroller.removeEventListener('scroll', schedule)
+      window.removeEventListener('resize', schedule)
       cancelAnimationFrame(frame)
     }
   }, [contentRef, scrollerRef, revision])
+  return { headings, active }
+}
 
-  function navigate(heading: Heading) {
-    const scroller = scrollerRef.current
-    if (!scroller) return
-    scroller.scrollTo({ top: scroller.scrollTop + heading.element.getBoundingClientRect().top - scroller.getBoundingClientRect().top - 16 })
-    heading.element.setAttribute('tabindex', '-1')
-    heading.element.focus({ preventScroll: true })
-    heading.element.addEventListener('blur', () => heading.element.removeAttribute('tabindex'), { once: true })
-    setActive(heading.id)
-  }
-
+export function Outline({ headings, active, onSelect }: { headings: Heading[]; active: string; onSelect(id: string): void }) {
   if (!headings.length) return null
   const minimumLevel = Math.min(...headings.map(heading => heading.level))
-  return (
-    <details className="space-y-2">
-      <summary className="flex h-7 cursor-pointer items-center gap-1.5 border-b text-label-13 font-semibold focus-visible:outline-2 focus-visible:outline-ring">목차</summary>
-      <nav aria-label="노트 목차" className="max-h-52 overflow-y-auto">
-        <ol className="space-y-0.5">{headings.map(heading => <li key={heading.id}><button type="button" aria-current={active === heading.id ? 'location' : undefined} onClick={() => navigate(heading)} style={{ paddingLeft: `${(heading.level - minimumLevel) * 12 + 8}px` }} className={`min-h-7 w-full break-words rounded py-1 pr-2 text-left text-label-13 focus-visible:outline-2 focus-visible:outline-ring ${active === heading.id ? 'bg-accent font-medium text-foreground' : 'text-muted-foreground hover:bg-accent hover:text-foreground'}`}>{heading.title}</button></li>)}</ol>
-      </nav>
-    </details>
-  )
+  return <details className="space-y-2">
+    <summary className="flex h-7 cursor-pointer items-center gap-1.5 border-b text-label-13 font-semibold focus-visible:outline-2 focus-visible:outline-ring">목차</summary>
+    <nav aria-label="노트 목차" className="max-h-52 overflow-y-auto">
+      <ol className="space-y-0.5">{headings.map(heading => <li key={heading.id}><button type="button" aria-current={active === heading.id ? 'location' : undefined} onClick={() => onSelect(heading.id)} style={{ paddingLeft: `${(heading.level - minimumLevel) * 12 + 8}px` }} className={`min-h-7 w-full break-words rounded py-1 pr-2 text-left text-label-13 focus-visible:outline-2 focus-visible:outline-ring ${active === heading.id ? 'bg-accent font-medium text-foreground' : 'text-muted-foreground hover:bg-accent hover:text-foreground'}`}>{heading.title}</button></li>)}</ol>
+    </nav>
+  </details>
 }

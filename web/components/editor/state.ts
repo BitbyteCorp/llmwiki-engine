@@ -2,11 +2,12 @@
 
 import { useCallback, useSyncExternalStore } from 'react'
 import type { Note } from '@/lib/api'
+import { clearAutosave, renameAutosave } from './autosave'
 
 export type EditorStatus = {
   dirty: boolean
-  mode: 'view' | 'edit' | 'split'
-  phase: 'idle' | 'saving' | 'saved' | 'conflict'
+  mode: 'view' | 'live' | 'source'
+  phase: 'idle' | 'saving' | 'saved' | 'conflict' | 'error'
   cursor?: { line: number; column: number }
 }
 
@@ -42,12 +43,14 @@ export function takeDraft(path: string): DraftTransfer | undefined {
 }
 
 export function clearDraft(path: string): void {
+  clearAutosave(path)
   drafts.delete(path)
   transferringDrafts.delete(path)
 }
 
 export function renameDraft(from: string, to: string): void {
   if (from === to) return
+  renameAutosave(from, to)
   const value = drafts.get(from)
   const transferring = transferringDrafts.delete(from)
   drafts.delete(from)
@@ -112,8 +115,8 @@ export function confirmEditorLeave(paths?: string[]): boolean {
   return true
 }
 
-/** `view`/`edit`/`preview` switch reader modes (`preview` = source + live preview); `discard` asks before dropping the draft. */
-export type EditorCommand = 'new' | 'edit' | 'view' | 'preview' | 'save' | 'discard' | 'rename' | 'delete' | 'blame' | 'ask'
+/** `source` toggles raw Markdown editing; `save` flushes pending autosave. */
+export type EditorCommand = 'new' | 'source' | 'save' | 'rename' | 'delete' | 'blame' | 'ask'
 
 export function dispatchEditorCommand(command: EditorCommand, path?: string, options?: { exactPath?: boolean }): void {
   window.dispatchEvent(new CustomEvent('workspace-editor-command', { detail: { command, path, ...options } }))

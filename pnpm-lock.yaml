@@ -29,9 +29,15 @@ importers:
       '@codemirror/view':
         specifier: ^6.43.13
         version: 6.43.13
+      '@lezer/common':
+        specifier: 1.5.3
+        version: 1.5.3
       '@lezer/highlight':
         specifier: ^1.2.5
         version: 1.2.5
+      '@lezer/markdown':
+        specifier: 1.7.2
+        version: 1.7.2
       '@modelcontextprotocol/sdk':
         specifier: ^1.32.1
         version: 1.32.1(zod@4.6.5)
@@ -170,6 +176,12 @@ importers:
       remark-math:
         specifier: ^6.0.0
         version: 6.0.0
+      remark-parse:
+        specifier: 11.0.0
+        version: 11.0.0
+      remark-rehype:
+        specifier: 11.1.2
+        version: 11.1.2
       rxjs:
         specifier: ^7.8.2
         version: 7.8.2
@@ -194,6 +206,9 @@ importers:
       typescript:
         specifier: 6.0.3
         version: 6.0.3
+      unified:
+        specifier: 11.0.5
+        version: 11.0.5
       unpdf:
         specifier: ^1.8.1
         version: 1.8.1
@@ -222,6 +237,9 @@ importers:
       '@types/express':
         specifier: ^5.0.6
         version: 5.0.6
+      '@types/hast':
+        specifier: 3.0.5
+        version: 3.0.5
       '@types/node':
         specifier: ^24.19.1
         version: 24.19.1

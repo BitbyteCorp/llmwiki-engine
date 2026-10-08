@@ -21,6 +21,7 @@
 .workspace-tabs { display: flex; min-height: 40px; flex-shrink: 0; border-bottom: 1px solid var(--border); background: var(--secondary); transition: background var(--motion-base) var(--ease-out); }
 .workspace-tablist { position: relative; display: flex; align-items: stretch; flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
 .workspace-tab { position: relative; display: flex; flex-shrink: 0; align-items: center; max-width: 256px; border-right: 1px solid var(--border); transform-origin: center; transition: opacity var(--motion-fast) var(--ease-out), background var(--motion-base) var(--ease-out); }
+.workspace-tab:last-of-type { border-right: 0; }
 .workspace-tab::before { content: ""; position: absolute; inset: 0 0 auto; height: 2px; background: var(--primary); opacity: 0; transform: scaleX(.7); transition: opacity var(--motion-base) var(--ease-out), transform var(--motion-base) var(--ease-out); }
 .workspace-tab.is-active { background: var(--background); }
 .workspace-tab.is-active::before { opacity: 1; transform: scaleX(1); }

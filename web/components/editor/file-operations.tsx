@@ -13,6 +13,7 @@ import { isGraphTab } from '@/components/workspace/layout'
 import { notify } from '@/components/notifications'
 import type { EditorCommand } from './state'
 import { confirmEditorLeave } from './state'
+import { flushAutosaves } from './autosave'
 
 type Operation = { kind: 'new' | 'folder' | 'move' | 'delete'; path: string }
 type WriteResult = { mergeSha: string; jobId: string }
@@ -93,7 +94,8 @@ export function useFileOperations(files: string[]) {
     const latestFiles = (await api.tree()).files
     const exists = latestFiles.includes(to)
     if (exists && !replace) { setOverwrite(to); return false }
-    if (!confirmEditorLeave(exists ? [from, to] : [from])) return false
+    const paths = exists ? [from, to] : [from]
+    if (!confirmEditorLeave(paths) || !await flushAutosaves(paths)) return false
     let baseSha = await currentHead(from)
     if (exists) {
       const removed = await request<WriteResult>(`/api/notes?${new URLSearchParams({ path: to, baseSha })}`, { method: 'DELETE' })
@@ -114,7 +116,7 @@ export function useFileOperations(files: string[]) {
     try {
       const path = value.trim()
       if (operation.kind === 'delete') {
-        if (!confirmEditorLeave([operation.path])) return
+        if (!confirmEditorLeave([operation.path]) || !await flushAutosaves([operation.path])) return
         const baseSha = await currentHead(operation.path)
         await request<WriteResult>(`/api/notes?${new URLSearchParams({ path: operation.path, baseSha })}`, { method: 'DELETE' })
         workspace.removeNotePath(operation.path)
@@ -140,7 +142,7 @@ export function useFileOperations(files: string[]) {
           await refresh()
           workspace.openNote(path, { pin: true })
           workspace.revealFolder(path)
-          notify({ title: '새 노트를 만들었습니다. 노트의 편집 버튼으로 내용을 작성하세요.', tone: 'success' })
+          notify({ title: '새 노트를 만들었습니다. 바로 내용을 작성하세요.', tone: 'success' })
         }
       }
       setOperation(null); setOverwrite(null); setReplacementRemoved(null)

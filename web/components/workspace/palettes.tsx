@@ -9,7 +9,7 @@ import { api, type Note } from '@/lib/api'
 import { askAgent, openChat } from '@/lib/chat-context'
 import { ErrorNotice, Loading } from '@/components/common'
 import { useOpsCommands } from '@/components/admin/ops-commands'
-import { confirmEditorLeave, dispatchEditorCommand, getEditorStatus, type EditorCommand } from '@/components/editor/state'
+import { confirmEditorLeave, dispatchEditorCommand, type EditorCommand } from '@/components/editor/state'
 import { useWorkspace } from './context'
 import { GRAPH_TAB_PATH, isGraphTab } from './layout'
 import { saveDirtyGroups, shortcutHint, useShortcutPlatform, workspaceKeybindings } from './keybindings'
@@ -82,17 +82,28 @@ export function Palettes({ mode, setMode, admin, selectPanel, toggleSidebar, tog
   const commands: { id: string; label: string; keywords: string[]; action(): void; disabled?: boolean }[] = [
     ...([
       { id: 'editor-new', command: 'new', label: '새 노트', keywords: ['New Note'], mutating: true },
-      { id: 'editor-edit', command: 'edit', label: '편집 / 읽기 전환', keywords: ['Edit View Note'], mutating: true },
-      { id: 'editor-preview', command: 'preview', label: '원문 + 미리보기', keywords: ['Preview Source'], mutating: true },
+      { id: 'editor-source', command: 'source', label: '원문 편집 전환', keywords: ['Source Markdown Edit Toggle'], mutating: true },
       { id: 'editor-save', command: 'save', label: '저장', keywords: ['Save Note'], mutating: true },
-      { id: 'editor-discard', command: 'discard', label: '변경 버리기', keywords: ['Discard Changes'], mutating: true },
       { id: 'editor-rename', command: 'rename', label: '이름 바꾸기', keywords: ['Rename Move Note'], mutating: true },
       { id: 'editor-delete', command: 'delete', label: '삭제', keywords: ['Delete Note'], mutating: true },
       { id: 'editor-blame', command: 'blame', label: '줄별 작성자 보기', keywords: ['blame', '이력', '작성자', 'Author History'], mutating: false },
       { id: 'editor-ask', command: 'ask', label: '도니에게 묻기', keywords: ['Ask Dony', '도니'], mutating: false },
     ] satisfies { id: string; command: EditorCommand; label: string; keywords: string[]; mutating: boolean }[])
-      .filter(command => (!command.mutating || me.data?.user.role === 'editor' || me.data?.user.role === 'admin') && (command.command === 'new' || activeNotePath))
-      .map(command => ({ ...command, action: () => dispatchEditorCommand(command.command === 'edit' && (getEditorStatus(activeNotePath)?.mode === 'edit' || getEditorStatus(activeNotePath)?.mode === 'split') ? 'view' : command.command, command.command === 'new' ? undefined : activeNotePath, command.command === 'new' ? undefined : { exactPath: true }) })),
+      .filter(command => (!command.mutating || me.data?.user.role === 'editor' || me.data?.user.role === 'admin') && (command.command === 'new' || (command.command === 'blame' ? historyNotePath : activeNotePath)))
+      .map(command => ({ ...command, action: () => {
+        if (command.command === 'blame' && isHistoryRoute) {
+          const params = new URLSearchParams({ path: historyNotePath })
+          if (historyRoutePath) {
+            const ref = searchParams.get('ref')
+            const current = searchParams.get('current')
+            if (ref) params.set('ref', ref)
+            if (current) params.set('current', current)
+          }
+          router.push(`/history/blame?${params}`)
+          return
+        }
+        dispatchEditorCommand(command.command, command.command === 'new' ? undefined : activeNotePath, command.command === 'new' ? undefined : { exactPath: true })
+      } })),
     ...(me.data?.user.role === 'editor' || me.data?.user.role === 'admin' ? [{
       id: 'editor-save-all', label: '열린 그룹의 변경된 노트 모두 저장', keywords: ['Save All Dirty Groups'], action: () => {
         saveDirtyGroups(workspace)
