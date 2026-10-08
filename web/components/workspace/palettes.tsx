@@ -77,7 +77,7 @@ export function Palettes({ mode, setMode, admin, selectPanel, toggleSidebar, tog
   useEffect(() => { if (mode) { setQuery(''); splitSelection.current = false } }, [mode])
   function run(action: () => void) { if (composing.current) return; setMode(null); action() }
   function openResult(path: string, fragment?: string) {
-    workspace.openNote(path, { fragment, group: splitSelection.current ? 'side' : workspace.activeGroupId })
+    workspace.openNote(path, { fragment, pin: true, group: splitSelection.current ? 'side' : workspace.activeGroupId })
   }
   const commands: { id: string; label: string; keywords: string[]; action(): void; disabled?: boolean }[] = [
     ...([

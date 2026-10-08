@@ -145,8 +145,10 @@ export const Markdown = memo(function Markdown({ content, path, ref, groupId, on
     else window.history.replaceState(window.history.state, '', `#${encodeURIComponent(fragment)}`)
   }, [groupId, activeGroupId, path, openNote, groupRef])
   const navigate = useMemo<Navigate | undefined>(() => onNavigate || openNote ? (target, options) => {
-    const navigation = onNavigate ?? openNote!
-    navigation(target, { ...options, group: options?.group ?? groupId })
+    const group = options?.group ?? groupId
+    // Following a link pins the destination like VS Code code navigation; same-note fragments keep the tab as is.
+    if (onNavigate) onNavigate(target, { ...options, group })
+    else openNote!(target, { ...options, group, pin: target !== path })
     if (target === path && options?.fragment) scrollFragment(options.fragment)
   } : undefined, [onNavigate, openNote, path, groupId, scrollFragment])
   // Preserve the parsed subtree across workspace/sidebar renders. Path and ref

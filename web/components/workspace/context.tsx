@@ -271,7 +271,7 @@ export function WorkspaceProvider({ children, userId }: { children: ReactNode; u
   const openNote = useCallback((path: string, options?: { pin?: boolean; fragment?: string; group?: GroupId | 'side'; ref?: string }) => {
     if (!path) return
     let current = stateRef.current
-    let id = options?.group ?? (current.groups[current.activeGroupId]?.activePath === path ? current.activeGroupId : groupOrder(current.layout).find(id => current.groups[id]?.activePath === path) ?? current.activeGroupId)
+    let id = options?.group ?? current.activeGroupId
     if (id === 'side') {
       const order = groupOrder(current.layout)
       id = order[order.indexOf(current.activeGroupId) + 1]
