@@ -59,20 +59,51 @@ function Hunk({ hunk, mode }: { hunk: StructuredPatch["hunks"][number]; mode: Mo
       if (row.right !== undefined) result.push(<tr key={`${i}-new`}><td className={styles.number}/><td className={styles.number}>{row.next}</td><td className={styles.added}>+ <Words text={row.right} other={row.left} added/></td></tr>)
     }
   }
-  return <><tbody><tr><td className={styles.fold} colSpan={mode === "split" ? 4 : 3}>@@ −{hunk.oldStart},{hunk.oldLines} +{hunk.newStart},{hunk.newLines} @@</td></tr>{result}</tbody></>
+  return <tbody><tr><td className={styles.fold} colSpan={mode === "split" ? 4 : 3} title={`@@ -${hunk.oldStart},${hunk.oldLines} +${hunk.newStart},${hunk.newLines} @@`}>{Math.max(1, hunk.newStart || hunk.oldStart)}번째 줄 부근</td></tr>{result}</tbody>
 }
 
-export function DiffView({ patch, before = "", after = "", mode }: { patch?: string; before?: string; after?: string; mode: Mode }) {
+export function DiffView({ patch, before = "", after = "", beforeLabel = "이전", afterLabel = "이후" }: { patch?: string; before?: string; after?: string; beforeLabel?: string; afterLabel?: string }) {
   const id = useId()
-  const [selectedMode, setMode] = useState<Mode>(mode)
+  const [narrow, setNarrow] = useState(true)
+  const [savedMode, setSavedMode] = useState<Mode | null>(null)
+  const [sessionMode, setSessionMode] = useState<Mode | null>(null)
   const [large, setLarge] = useState(false)
-  useEffect(() => { try { const saved = localStorage.getItem("llmwiki.diff.mode"); if (saved === "split" || saved === "unified") setMode(saved) } catch {} }, [])
+  useEffect(() => {
+    const media = window.matchMedia("(min-width: 768px)")
+    const updateWidth = () => setNarrow(!media.matches)
+    updateWidth()
+    media.addEventListener("change", updateWidth)
+    try { const saved = localStorage.getItem("llmwiki.diff.mode"); if (saved === "split" || saved === "unified") setSavedMode(saved) } catch {}
+    return () => media.removeEventListener("change", updateWidth)
+  }, [])
+  const selectedMode = sessionMode ?? (narrow ? "unified" : savedMode ?? "split")
+  function selectMode(mode: Mode) {
+    setSessionMode(mode)
+    try { localStorage.setItem("llmwiki.diff.mode", mode) } catch {}
+  }
   const input = useMemo(() => patch ?? (before.length + after.length <= 1500000 || large ? createTwoFilesPatch("노트.md", "노트.md", before, after, "", "", { context: 12 }) : ""), [patch, before, after, large])
   const huge = input.length > 1500000 || before.length + after.length > 1500000
   const parsed = useMemo(() => { if (!input.trim() || (huge && !large)) return []; try { return parsePatch(input) } catch { return [] } }, [input, huge, large])
-  return <section className="min-w-0 space-y-3" aria-label="변경 비교"><div className="flex flex-wrap items-center gap-2"><Button size="sm" variant={selectedMode === "split" ? "secondary" : "outline"} aria-pressed={selectedMode === "split"} onClick={() => { setMode("split"); try { localStorage.setItem("llmwiki.diff.mode", "split") } catch {} }}>나란히</Button><Button size="sm" variant={selectedMode === "unified" ? "secondary" : "outline"} aria-pressed={selectedMode === "unified"} onClick={() => { setMode("unified"); try { localStorage.setItem("llmwiki.diff.mode", "unified") } catch {} }}>통합</Button><span className="ml-auto text-right text-xs tabular-nums text-muted-foreground">{parsed.length}개 파일</span></div>
+  return <section className="min-w-0 space-y-3" aria-label="변경 비교"><div className="flex flex-wrap items-center gap-2"><Button size="xs" variant={selectedMode === "split" ? "secondary" : "outline"} aria-pressed={selectedMode === "split"} onClick={() => selectMode("split")}>나란히</Button><Button size="xs" variant={selectedMode === "unified" ? "secondary" : "outline"} aria-pressed={selectedMode === "unified"} onClick={() => selectMode("unified")}>한 줄씩</Button><span className="ml-auto text-right text-xs tabular-nums text-muted-foreground">파일 {parsed.length}개</span></div>
+    {narrow && selectedMode === "split" && <p className="text-xs text-muted-foreground">좌우로 밀어 두 버전을 확인하세요</p>}
     {huge && !large ? <div className="space-y-2 text-label-13"><p>큰 변경은 자동으로 펼치지 않습니다.</p><Button variant="outline" onClick={() => setLarge(true)}>큰 diff 불러오기</Button></div> : parsed.length === 0 ? <p className="text-label-13 text-muted-foreground">{input.includes("Binary files") || input.includes("GIT binary patch") ? "바이너리 파일 변경입니다. 텍스트 비교를 제공하지 않습니다." : input.trim() ? "이 변경은 텍스트 diff로 표시할 수 없습니다." : "내용 변경이 없습니다."}</p> : <>
     {parsed.length > 1 && <nav aria-label="변경 파일" className="flex flex-wrap gap-2">{parsed.map((file, i) => <a className="break-all text-xs underline" key={i} href={`#${id}-diff-file-${i}`}>{file.newFileName === "/dev/null" ? file.oldFileName : file.newFileName}</a>)}</nav>}
-    {parsed.map((file, i) => { const oldPath = file.oldFileName?.replace(/^a\//, ""), path = file.newFileName?.replace(/^b\//, ""); const status = file.oldFileName === "/dev/null" ? "A" : file.newFileName === "/dev/null" ? "D" : oldPath !== path ? "R" : "M"; return <article id={`${id}-diff-file-${i}`} className="overflow-hidden rounded-lg border" key={i}><header className="break-all border-b bg-muted/50 px-2 py-1.5 font-mono text-xs"><strong>{status}</strong> {status === "R" ? `${oldPath} → ${path}` : status === "D" ? oldPath : path}</header>{file.hunks.length ? <div className={styles.scroll}><table className={`${styles.diff} ${selectedMode === "split" ? styles.split : ""}`} aria-label={`${path} ${selectedMode === "split" ? "나란히" : "통합"} diff`}>{selectedMode === "split" && <colgroup><col style={{width: "3rem"}}/><col/><col style={{width: "3rem"}}/><col/></colgroup>}{file.hunks.map((h, n) => <Hunk key={n} hunk={h} mode={selectedMode}/>)}</table></div> : <p className="p-2 text-label-13 text-muted-foreground">바이너리 변경 또는 이름만 변경된 파일입니다.</p>}</article> })}</>}
+    {parsed.map((file, i) => {
+      const oldPath = file.oldFileName?.replace(/^a\//, ""), path = file.newFileName?.replace(/^b\//, "")
+      const status = file.oldFileName === "/dev/null" ? "추가" : file.newFileName === "/dev/null" ? "삭제" : oldPath !== path ? "이름 변경" : "수정"
+      const displayPath = status === "이름 변경" ? `${oldPath} → ${path}` : status === "삭제" ? oldPath : path
+      let additions = 0, removals = 0
+      for (const hunk of file.hunks) for (const line of hunk.lines) { if (line.startsWith("+")) additions++; else if (line.startsWith("-")) removals++ }
+      return <article id={`${id}-diff-file-${i}`} className="overflow-hidden rounded-lg border" key={i}>
+        <header className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b bg-muted/50 px-2 py-1.5 text-xs"><strong className="shrink-0">{status}</strong><span className="min-w-0 flex-1 break-all font-mono">{displayPath}</span>{(additions > 0 || removals > 0) && <span className="shrink-0 font-mono tabular-nums" aria-label={`추가 ${additions}줄, 삭제 ${removals}줄`}>+{additions} −{removals}</span>}</header>
+        {file.hunks.length ? <>
+          {selectedMode === "unified" && <div className="flex flex-wrap gap-x-4 gap-y-1 border-b px-2 py-1.5 text-xs"><span>− {beforeLabel}</span><span>+ {afterLabel}</span></div>}
+          <div className={styles.scroll}><table className={`${styles.diff} ${selectedMode === "split" ? styles.split : styles.unified}`} aria-label={`${displayPath} ${selectedMode === "split" ? "나란히" : "한 줄씩"} 비교`}>
+            {selectedMode === "split" ? <><colgroup><col style={{ width: "3rem" }}/><col/><col style={{ width: "3rem" }}/><col/></colgroup><thead><tr><th colSpan={2} scope="colgroup">{beforeLabel}</th><th colSpan={2} scope="colgroup">{afterLabel}</th></tr></thead></> : <colgroup><col style={{ width: "3rem" }}/><col style={{ width: "3rem" }}/><col/></colgroup>}
+            {file.hunks.map((h, n) => <Hunk key={n} hunk={h} mode={selectedMode}/>)}
+          </table></div>
+        </> : <p className="p-2 text-label-13 text-muted-foreground">바이너리 변경 또는 이름만 변경된 파일입니다.</p>}
+      </article>
+    })}</>}
   </section>
 }

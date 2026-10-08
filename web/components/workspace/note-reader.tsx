@@ -1,9 +1,10 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import Link from 'next/link'
 import dynamic from 'next/dynamic'
+import { useSearchParams } from 'next/navigation'
 import { History, Star, Pencil, Save, MessageCircle, GitCommitHorizontal, BookOpen, Columns2 } from 'lucide-react'
 import { api, ApiError } from '@/lib/api'
 import type { Note } from '@/lib/api'
@@ -15,6 +16,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useWorkspace } from '@/components/workspace/context'
+import type { GroupId } from '@/components/workspace/context'
 import { Breadcrumbs } from '@/components/workspace/breadcrumbs'
 import { Outline } from '@/components/workspace/outline'
 import { Properties } from '@/components/workspace/properties'
@@ -22,15 +24,17 @@ import { notify } from '@/components/notifications'
 import { cn } from '@/lib/utils'
 import { ReaderDialog } from '@/components/editor/reader-dialog'
 import { saveNote, readNoteSnapshot, readCurrentNote, uploadNoteImage } from '@/components/editor/api'
-import { registerEditorGuard, setEditorStatus, confirmEditorLeave } from '@/components/editor/state'
+import { registerEditorGuard, setEditorStatus, confirmEditorLeave, isDraftTransferring, stashDraft, takeDraft, subscribeDraft } from '@/components/editor/state'
 import type { EditorStatus, EditorCommand } from '@/components/editor/state'
 import { DiffView } from '@/components/history/diff-view'
 import { BlameView } from '@/components/history/blame-view'
+import { compareHref, historyHref } from '@/components/history/commit-meta'
 
 const MarkdownEditor = dynamic(() => import('@/components/editor/markdown-editor').then(module => module.MarkdownEditor), {
   ssr: false,
   loading: () => <Loading label="편집기를 불러오는 중" />,
 })
+const RestoreVersionDialog = dynamic(() => import('@/components/history/restore-version-dialog').then(module => module.RestoreVersionDialog))
 
 function urlFragment() {
   try { return decodeURIComponent(window.location.hash.slice(1)) } catch { return window.location.hash.slice(1) }
@@ -39,16 +43,21 @@ function previewBody(content: string) {
   return content.replace(/^---\r?\n[\s\S]*?\r?\n(?:---|\.\.\.)\s*(?:\r?\n|$)/, '')
 }
 
-export function NoteReader({ path, split = false, revisionRef, className }: { path: string; split?: boolean; revisionRef?: string; className?: string }) {
-  const { favoritePaths, toggleFavorite, rememberTitle, setNoteInfo, activePath } = useWorkspace()
+export function NoteReader({ path, groupId, revisionRef, className }: { path: string; groupId: GroupId; revisionRef?: string; className?: string }) {
+  const { favoritePaths, toggleFavorite, rememberTitle, setNoteInfo, activeGroupId, isEditorOwner } = useWorkspace()
+  const isActive = activeGroupId === groupId
+  const searchParams = useSearchParams()
+  const targetPath = revisionRef ? searchParams.get('current') || path : path
+  const commitInputId = useId()
   const queryClient = useQueryClient()
   const queryKey = revisionRef ? ['notes/content', path, revisionRef] : ['notes/content', path]
   const note = useQuery({ queryKey, queryFn: () => api.note(path, revisionRef), enabled: Boolean(path) })
   const me = useQuery({ queryKey: ['me'], queryFn: api.me })
   const tree = useQuery({ queryKey: ['notes/tree'], queryFn: api.tree })
   const commit = useQuery({ queryKey: ['commit', note.data?.updatedSha], queryFn: () => api.commit(note.data!.updatedSha), enabled: Boolean(revisionRef && note.data) })
-  const ownsStatus = !split || activePath !== path
-  const canEdit = ownsStatus && (me.data?.user.role === 'admin' || me.data?.user.role === 'editor')
+  const ownsStatus = isEditorOwner(groupId, path)
+  const canRestore = me.data?.user.role === 'admin' || me.data?.user.role === 'editor'
+  const canEdit = ownsStatus && canRestore
   const scrollerRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLDivElement>(null)
   const baseline = useRef<Note | null>(null)
@@ -59,10 +68,9 @@ export function NoteReader({ path, split = false, revisionRef, className }: { pa
   const [message, setMessage] = useState('')
   const [error, setError] = useState<unknown>(null)
   const [uploading, setUploading] = useState(false)
-  const [preparingRestore, setPreparingRestore] = useState(false)
   const [external, setExternal] = useState<Note | null>(null)
   const [conflict, setConflict] = useState<{ base: Note; theirs: Note; mine: string } | null>(null)
-  const [restore, setRestore] = useState<Note | null>(null)
+  const [restoreOpen, setRestoreOpen] = useState(false)
   const [blame, setBlame] = useState(false)
   const [fragment, setFragment] = useState<{ path: string; id: string } | null>(null)
   const [selection, setSelection] = useState<{ text: string; top: number; left: number } | null>(null)
@@ -71,15 +79,17 @@ export function NoteReader({ path, split = false, revisionRef, className }: { pa
     ? frontmatter.title.trim() : path.split('/').pop()?.replace(/\.md$/i, '') || '노트'
   const defaultMessage = `docs(wiki): update ${title}`
   const favorite = favoritePaths.includes(path)
-  const Heading = split ? 'h2' : 'h1'
+  const Heading = isActive ? 'h1' : 'h2'
   const dirty = Boolean(baseline.current && draft !== baseline.current.content)
-  const busy = phase === 'saving' || uploading || preparingRestore
-  const latest = useRef({ dirty, busy, mode, draft })
-  latest.current = { dirty, busy, mode, draft }
+  const busy = phase === 'saving' || uploading
+  const latest = useRef({ dirty, busy, mode, draft, phase, cursor })
+  latest.current = { dirty, busy, mode, draft, phase, cursor }
+  useEffect(() => { setRestoreOpen(false) }, [path, revisionRef, targetPath])
 
   function acceptSnapshot(snapshot: Note) {
     baseline.current = snapshot
     latest.current.dirty = false
+    latest.current.draft = snapshot.content
     setDraft(snapshot.content)
     setExternal(null)
     setConflict(null)
@@ -96,12 +106,34 @@ export function NoteReader({ path, split = false, revisionRef, className }: { pa
   const discardRef = useRef(discard)
   discardRef.current = discard
   useEffect(() => {
+    if (!ownsStatus) {
+      setMode('view'); setPhase('idle'); setConflict(null); setExternal(null); setSelection(null)
+      if (note.data) acceptSnapshot(note.data)
+      return
+    }
+    const restoreDraft = () => {
+      const value = takeDraft(path)
+      if (!value) return
+      baseline.current = value.baseline
+      latest.current = { dirty: Boolean(value.baseline && value.draft !== value.baseline.content), busy: false, mode: value.mode, draft: value.draft, phase: 'idle', cursor: undefined }
+      setDraft(value.draft); setMode(value.mode); setPhase('idle'); setCursor(undefined)
+      setConflict(null); setError(null); setSelection(null)
+      setEditorStatus(path, { dirty: latest.current.dirty, mode: value.mode, phase: 'idle' })
+    }
+    const unsubscribe = subscribeDraft(path, restoreDraft)
+    restoreDraft()
+    return () => {
+      unsubscribe()
+      setEditorStatus(path, null)
+      if (latest.current.dirty || isDraftTransferring(path)) stashDraft(path, { baseline: baseline.current, draft: latest.current.draft, mode: latest.current.mode })
+    }
+  }, [path, ownsStatus])
+  useEffect(() => {
     if (ownsStatus) return registerEditorGuard(path, () => discardRef.current())
   }, [path, ownsStatus])
   useEffect(() => {
-    if (ownsStatus) setEditorStatus(path, { dirty, mode, phase, cursor })
+    if (ownsStatus) setEditorStatus(path, { dirty: latest.current.dirty, mode: latest.current.mode, phase: latest.current.phase, cursor: latest.current.cursor })
   }, [path, dirty, mode, phase, cursor, ownsStatus])
-  useEffect(() => () => { if (ownsStatus) setEditorStatus(path, null) }, [path, ownsStatus])
 
   useEffect(() => {
     if (!note.data) return
@@ -116,10 +148,16 @@ export function NoteReader({ path, split = false, revisionRef, className }: { pa
     if (note.data) rememberTitle(note.data.path, title)
   }, [note.data, title, rememberTitle])
   useEffect(() => {
-    if (split) return
+    if (!isActive) return
+    const previous = document.title
+    document.title = `${title} · LLM Wiki`
+    return () => { document.title = previous }
+  }, [isActive, title])
+  useEffect(() => {
+    if (!isActive) return
     setNoteInfo(note.data ? { path: note.data.path, updatedSha: note.data.updatedSha, body: note.data.body } : null)
     return () => setNoteInfo(null)
-  }, [split, note.data, setNoteInfo])
+  }, [isActive, note.data, setNoteInfo])
   useEffect(() => {
     if (revisionRef) return
     return onLiveEvent('main.updated', event => {
@@ -134,21 +172,28 @@ export function NoteReader({ path, split = false, revisionRef, className }: { pa
   }, [path, revisionRef, queryClient, ownsStatus])
   useEffect(() => {
     scrollerRef.current?.scrollTo({ top: 0 })
-    if (!split) setFragment({ path, id: urlFragment() })
-  }, [path, split])
+    setFragment({ path, id: '' })
+  }, [path])
   useEffect(() => {
-    if (!split) {
-      const changed = () => setFragment({ path, id: urlFragment() })
-      window.addEventListener('hashchange', changed)
-      return () => window.removeEventListener('hashchange', changed)
-    }
+    if (!isActive) return
+    const changed = () => setFragment({ path, id: urlFragment() })
+    changed()
+    window.addEventListener('hashchange', changed)
+    return () => window.removeEventListener('hashchange', changed)
+  }, [path, isActive])
+  useEffect(() => {
     const changed = (event: Event) => {
-      const detail = (event as CustomEvent<{ path: string; fragment: string }>).detail
-      if (detail && typeof detail.path === 'string' && typeof detail.fragment === 'string') setFragment({ path: detail.path, id: detail.fragment })
+      const detail = (event as CustomEvent<{ groupId: GroupId; path: string; fragment: string }>).detail
+      if (detail?.groupId === groupId && detail.path === path && typeof detail.fragment === 'string') setFragment({ path, id: detail.fragment })
     }
-    window.addEventListener('workspace-split-fragment', changed)
-    return () => window.removeEventListener('workspace-split-fragment', changed)
-  }, [path, split])
+    window.addEventListener('workspace-group-fragment', changed)
+    return () => window.removeEventListener('workspace-group-fragment', changed)
+  }, [path, groupId])
+  useEffect(() => {
+    if (!note.data) return
+    const frame = requestAnimationFrame(() => window.dispatchEvent(new CustomEvent('workspace-reader-ready', { detail: { groupId, path } })))
+    return () => cancelAnimationFrame(frame)
+  }, [note.data, path, groupId, isActive])
   useEffect(() => {
     if (!note.data || fragment?.path !== path || !fragment.id) return
     const frame = requestAnimationFrame(() => {
@@ -192,7 +237,10 @@ export function NoteReader({ path, split = false, revisionRef, className }: { pa
   useEffect(() => {
     const command = (event: Event) => {
       const detail = (event as CustomEvent<{ command: EditorCommand; path?: string; exactPath?: boolean }>).detail
-      if (!detail || !ownsStatus || (detail.path ? detail.path !== path : split) || latest.current.busy) return
+      if (!detail || latest.current.busy) return
+      if (detail.exactPath) {
+        if (!ownsStatus || detail.path !== path) return
+      } else if (!isActive || (detail.path && detail.path !== path)) return
       switch (detail.command) {
         case 'view':
           setMode('view'); setBlame(false); setSelection(null)
@@ -223,7 +271,7 @@ export function NoteReader({ path, split = false, revisionRef, className }: { pa
     }
     window.addEventListener('workspace-editor-command', command)
     return () => window.removeEventListener('workspace-editor-command', command)
-  }, [path, split, ownsStatus])
+  }, [path, isActive, ownsStatus])
   function captureSelection() {
     const selected = window.getSelection()
     if (!selected || selected.isCollapsed || !contentRef.current?.contains(selected.anchorNode) || !contentRef.current.contains(selected.focusNode)) { setSelection(null); return }
@@ -249,34 +297,9 @@ export function NoteReader({ path, split = false, revisionRef, className }: { pa
     finally { latest.current.busy = false; setUploading(false) }
     return links.length ? `\n${links.join('\n')}\n` : undefined
   }
-  async function prepareRestore() {
-    if (!canEdit || !revisionRef || latest.current.busy) return
-    latest.current.busy = true; setPreparingRestore(true); setError(null)
-    try { setRestore(await readCurrentNote(path)) }
-    catch (failure) { setError(failure) }
-    finally { latest.current.busy = false; setPreparingRestore(false) }
-  }
-  async function restoreVersion() {
-    if (!canEdit || !revisionRef || !note.data || !restore || latest.current.busy) return
-    if (!window.confirm('현재 노트 내용을 이 버전으로 복원하시겠습니까? 새 커밋이 생성됩니다.')) return
-    latest.current.busy = true; setPhase('saving'); setError(null)
-    try {
-      const result = await saveNote(path, note.data.content, restore.updatedSha, `revert(wiki): restore ${path} to ${note.data.updatedSha.slice(0, 8)}`)
-      const saved = await readNoteSnapshot(path, result.mergeSha)
-      queryClient.setQueryData(['notes/content', path], saved)
-      setRestore(null); setPhase('saved'); notify({ title: '현재 버전을 복원했습니다. 현재 노트에서 확인해 주세요.', tone: 'success' })
-    } catch (failure) {
-      setPhase('idle')
-      if (failure instanceof ApiError && failure.code === 'stale_note') {
-        try { setRestore(await readCurrentNote(path)); notify({ title: '현재 노트가 변경되었습니다. 최신 차이를 확인하고 다시 복원해 주세요.' }) }
-        catch (refreshFailure) { setError(refreshFailure) }
-      } else setError(failure)
-    }
-    finally { latest.current.busy = false }
-  }
   const preview = mode === 'view' ? note.data?.body ?? '' : previewBody(draft)
 
-  return <section aria-label={split ? '분할 노트 본문' : '노트 본문'} className={cn('relative flex h-full min-h-0 min-w-0 flex-col rounded-lg border', className)} onKeyDown={event => {
+  return <section aria-label="노트 본문" className={cn('relative flex h-full min-h-0 min-w-0 flex-col rounded-lg border', className)} onKeyDown={event => {
     if ((event.target as HTMLElement).closest('[role="dialog"]')) return
     if (event.key === 'Escape' && (mode !== 'view' || dirty) && !(event.target as HTMLElement).closest('.cm-editor')) { event.preventDefault(); discard() }
   }}>
@@ -285,48 +308,45 @@ export function NoteReader({ path, split = false, revisionRef, className }: { pa
         <div className={cn('min-w-0 flex-1', blame && 'hidden sm:block')}><Breadcrumbs path={path} title={title} /></div>
         <div className="ml-auto flex shrink-0 items-center gap-0.5">
           <Button variant="ghost" size="icon-xs" aria-label={favorite ? '즐겨찾기에서 제거' : '즐겨찾기에 추가'} aria-pressed={favorite} title="즐겨찾기" onClick={() => toggleFavorite(path)}><Star aria-hidden="true" className={favorite ? 'fill-current text-warning' : ''} /></Button>
-          <Button variant="ghost" size="icon-xs" nativeButton={false} aria-label="이 노트의 변경 이력" title="변경 이력" render={<Link href={`/history?path=${encodeURIComponent(path)}`} />}><History aria-hidden="true" /></Button>
+          <Button variant="ghost" size="icon-xs" nativeButton={false} aria-label="변경 이력" title="변경 이력" render={<Link href={historyHref(targetPath)} />}><History aria-hidden="true" /></Button>
         </div>
       </div>
       <Heading className={cn('min-w-0 break-words text-lg font-bold leading-tight tracking-tight', blame && 'sr-only sm:not-sr-only')}>{title}{dirty && <span className="ml-2 text-sm text-warning" aria-label="저장하지 않은 변경사항">●</span>}</Heading>
+      {!ownsStatus && <p className="text-xs text-muted-foreground">다른 그룹에서 편집 중 · 읽기 전용</p>}
       {note.data && <div className="flex flex-wrap items-center gap-1">
         {canEdit && !revisionRef && <div role="group" aria-label="노트 보기 모드" className="mr-1 flex gap-0.5 rounded-md border p-0.5">
           {(['view', 'edit', 'split'] as const).map(value => <Button key={value} size="xs" variant={mode === value ? 'secondary' : 'ghost'} aria-pressed={mode === value} title={value === 'split' ? '편집 + 미리보기' : undefined} disabled={busy} className="[&_svg]:@max-sm/note-header:hidden" onClick={() => { setMode(value); setBlame(false); setSelection(null) }}>{value === 'view' ? <><BookOpen aria-hidden="true" />읽기</> : value === 'edit' ? <><Pencil aria-hidden="true" />편집</> : <><Columns2 aria-hidden="true" />미리보기</>}</Button>)}
         </div>}
-        <Button size="xs" variant={blame ? 'secondary' : 'ghost'} aria-pressed={blame} title="줄별 이력" disabled={busy} onClick={() => { if (mode === 'view' || discard()) setBlame(value => !value) }}><GitCommitHorizontal aria-hidden="true" /><span className="sr-only @sm/note-header:not-sr-only">줄별 이력</span></Button>
+        <Button size="xs" variant={blame ? 'secondary' : 'ghost'} aria-pressed={blame} title="줄별 작성자" disabled={busy} onClick={() => { if (mode === 'view' || discard()) setBlame(value => !value) }}><GitCommitHorizontal aria-hidden="true" /><span className="sr-only @sm/note-header:not-sr-only">줄별 작성자</span></Button>
         <Button size="xs" variant="ghost" aria-label="이 노트에 대해 묻기" title="이 노트에 대해 묻기" disabled={busy} onClick={() => actions.current.ask()}><MessageCircle aria-hidden="true" /><span className="sr-only @sm/note-header:not-sr-only">묻기</span></Button>
         {dirty && canEdit && !revisionRef && <div className="ml-auto flex gap-1"><Button size="xs" disabled={busy} onClick={() => void write()}><Save aria-hidden="true" />{phase === 'saving' ? '저장 중…' : '저장'}</Button><Button size="xs" variant="outline" disabled={busy} onClick={discard}>변경 버리기</Button></div>}
       </div>}
-      {mode !== 'view' && <div className="space-y-1"><Label htmlFor={`commit-message-${split ? 'split' : 'main'}`}>커밋 메시지</Label><Input id={`commit-message-${split ? 'split' : 'main'}`} value={message} maxLength={2000} placeholder={defaultMessage} disabled={busy} onChange={event => setMessage(event.target.value)} /><p className="text-xs text-muted-foreground">Ctrl/Cmd + S 저장 · Esc 변경 버리기 · [[ 노트 링크 자동완성 · 이미지 붙여넣기/끌어놓기{uploading && ' · 이미지 업로드 중…'}</p></div>}
-      {revisionRef && note.data && <div role="status" className="space-y-2 rounded-md border bg-muted/50 p-3 text-sm">
-        <p>과거 버전 <code>{note.data.updatedSha.slice(0, 8)}</code> · 읽기 전용{commit.data && <> · {commit.data.commit.authorName} · {new Date(commit.data.commit.date).toLocaleString('ko-KR')}</>}</p>
-        {commit.isPending && <p>커밋 정보를 불러오는 중…</p>}
-        {commit.isError && <><ErrorNotice error={commit.error} /><Button size="sm" variant="outline" onClick={() => void commit.refetch()}>커밋 정보 다시 시도</Button></>}
-        <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant="outline" nativeButton={false} render={<Link href={noteHref(path)} />}>현재 버전 열기</Button>
-          <Button size="sm" variant="outline" nativeButton={false} render={<Link href={`/history/compare?base=${encodeURIComponent(note.data.updatedSha)}&head=main&path=${encodeURIComponent(path)}`} />}>현재와 비교</Button>
-          {canEdit && <Button size="sm" disabled={busy} onClick={() => void prepareRestore()}>{preparingRestore ? '현재 버전 불러오는 중…' : '이 버전으로 복원'}</Button>}
+      {mode !== 'view' && <div className="space-y-1"><Label htmlFor={commitInputId}>커밋 메시지</Label><Input id={commitInputId} value={message} maxLength={2000} placeholder={defaultMessage} disabled={busy} onChange={event => setMessage(event.target.value)} /><p className="text-xs text-muted-foreground">Ctrl/Cmd + S 저장 · Esc 변경 버리기 · [[ 노트 링크 자동완성 · 이미지 붙여넣기/끌어놓기{uploading && ' · 이미지 업로드 중…'}</p></div>}
+      {revisionRef && note.data && <div role="status" className="space-y-1.5 rounded-md border bg-muted/50 px-2 py-1.5 text-label-13">
+        <p>{commit.data ? new Date(commit.data.commit.committedAt).toLocaleString('ko-KR') : note.data.updatedSha.slice(0, 8)}의 과거 버전을 보고 있습니다</p>
+        {path !== targetPath && <p className="break-all text-xs text-muted-foreground">이 버전의 당시 이름: {path}</p>}
+        <div className="flex flex-wrap gap-1">
+          {canRestore && <Button size="xs" disabled={busy} onClick={() => setRestoreOpen(true)}>이 버전으로 복원…</Button>}
+          <Button size="xs" variant="outline" nativeButton={false} render={<Link href={compareHref(note.data.updatedSha, 'main', targetPath)} />}>현재와 비교</Button>
+          <Button size="xs" variant="outline" nativeButton={false} render={<Link href={noteHref(targetPath)} />}>현재 버전 열기</Button>
         </div>
       </div>}
       {external && dirty && <div role="alert" className="space-y-2 rounded-md border border-warning/50 bg-warning/10 p-3 text-sm"><p className="font-medium">다른 곳에서 변경됨</p><p>다른 사용자가 이 노트를 변경했습니다. 내 편집 내용은 유지됩니다.</p><Button size="sm" variant="outline" disabled={busy} onClick={() => { if (baseline.current) { setConflict({ base: baseline.current, theirs: external, mine: draft }); setPhase('conflict') } }}>변경사항 비교</Button></div>}
       {error != null && <ErrorNotice error={error} />}
     </header>
-    <div ref={scrollerRef} tabIndex={0} aria-label={split ? '분할 노트 읽기 영역' : '노트 읽기 영역'} className={cn('min-h-0 flex-1 overscroll-contain focus-visible:outline-2 focus-visible:outline-ring', blame ? 'flex min-w-0 flex-col overflow-hidden p-3' : 'overflow-auto p-3 sm:p-5')}>
+    <div ref={scrollerRef} tabIndex={0} aria-label="노트 읽기 영역" className={cn('min-h-0 flex-1 overscroll-contain focus-visible:outline-2 focus-visible:outline-ring', blame ? 'flex min-w-0 flex-col overflow-hidden p-3' : 'overflow-auto p-3 sm:p-5')}>
       {note.isPending && <Loading label="노트를 불러오는 중" />}
       {note.isError && <div className="mb-4 space-y-3"><ErrorNotice error={note.error} /><Button variant="outline" disabled={note.isFetching} onClick={() => void note.refetch()}>다시 시도</Button></div>}
       {note.data && (blame ? <BlameView className="min-h-0 flex-1" path={path} ref={note.data.updatedSha} content={note.data.content} /> : <div className={`grid min-w-0 gap-5 ${mode === 'split' ? 'xl:grid-cols-2' : ''}`}>
-        {mode !== 'view' && <div className="min-w-0 overflow-hidden rounded-md border"><MarkdownEditor value={draft} files={tree.data?.files ?? []} disabled={busy || !canEdit} onChange={value => { setDraft(value); setPhase('idle') }} onDiscard={discard} onCursor={setCursor} onSelection={text => setSelection(text ? { text, top: 80, left: 16 } : null)} onImages={images} /></div>}
-        {mode !== 'edit' && <article className="min-w-0 space-y-5"><Properties frontmatter={frontmatter} /><Outline contentRef={contentRef} scrollerRef={scrollerRef} revision={`${path}:${note.data.updatedSha}:${mode === 'split' ? draft : ''}`} /><div ref={contentRef} onMouseUp={captureSelection} onKeyUp={captureSelection}>{preview.trim() ? <Markdown content={preview} path={path} split={split} ref={revisionRef ? note.data.updatedSha : baseline.current?.updatedSha ?? note.data.updatedSha} /> : <EmptyState title="본문이 없는 노트입니다" />}</div></article>}
+        {mode !== 'view' && <div className="min-w-0 overflow-hidden rounded-md border"><MarkdownEditor value={draft} files={tree.data?.files ?? []} disabled={busy || !canEdit} onChange={value => { latest.current.draft = value; latest.current.dirty = Boolean(baseline.current && value !== baseline.current.content); setDraft(value); setPhase('idle') }} onDiscard={discard} onCursor={setCursor} onSelection={text => setSelection(text ? { text, top: 80, left: 16 } : null)} onImages={images} /></div>}
+        {mode !== 'edit' && <article className="min-w-0 space-y-5"><Properties frontmatter={frontmatter} /><Outline contentRef={contentRef} scrollerRef={scrollerRef} revision={`${path}:${note.data.updatedSha}:${mode === 'split' ? draft : ''}`} /><div ref={contentRef} onMouseUp={captureSelection} onKeyUp={captureSelection}>{preview.trim() ? <Markdown content={preview} path={path} groupId={groupId} ref={revisionRef ? note.data.updatedSha : baseline.current?.updatedSha ?? note.data.updatedSha} /> : <EmptyState title="본문이 없는 노트입니다" />}</div></article>}
       </div>)}
     </div>
     {selection && <Button className="fixed z-40 shadow-lg" style={{ top: selection.top, left: selection.left }} size="sm" disabled={busy} onMouseDown={event => event.preventDefault()} onClick={() => actions.current.ask(selection.text)}><MessageCircle aria-hidden="true" />도니에게 묻기</Button>}
     <ReaderDialog open={Boolean(conflict)} onClose={() => { if (!busy) { setConflict(null); setPhase('idle') } }} title="노트 변경사항 충돌" description="편집을 시작한 버전, 내 변경사항, 저장소의 최신 변경사항을 비교한 뒤 선택하세요.">
       {error != null && <ErrorNotice error={error} />}
-      {conflict && <><section><h3 className="mb-2 font-medium">기준 버전 → 내 변경사항</h3><DiffView before={conflict.base.content} after={conflict.mine} mode="split" /></section><section><h3 className="mb-2 font-medium">기준 버전 → 최신 저장소 버전</h3><DiffView before={conflict.base.content} after={conflict.theirs.content} mode="split" /></section><div className="flex flex-wrap gap-2"><Button variant="outline" disabled={busy} onClick={() => { if (!window.confirm('내 변경사항을 버리고 최신 버전을 불러오시겠습니까?')) return; acceptSnapshot(conflict.theirs); setPhase('idle'); notify({ title: '최신 버전을 불러왔습니다.' }) }}>최신 버전 불러오기</Button><Button variant="outline" onClick={() => { void navigator.clipboard.writeText(conflict.mine).then(() => notify({ title: '내 변경사항을 복사했습니다.', tone: 'success' })).catch(setError) }}>내 내용 복사</Button><Button variant="destructive" disabled={busy || !canEdit || Boolean(revisionRef)} onClick={() => { if (!window.confirm('최신 저장소 내용을 내 변경사항으로 덮어쓰시겠습니까? 다른 사용자의 변경사항이 대체됩니다.')) return; void write(conflict.mine, conflict.theirs) }}>내 내용으로 덮어쓰기</Button></div></>}
+      {conflict && <><section><h3 className="mb-2 font-medium">기준 버전 → 내 변경사항</h3><DiffView before={conflict.base.content} after={conflict.mine} /></section><section><h3 className="mb-2 font-medium">기준 버전 → 최신 저장소 버전</h3><DiffView before={conflict.base.content} after={conflict.theirs.content} /></section><div className="flex flex-wrap gap-2"><Button variant="outline" disabled={busy} onClick={() => { if (!window.confirm('내 변경사항을 버리고 최신 버전을 불러오시겠습니까?')) return; acceptSnapshot(conflict.theirs); setPhase('idle'); notify({ title: '최신 버전을 불러왔습니다.' }) }}>최신 버전 불러오기</Button><Button variant="outline" onClick={() => { void navigator.clipboard.writeText(conflict.mine).then(() => notify({ title: '내 변경사항을 복사했습니다.', tone: 'success' })).catch(setError) }}>내 내용 복사</Button><Button variant="destructive" disabled={busy || !canEdit || Boolean(revisionRef)} onClick={() => { if (!window.confirm('최신 저장소 내용을 내 변경사항으로 덮어쓰시겠습니까? 다른 사용자의 변경사항이 대체됩니다.')) return; void write(conflict.mine, conflict.theirs) }}>내 내용으로 덮어쓰기</Button></div></>}
     </ReaderDialog>
-    <ReaderDialog open={Boolean(restore)} onClose={() => { if (!busy) setRestore(null) }} title="과거 버전 복원 미리보기" description="현재 노트와 복원할 버전을 비교합니다. 복원은 이력을 삭제하지 않고 새 커밋을 만듭니다.">
-      {error != null && <ErrorNotice error={error} />}
-      {restore && note.data && <><DiffView before={restore.content} after={note.data.content} mode="split" /><div className="flex gap-2"><Button disabled={busy} onClick={() => void restoreVersion()}>{phase === 'saving' ? '복원 중…' : '이 버전으로 복원'}</Button><Button variant="outline" disabled={busy} onClick={() => setRestore(null)}>취소</Button></div></>}
-    </ReaderDialog>
+    {revisionRef && note.data && <RestoreVersionDialog targetPath={targetPath} historicalPath={path} versionSha={note.data.updatedSha} versionLabel={commit.data ? `${commit.data.commit.subject} · ${new Date(commit.data.commit.committedAt).toLocaleString('ko-KR')}` : undefined} open={restoreOpen} onOpenChange={setRestoreOpen} />}
   </section>
 }

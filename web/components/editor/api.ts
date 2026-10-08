@@ -36,13 +36,13 @@ export function readNoteSnapshot(path: string, ref?: string) {
 }
 
 // Deleted notes still need the current repository snapshot for conflict/restore.
-export async function readCurrentNote(path: string): Promise<Note> {
+export async function readCurrentNote(path: string): Promise<Note & { missing?: boolean }> {
   try { return await readNoteSnapshot(path) }
   catch (error) {
     if (!(error instanceof ApiError) || error.status !== 404) throw error
     const history = await request<{ commits: { sha: string }[] }>('/api/history?limit=1')
     const head = history.commits[0]?.sha
     if (!head) throw error
-    return { path, content: '', body: '', frontmatter: {}, updatedSha: head }
+    return { path, content: '', body: '', frontmatter: {}, updatedSha: head, missing: true }
   }
 }

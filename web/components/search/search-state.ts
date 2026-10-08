@@ -1,7 +1,43 @@
 import type { SearchFilters } from '@/lib/api'
 
 export type SearchState = { q: string; filters: SearchFilters }
+export type HashtagToken = { start: number; end: number; query: string }
 const FILTER_KEYS = ['folder', 'tags', 'from', 'to', 'author'] as const
+
+export function normalizeTagName(value: string): string {
+  return value.normalize('NFKC').toLowerCase().trim().replace(/^#+/, '').replace(/\s+/g, '-')
+}
+
+export function hashtagAt(text: string, caret: number): HashtagToken | null {
+  let start = caret
+  while (start > 0 && !/\s/.test(text[start - 1])) start--
+  if (start === caret || text[start] !== '#') return null
+  let end = caret
+  while (end < text.length && !/\s/.test(text[end])) end++
+  return { start, end, query: text.slice(start + 1, caret) }
+}
+
+export function removeHashtag(text: string, token: HashtagToken): { text: string; caret: number } {
+  let start = token.start
+  let end = token.end
+  while (start > 0 && /\s/.test(text[start - 1])) start--
+  while (end < text.length && /\s/.test(text[end])) end++
+  const before = text.slice(0, start)
+  const after = text.slice(end)
+  const separator = before && after ? ' ' : ''
+  return { text: before + separator + after, caret: before.length + separator.length }
+}
+
+export function parseSearchTags(value?: string): string[] {
+  return [...new Set(value?.split(',').map(tag => tag.trim()).filter(Boolean) ?? [])]
+}
+
+export function toggleSearchTag(value: string | undefined, tag: string): string {
+  const selected = parseSearchTags(value)
+  const next = tag.trim()
+  if (!next) return selected.join(',')
+  return (selected.includes(next) ? selected.filter(item => item !== next) : [...selected, next]).join(',')
+}
 
 export function readSearchState(params: Pick<URLSearchParams, 'get'>): SearchState {
   const filters: SearchFilters = {}
@@ -25,6 +61,30 @@ export function searchParams(state: SearchState): URLSearchParams {
 export function searchHref(state: SearchState): string {
   const params = searchParams(state).toString()
   return `/search${params ? `?${params}` : ''}`
+}
+
+export function readRecentSearches(value: unknown): SearchState[] {
+  if (!Array.isArray(value)) return []
+  const recent: SearchState[] = []
+  for (const item of value) {
+    if (!item || typeof item !== 'object' || typeof item.q !== 'string' || !item.q.trim()) continue
+    const filters: SearchFilters = {}
+    if (item.filters && typeof item.filters === 'object') {
+      for (const key of FILTER_KEYS) {
+        if (typeof item.filters[key] === 'string' && item.filters[key].trim()) filters[key] = item.filters[key].trim()
+      }
+    }
+    const state = { q: item.q.trim(), filters }
+    if (!recent.some(previous => searchHref(previous) === searchHref(state))) recent.push(state)
+    if (recent.length === 8) break
+  }
+  return recent
+}
+
+export function rememberSearch(recent: SearchState[], state: SearchState): SearchState[] {
+  if (!state.q.trim()) return recent
+  const key = searchHref(state)
+  return [{ q: state.q.trim(), filters: { ...state.filters } }, ...recent.filter(item => searchHref(item) !== key)].slice(0, 8)
 }
 
 export function treeFolders(files: string[]): string[] {

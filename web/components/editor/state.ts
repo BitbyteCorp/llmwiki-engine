@@ -1,6 +1,7 @@
 'use client'
 
 import { useCallback, useSyncExternalStore } from 'react'
+import type { Note } from '@/lib/api'
 
 export type EditorStatus = {
   dirty: boolean
@@ -12,6 +13,57 @@ export type EditorStatus = {
 const statuses = new Map<string, EditorStatus>()
 const listeners = new Set<() => void>()
 const guards = new Map<string, Set<() => boolean>>()
+
+export type DraftTransfer = { baseline: Note | null; draft: string; mode: EditorStatus['mode'] }
+const transferringDrafts = new Set<string>()
+const drafts = new Map<string, DraftTransfer>()
+const draftListeners = new Map<string, Set<() => void>>()
+
+export function markDraftTransfer(path: string): void {
+  transferringDrafts.add(path)
+}
+
+export function isDraftTransferring(path: string): boolean {
+  return transferringDrafts.has(path)
+}
+
+export function stashDraft(path: string, value: DraftTransfer): void {
+  drafts.set(path, value)
+  for (const listener of draftListeners.get(path) ?? []) listener()
+}
+
+export function takeDraft(path: string): DraftTransfer | undefined {
+  const value = drafts.get(path)
+  if (value) {
+    drafts.delete(path)
+    transferringDrafts.delete(path)
+  }
+  return value
+}
+
+export function clearDraft(path: string): void {
+  drafts.delete(path)
+  transferringDrafts.delete(path)
+}
+
+export function renameDraft(from: string, to: string): void {
+  if (from === to) return
+  const value = drafts.get(from)
+  const transferring = transferringDrafts.delete(from)
+  drafts.delete(from)
+  if (transferring) transferringDrafts.add(to)
+  if (value) stashDraft(to, { ...value, baseline: value.baseline ? { ...value.baseline, path: to } : null })
+}
+
+export function subscribeDraft(path: string, listener: () => void): () => void {
+  const entries = draftListeners.get(path) ?? new Set<() => void>()
+  entries.add(listener)
+  draftListeners.set(path, entries)
+  return () => {
+    entries.delete(listener)
+    if (!entries.size) draftListeners.delete(path)
+  }
+}
 
 export function getEditorStatus(path: string): EditorStatus | undefined {
   return statuses.get(path)
@@ -28,7 +80,7 @@ export function setEditorStatus(path: string, status: EditorStatus | null): void
   for (const listener of listeners) listener()
 }
 
-function subscribe(listener: () => void): () => void {
+export function subscribeEditorStatus(listener: () => void): () => void {
   listeners.add(listener)
   return () => { listeners.delete(listener) }
 }
@@ -37,7 +89,7 @@ const serverSnapshot = () => undefined
 
 export function useEditorStatus(path: string): EditorStatus | undefined {
   const snapshot = useCallback(() => statuses.get(path), [path])
-  return useSyncExternalStore(subscribe, snapshot, serverSnapshot)
+  return useSyncExternalStore(subscribeEditorStatus, snapshot, serverSnapshot)
 }
 
 export function registerEditorGuard(path: string, guard: () => boolean): () => void {

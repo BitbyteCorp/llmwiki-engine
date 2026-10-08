@@ -14,7 +14,7 @@ import rehypeHighlight from 'rehype-highlight'
 import rehypeKatex from 'rehype-katex'
 import { api } from '@/lib/api'
 import { noteHref } from '@/components/common'
-import { useOptionalWorkspace } from '@/components/workspace/context'
+import { useOptionalWorkspace, type GroupId } from '@/components/workspace/context'
 import { headingFragment, markdownNoteTarget, remarkWikilinks, wikiTarget, WIKILINK_PREFIX } from '@/lib/wikilinks'
 import { remarkCallouts } from './markdown/callouts'
 import { CodeBlock } from './markdown/code-block'
@@ -23,7 +23,7 @@ import styles from './markdown/markdown.module.css'
 type CodeNode = { type: string; value?: string; children?: CodeNode[] }
 type MarkdownElement = NonNullable<ExtraProps['node']>
 
-type Navigate = (path: string, options?: { fragment?: string; split?: boolean }) => void
+type Navigate = (path: string, options?: { fragment?: string; group?: GroupId | 'side' }) => void
 
 function NoteLink({ path, fragment, children, onNavigate }: { path: string; fragment?: string; children: ReactNode; onNavigate?: Navigate }) {
   const [hovered, setHovered] = useState(false)
@@ -126,24 +126,29 @@ function imageSource(src: string | undefined, path?: string, ref?: string): stri
   return `/api/notes/raw?${query}`
 }
 
-export const Markdown = memo(function Markdown({ content, path, ref, split = false, onNavigate }: { content: string; path?: string; ref?: string; split?: boolean; onNavigate?: Navigate }) {
+export const Markdown = memo(function Markdown({ content, path, ref, groupId, onNavigate }: { content: string; path?: string; ref?: string; groupId?: GroupId; onNavigate?: Navigate }) {
   const root = useRef<HTMLDivElement>(null)
-  const openNote = useOptionalWorkspace()?.openNote
+  const workspace = useOptionalWorkspace()
+  const openNote = workspace?.openNote
+  const activeGroupId = workspace?.activeGroupId
+  const groupRef = groupId ? workspace?.groups[groupId]?.ref : undefined
   const scrollFragment = useCallback((fragment: string) => {
-    const target = [...(root.current?.querySelectorAll<HTMLElement>('[id]') ?? [])].find((element) => element.id === fragment)
+    const scope = groupId ? root.current?.closest<HTMLElement>('[data-workspace-group]') ?? root.current : root.current
+    const target = [...(scope?.querySelectorAll<HTMLElement>('[id]') ?? [])].find((element) => element.id === fragment)
     if (target) {
-      // IDs may be duplicated between the main and split article. Scope lookup.
+      // Different groups can render the same heading ID.
       target.setAttribute('tabindex', '-1')
       target.focus({ preventScroll: true })
       target.scrollIntoView({ block: 'start' })
     }
-    if (!split) window.history.replaceState(null, '', `#${encodeURIComponent(fragment)}`)
-  }, [split])
+    if (groupId && groupId !== activeGroupId && path && openNote) openNote(path, { group: groupId, fragment, ref: groupRef })
+    else window.history.replaceState(window.history.state, '', `#${encodeURIComponent(fragment)}`)
+  }, [groupId, activeGroupId, path, openNote, groupRef])
   const navigate = useMemo<Navigate | undefined>(() => onNavigate || openNote ? (target, options) => {
     const navigation = onNavigate ?? openNote!
-    navigation(target, { ...options, split })
+    navigation(target, { ...options, group: options?.group ?? groupId })
     if (target === path && options?.fragment) scrollFragment(options.fragment)
-  } : undefined, [onNavigate, openNote, path, split, scrollFragment])
+  } : undefined, [onNavigate, openNote, path, groupId, scrollFragment])
   // Preserve the parsed subtree across workspace/sidebar renders. Path and ref
   // remain dependencies because they determine relative links and image URLs.
   const rendered = useMemo(() => (

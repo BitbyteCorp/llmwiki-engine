@@ -55,7 +55,7 @@ export const api = {
   similar: (path: string, signal?: AbortSignal) => request<Array<CatalogNote & { score: number }>>(`/api/search/similar${query({ path })}`, { signal }),
   duplicates: (signal?: AbortSignal) => request<DuplicatePair[]>('/api/search/duplicates?limit=100', { signal }),
   links: (path: string, signal?: AbortSignal) => request<NoteLinks>(`/api/links${query({ path })}`, { signal }),
-  graph: (path?: string, depth = 1, signal?: AbortSignal) => request<KnowledgeGraph>(`/api/graph${query({ path, depth })}`, { signal }),
+  graph: (signal?: AbortSignal) => request<KnowledgeGraph>('/api/graph', { signal }),
   tags: (signal?: AbortSignal) => request<Array<{ tag: string; count: number }>>('/api/tags', { signal }),
   tagNotes: (tag: string, signal?: AbortSignal) => request<CatalogNote[]>(`/api/tags/notes${query({ tag })}`, { signal }),
   history: (path?: string, before?: string) => request<{ commits: CommitInfo[] }>(`/api/history${query({ path, before, limit: 30 })}`),

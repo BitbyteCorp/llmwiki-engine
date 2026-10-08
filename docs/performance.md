@@ -67,7 +67,7 @@ SHA 고정 응답도 인증과 현재 폴더 ACL을 먼저 확인한 뒤 조건�
 
 - 노트 Reader는 편집기를 열 때 CodeMirror 구현을 `next/dynamic`의 client-only 경계에서 불러온다. fenced 코드 언어는 `@codemirror/language-data`의 언어 설명과 lazy parser 로더를 사용해 필요한 파서를 불러온다.
 - 공유 Markdown은 컴포넌트와 파싱된 subtree를 메모이제이션한다. 내용·노트 경로·revision·navigation과 fragment 동작을 의존성으로 유지하므로 사이드바·작업 공간의 재렌더링이 같은 마크다운 파싱을 반복하지 않으면서 상대 링크·이미지 주소의 변경은 반영한다.
-- 이력의 `DiffView`·`RevertDialog`와 일기의 Markdown은 동적 import 경계로 분리한다. 전체 force graph는 기존 client-only dynamic 경계를 유지하고 주변 SVG 그래프는 패널을 펼칠 때만 컴포넌트를 불러와 마운트한다.
+- 이력의 `DiffView`·`RevertDialog`와 일기의 Markdown은 동적 import 경계로 분리한다. 그래프 뷰는 편집기 탭 안에서 client-only dynamic import로 불러온다.
 - Mermaid 컴포넌트와 엔진은 client-only lazy import로 불러온다. 전역 테마 설정이 다이어그램 사이에 섞이지 않도록 초기화와 렌더링을 직렬화한다. 보안 경계는 [웹의 노트 렌더링](web.md#노트-렌더링과-링크)에 기록한다.
 - 테마 변경 시 CodeMirror의 CSS 토큰 기반 `EditorView.theme`·`HighlightStyle`을 재구성하되 편집기 인스턴스와 초안은 유지한다. 이 구문 스타일의 직접 의존성으로 `@codemirror/language: ^6.12.4`와 `@lezer/highlight: ^1.2.5`를 선언한다.
 - Mermaid와 canvas 그래프는 계산된 CSS 테마 토큰을 읽어 테마 변경 시 다시 그리거나 색을 갱신한다. 마크다운 subtree의 재사용이 독립적인 테마 갱신까지 막지는 않는다. 토큰의 디자인 의미와 화면 구성은 [웹](web.md)에 기록한다.

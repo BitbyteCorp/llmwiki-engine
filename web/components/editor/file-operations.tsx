@@ -9,6 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useWorkspace } from '@/components/workspace/context'
+import { isGraphTab } from '@/components/workspace/layout'
 import { notify } from '@/components/notifications'
 import type { EditorCommand } from './state'
 import { confirmEditorLeave } from './state'
@@ -169,9 +170,10 @@ export function useFileOperations(files: string[]) {
       const detail = (event as CustomEvent<{ command: EditorCommand; path?: string; exactPath?: boolean }>).detail
       if (!detail || !canWrite) return
       const path = detail.path ?? workspace.activePath
+      if (isGraphTab(path) && detail.command !== 'new') return
       if (detail.command === 'new') {
-        if (detail.exactPath && detail.path) start('new', parentFolder(detail.path), detail.path)
-        else start('new', path ? parentFolder(path) : '')
+        if (detail.exactPath && detail.path && !isGraphTab(detail.path)) start('new', parentFolder(detail.path), detail.path)
+        else start('new', path && !isGraphTab(path) ? parentFolder(path) : '')
       }
       else if (detail.command === 'rename' && path && !path.startsWith('raw/')) start('move', path)
       else if (detail.command === 'delete' && path && !path.startsWith('raw/')) start('delete', path)

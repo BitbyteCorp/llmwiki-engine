@@ -1,0 +1,91 @@
+/* Shared motion tokens. Components use these instead of ad-hoc durations. */
+:root {
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+  --motion-slow: 240ms;
+  --ease-out: cubic-bezier(.2, .8, .2, 1);
+  --ease-in-out: cubic-bezier(.4, 0, .2, 1);
+  --ease-spring: cubic-bezier(.34, 1.36, .64, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --motion-fast: 0ms; --motion-base: 0ms; --motion-slow: 0ms; }
+  *, *::before, *::after { animation-duration: 0ms !important; animation-iteration-count: 1 !important; transition-duration: 0ms !important; scroll-behavior: auto !important; }
+}
+
+/* Drag image for notes and tabs; created off-screen by `dnd.ts`. */
+.drag-chip {
+  position: fixed;
+  top: -1000px;
+  left: -1000px;
+  max-width: 240px;
+  overflow: hidden;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--popover);
+  color: var(--foreground);
+  font-size: 13px;
+  line-height: 20px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  box-shadow: 0 6px 16px rgb(0 0 0 / .16);
+  pointer-events: none;
+}
+
+/* Explorer rows and transient folder targets share a soft, reversible motion. */
+.explorer-row, .explorer-folder {
+  transition: background-color var(--motion-fast) var(--ease-out), box-shadow var(--motion-slow) var(--ease-out), color var(--motion-fast) var(--ease-out);
+}
+.explorer-reveal { box-shadow: inset 0 0 0 1px var(--ring); }
+.explorer-chevron { transition: transform var(--motion-base) var(--ease-out); }
+.explorer-children {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows var(--motion-base) var(--ease-in-out), opacity var(--motion-base) var(--ease-out);
+}
+.explorer-children[data-open="true"] { grid-template-rows: 1fr; opacity: 1; }
+@starting-style {
+  .explorer-children[data-open="true"] { grid-template-rows: 0fr; opacity: 0; }
+}
+
+/* Native dialogs stay in the top layer until their closing transition ends. */
+.workspace-dialog, .workspace-drawer {
+  opacity: 0;
+  transition: opacity var(--motion-base) var(--ease-out), transform var(--motion-base) var(--ease-out), display var(--motion-base) allow-discrete, overlay var(--motion-base) allow-discrete;
+}
+.workspace-dialog { transform: translateY(-8px) scale(.98); }
+.workspace-drawer { transform: translateX(-100%); }
+.workspace-dialog[open], .workspace-drawer[open] { opacity: 1; transform: none; }
+.workspace-dialog::backdrop, .workspace-drawer::backdrop {
+  opacity: 0;
+  transition: opacity var(--motion-base) var(--ease-out), display var(--motion-base) allow-discrete, overlay var(--motion-base) allow-discrete;
+}
+.workspace-dialog[open]::backdrop, .workspace-drawer[open]::backdrop { opacity: 1; }
+@starting-style {
+  .workspace-dialog[open] { opacity: 0; transform: translateY(-8px) scale(.98); }
+  .workspace-drawer[open] { opacity: 0; transform: translateX(-100%); }
+  .workspace-dialog[open]::backdrop, .workspace-drawer[open]::backdrop { opacity: 0; }
+}
+
+/* Base UI marks entry/exit explicitly and retains popups until motion settles. */
+.workspace-popup { transition: opacity var(--motion-fast) var(--ease-out), scale var(--motion-fast) var(--ease-out); }
+
+/* Collapsing the whole toast slot also animates its neighbours into place. */
+.notification-slot {
+  display: grid;
+  grid-template-rows: 1fr;
+  margin-inline: -12px;
+  opacity: 1;
+  transform: translateY(0);
+  transition: grid-template-rows var(--motion-base) var(--ease-out), opacity var(--motion-base) var(--ease-out), transform var(--motion-base) var(--ease-out);
+}
+.notification-slot[data-state="entering"], .notification-slot[data-state="exiting"] {
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;
+}
+.notification-clip { min-height: 0; overflow: hidden; }
+.notification-padding { padding: 4px 12px; }

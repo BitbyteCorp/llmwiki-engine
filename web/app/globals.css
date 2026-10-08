@@ -1,6 +1,8 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
+@import "./motion.css";
+@import "../components/workspace/editor-groups.css";
 
 @custom-variant dark (&:where(.dark, .dark *));
 
@@ -31,11 +33,11 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
-  --radius-sm: .25rem;
-  --radius-md: .375rem;
-  --radius-lg: .5rem;
-  --radius-xl: .75rem;
-  --radius-2xl: .75rem;
+  --radius-sm: .125rem;
+  --radius-md: .1875rem;
+  --radius-lg: .25rem;
+  --radius-xl: .375rem;
+  --radius-2xl: .375rem;
   --text-heading-24: 1.5rem;
   --text-heading-24--line-height: 2rem;
   --text-heading-24--font-weight: 700;

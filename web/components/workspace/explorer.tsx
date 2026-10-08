@@ -1,10 +1,10 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ComponentProps, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useRouter } from 'next/navigation'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronRight, FilePlus2, FileText, Folder, FolderPlus, LocateFixed, MoreHorizontal, Star } from 'lucide-react'
+import { ChevronRight, FilePlus2, FileText, Folder, FolderPlus, LocateFixed, MoreHorizontal, Network, Star, X } from 'lucide-react'
 import { api } from '@/lib/api'
 import { ErrorNotice, Loading } from '@/components/common'
 import { Button } from '@/components/ui/button'
@@ -13,6 +13,9 @@ import { cn } from '@/lib/utils'
 import { useWorkspace } from './context'
 import { parentFolder, useFileOperations } from '@/components/editor/file-operations'
 import { confirmEditorLeave } from '@/components/editor/state'
+import { getActiveDrag, NOTE_MIME, setNoteDragData, setTabDragData } from './dnd'
+import { isGraphTab } from './layout'
+import { DirtyIndicator } from './tabs'
 
 type Node = { name: string; path: string; children?: Node[] }
 function buildTree(files: string[], folders: string[]): Node[] {
@@ -41,6 +44,24 @@ function buildTree(files: string[], folders: string[]): Node[] {
   return roots
 }
 
+function FolderChildren({ open, render }: { open: boolean; render: () => ReactNode }) {
+  const [mounted, setMounted] = useState(open)
+  const container = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (open) { setMounted(true); return }
+    if (!mounted) return
+    const duration = getComputedStyle(container.current!).transitionDuration.split(',').reduce((longest, value) => Math.max(longest, parseFloat(value) * (value.trim().endsWith('ms') ? 1 : 1000)), 0)
+    const timer = window.setTimeout(() => setMounted(false), duration)
+    return () => window.clearTimeout(timer)
+  }, [open, mounted])
+  if (!mounted) return null
+  return <div ref={container} className="explorer-children" data-open={open} aria-hidden={!open} inert={!open}><div className="min-h-0 overflow-hidden"><ul className="ml-3 border-l pl-2">{render()}</ul></div></div>
+}
+
+function ViewHeader({ title, open, onToggle, actions, className, ...props }: { title: ReactNode; open: boolean; onToggle: () => void; actions?: ReactNode } & Omit<ComponentProps<'div'>, 'title'>) {
+  return <div {...props} className={cn('flex h-6 shrink-0 items-center pr-1', className)}><button type="button" aria-expanded={open} className="flex h-full min-w-0 flex-1 items-center gap-1 px-1 text-left text-[11px] font-bold tracking-wide text-muted-foreground hover:text-foreground" onClick={onToggle}><ChevronRight aria-hidden="true" className={cn('size-3 shrink-0 transition-transform', open && 'rotate-90')} /><span className="truncate">{title}</span></button>{actions}</div>
+}
+
 export function Explorer({ userId }: { userId: number }) {
   const workspace = useWorkspace()
   const tree = useQuery({ queryKey: ['notes/tree'], queryFn: api.tree })
@@ -52,28 +73,30 @@ export function Explorer({ userId }: { userId: number }) {
   const [dropFolder, setDropFolder] = useState<string | null>(null)
   const [filter, setFilter] = useState('')
   const [expanded, setExpanded] = useState<string[]>([])
+  const [closedViews, setClosedViews] = useState<string[]>([])
   const [highlight, setHighlight] = useState('')
   const [ready, setReady] = useState(false)
   const root = useRef<HTMLDivElement>(null)
+  const hoverFolder = useRef<{ path: string; timer: number } | null>(null)
   const storageKey = `llmwiki.explorer.v1.${userId}`
   useEffect(() => {
     try {
-      const saved = JSON.parse(localStorage.getItem(storageKey) || 'null') as { filter: string; expanded: string[] } | null
-      if (saved && typeof saved.filter === 'string' && Array.isArray(saved.expanded)) { setFilter(saved.filter); setExpanded(saved.expanded) }
+      const saved = JSON.parse(localStorage.getItem(storageKey) || 'null') as { filter: string; expanded: string[]; closedViews?: string[] } | null
+      if (saved && typeof saved.filter === 'string' && Array.isArray(saved.expanded)) { setFilter(saved.filter); setExpanded(saved.expanded); if (Array.isArray(saved.closedViews)) setClosedViews(saved.closedViews.filter(view => typeof view === 'string')) }
     } catch { /* Explorer remains usable without persistent storage. */ }
     setReady(true)
   }, [storageKey])
   useEffect(() => {
-    if (ready) try { localStorage.setItem(storageKey, JSON.stringify({ filter, expanded })) } catch { /* Storage may be unavailable. */ }
-  }, [filter, expanded, ready, storageKey])
+    if (ready) try { localStorage.setItem(storageKey, JSON.stringify({ filter, expanded, closedViews })) } catch { /* Storage may be unavailable. */ }
+  }, [filter, expanded, closedViews, ready, storageKey])
   useEffect(() => {
-    if (!ready || !workspace.activePath) return
+    if (!ready || !workspace.activePath || isGraphTab(workspace.activePath)) return
     const parts = workspace.activePath.split('/')
     const ancestors = parts.slice(0, -1).map((_, index) => parts.slice(0, index + 1).join('/'))
     setExpanded(previous => [...new Set([...previous, ...ancestors])])
   }, [workspace.activePath, ready])
   useEffect(() => {
-    if (!workspace.activePath) return
+    if (!workspace.activePath || isGraphTab(workspace.activePath)) return
     const frame = requestAnimationFrame(() => {
       const target = Array.from(root.current?.querySelectorAll<HTMLElement>('[data-explorer-path]') ?? []).find(element => element.dataset.explorerPath === workspace.activePath)
       target?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
@@ -84,6 +107,7 @@ export function Explorer({ userId }: { userId: number }) {
     const reveal = (event: Event) => {
       const path = (event as CustomEvent<string>).detail
       setFilter('')
+      setClosedViews(previous => previous.filter(view => view !== 'tree'))
       setHighlight(path)
       const parts = path.split('/')
       setExpanded(previous => [...new Set([...previous, ...parts.map((_, index) => parts.slice(0, index + 1).join('/'))])])
@@ -100,6 +124,17 @@ export function Explorer({ userId }: { userId: number }) {
     })
     return () => cancelAnimationFrame(frame)
   }, [highlight, expanded, filter])
+  useEffect(() => {
+    if (!highlight) return
+    const timer = window.setTimeout(() => setHighlight(''), 1400)
+    return () => window.clearTimeout(timer)
+  }, [highlight])
+  useEffect(() => {
+    const end = () => { clearFolderHover(); setDropFolder(null) }
+    window.addEventListener('dragend', end)
+    window.addEventListener('drop', end)
+    return () => { clearFolderHover(); window.removeEventListener('dragend', end); window.removeEventListener('drop', end) }
+  }, [])
   const filtered = useMemo(() => (tree.data?.files ?? []).filter(path => `${path} ${workspace.knownTitles[path] || ''}`.toLocaleLowerCase().includes(filter.toLocaleLowerCase())), [tree.data, filter, workspace.knownTitles])
   const nodes = useMemo(() => buildTree(filtered, operations.virtualFolders.filter(path => !filter || path.toLocaleLowerCase().includes(filter.toLocaleLowerCase()))), [filtered, operations.virtualFolders, filter])
   useEffect(() => {
@@ -130,18 +165,40 @@ export function Explorer({ userId }: { userId: number }) {
       event.preventDefault(); setRenaming({ path: node.path, name: node.name })
     } else if (['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) {
       event.preventDefault()
-      const rows = [...root.current?.querySelectorAll<HTMLElement>('[data-explorer-path]') ?? []]
+      const rows = [...root.current?.querySelectorAll<HTMLElement>('[data-explorer-path]') ?? []].filter(row => !row.closest('[inert]'))
       const index = rows.indexOf(event.currentTarget)
       rows[event.key === 'Home' ? 0 : event.key === 'End' ? rows.length - 1 : Math.max(0, Math.min(rows.length - 1, index + (event.key === 'ArrowDown' ? 1 : -1)))]?.focus()
     } else if (node.children && ['ArrowRight', 'ArrowLeft'].includes(event.key)) {
       event.preventDefault(); setExpanded(previous => event.key === 'ArrowRight' ? [...new Set([...previous, node.path])] : previous.filter(path => path !== node.path))
     }
   }
+  function clearFolderHover() {
+    if (hoverFolder.current) window.clearTimeout(hoverFolder.current.timer)
+    hoverFolder.current = null
+  }
+  function canMoveDrag(event: DragEvent<HTMLElement>, folder: string) {
+    const drag = getActiveDrag()
+    return operations.canWrite && !operations.busy && folder !== 'raw' && !folder.startsWith('raw/') && drag?.kind === 'note' && !drag.path.startsWith('raw/') && tree.data?.files.includes(drag.path) && event.dataTransfer.types.includes(NOTE_MIME) && ['move', 'copyMove', 'all'].includes(event.dataTransfer.effectAllowed)
+  }
+  function overFolder(event: DragEvent<HTMLElement>, folder: string, open = true) {
+    const drag = getActiveDrag()
+    if (!open && drag?.kind === 'note' && event.dataTransfer.types.includes(NOTE_MIME) && hoverFolder.current?.path !== folder) {
+      clearFolderHover()
+      hoverFolder.current = { path: folder, timer: window.setTimeout(() => { setExpanded(previous => [...new Set([...previous, folder])]); hoverFolder.current = null }, 600) }
+    }
+    if (!canMoveDrag(event, folder)) return
+    event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropFolder(folder)
+  }
+  function leaveFolder(event: DragEvent<HTMLElement>) {
+    if (event.currentTarget.contains(event.relatedTarget as globalThis.Node)) return
+    clearFolderHover(); setDropFolder(null)
+  }
   function drop(event: DragEvent<HTMLElement>, folder: string) {
-    event.preventDefault(); setDropFolder(null)
-    if (!operations.canWrite || operations.busy) return
-    const path = event.dataTransfer.getData('application/x-llmwiki-note')
-    if (!tree.data?.files.includes(path) || path.startsWith('raw/')) return
+    clearFolderHover(); setDropFolder(null)
+    if (!canMoveDrag(event, folder)) return
+    event.preventDefault()
+    const path = event.dataTransfer.getData(NOTE_MIME)
+    if (getActiveDrag()?.path !== path) return
     const destination = `${folder ? `${folder}/` : ''}${path.split('/').pop()}`
     if (destination !== path) operations.move(path, destination)
   }
@@ -151,7 +208,7 @@ export function Explorer({ userId }: { userId: number }) {
       {renaming?.path === node.path ? <form className="min-w-0 flex-1" onSubmit={event => { event.preventDefault(); if (!operations.busy) void operations.renameInline(node.path, renaming.name).then(done => { if (done) { setRenaming(null); requestAnimationFrame(() => root.current?.querySelector<HTMLElement>(`[data-explorer-path="${CSS.escape(`${parentFolder(node.path) ? `${parentFolder(node.path)}/` : ''}${renaming.name.trim()}`)}"]`)?.focus()) } }) }}>
         <Input aria-label={`${node.name} 새 파일명`} autoFocus value={renaming.name} disabled={operations.busy} onFocus={event => event.target.select()} onChange={event => setRenaming({ path: node.path, name: event.target.value })} onKeyDown={event => { if (event.key === 'Escape') { event.preventDefault(); setRenaming(null); requestAnimationFrame(() => root.current?.querySelector<HTMLElement>(`[data-explorer-path="${CSS.escape(node.path)}"]`)?.focus()) } }} />
         <div className="flex gap-1 py-1"><Button type="submit" size="sm" disabled={operations.busy}>적용</Button><Button type="button" size="sm" variant="ghost" disabled={operations.busy} onClick={() => setRenaming(null)}>취소</Button></div>
-      </form> : <button type="button" title={`${node.path} · F2 이름 변경 · Shift+F10 메뉴`} data-explorer-path={node.path} aria-current={active ? 'page' : undefined} className={cn('explorer-row min-w-0 flex-1', active && 'bg-accent font-bold', highlight === node.path && 'ring-1 ring-inset ring-ring')} draggable={operations.canWrite && !operations.busy && !node.path.startsWith('raw/')} onDragStart={event => { event.dataTransfer.setData('application/x-llmwiki-note', node.path); event.dataTransfer.effectAllowed = 'move' }} onDragEnd={() => setDropFolder(null)} onContextMenu={event => openMenu(event, node.path, false)} onKeyDown={event => rowKey(event, node)} onClick={event => workspace.openNote(node.path, { split: event.altKey, pin: event.ctrlKey || event.metaKey })} onDoubleClick={() => workspace.pinTab(node.path)}><FileText className="size-4 shrink-0 text-muted-foreground" /><span className="truncate">{workspace.knownTitles[node.path] || node.name}</span></button>}
+      </form> : <button type="button" title={`${node.path} · F2 이름 변경 · Shift+F10 메뉴`} data-explorer-path={node.path} aria-current={active ? 'page' : undefined} className={cn('explorer-row min-w-0 flex-1', active && 'bg-accent font-bold', highlight === node.path && 'explorer-reveal')} draggable onDragStart={event => setNoteDragData(event, node.path, { title: workspace.knownTitles[node.path], move: operations.canWrite && !operations.busy && !node.path.startsWith('raw/') })} onDragEnd={() => { clearFolderHover(); setDropFolder(null) }} onContextMenu={event => openMenu(event, node.path, false)} onKeyDown={event => rowKey(event, node)} onClick={event => workspace.openNote(node.path, { group: event.altKey ? 'side' : undefined, pin: event.ctrlKey || event.metaKey })} onDoubleClick={() => workspace.pinTab(node.path)}><FileText className="size-4 shrink-0 text-muted-foreground" /><span className="truncate">{workspace.knownTitles[node.path] || node.name}</span></button>}
       <button type="button" title="즐겨찾기 전환" aria-label={`${node.name} 즐겨찾기 전환`} aria-pressed={workspace.favoritePaths.includes(node.path)} className="flex h-7 shrink-0 items-center px-1 text-muted-foreground hover:text-foreground" onClick={() => workspace.toggleFavorite(node.path)}><Star className={cn('size-3.5', workspace.favoritePaths.includes(node.path) && 'fill-current text-warning')} /></button>
       <button type="button" aria-label={`${node.name} 작업 메뉴`} aria-haspopup="menu" aria-expanded={menu?.path === node.path} className="flex h-7 shrink-0 items-center px-1 text-muted-foreground hover:text-foreground" onClick={event => openMenu(event, node.path, false)}><MoreHorizontal className="size-4" /></button>
     </li>
@@ -160,30 +217,46 @@ export function Explorer({ userId }: { userId: number }) {
     return branch.map(node => {
       const open = Boolean(filter) || expanded.includes(node.path)
       if (!node.children) return noteRow(node)
-      return <li key={node.path}><div className={cn('flex items-center rounded-md', dropFolder === node.path && 'bg-accent ring-2 ring-ring')} onDragOver={event => { if (operations.canWrite && event.dataTransfer.types.includes('application/x-llmwiki-note') && node.path !== 'raw' && !node.path.startsWith('raw/')) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; setDropFolder(node.path) } }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as globalThis.Node)) setDropFolder(null) }} onDrop={event => drop(event, node.path)}>
-        <button type="button" data-explorer-path={node.path} aria-expanded={open} className={cn('explorer-row min-w-0 flex-1', highlight === node.path && 'bg-accent ring-1 ring-inset ring-ring')} onContextMenu={event => openMenu(event, node.path, true)} onKeyDown={event => rowKey(event, node)} onClick={() => setExpanded(previous => previous.includes(node.path) ? previous.filter(path => path !== node.path) : [...previous, node.path])}><ChevronRight className={cn('size-3 shrink-0', open && 'rotate-90')} /><Folder className="size-4 shrink-0 text-muted-foreground" /><span className="truncate">{node.name}</span></button>
+      return <li key={node.path}><div className={cn('explorer-folder flex items-center rounded-md', dropFolder === node.path && 'bg-accent ring-2 ring-ring')} onDragOver={event => overFolder(event, node.path, open)} onDragLeave={leaveFolder} onDrop={event => drop(event, node.path)}>
+        <button type="button" data-explorer-path={node.path} aria-expanded={open} className={cn('explorer-row min-w-0 flex-1', highlight === node.path && 'explorer-reveal')} onContextMenu={event => openMenu(event, node.path, true)} onKeyDown={event => rowKey(event, node)} onClick={() => setExpanded(previous => previous.includes(node.path) ? previous.filter(path => path !== node.path) : [...previous, node.path])}><ChevronRight className={cn('explorer-chevron size-3 shrink-0', open && 'rotate-90')} /><Folder className="size-4 shrink-0 text-muted-foreground" /><span className="truncate">{node.name}</span></button>
         <button type="button" className="flex h-7 shrink-0 items-center px-1 text-muted-foreground hover:text-foreground" aria-label={`${node.path} 폴더 작업 메뉴`} aria-haspopup="menu" aria-expanded={menu?.path === node.path} onClick={event => openMenu(event, node.path, true)}><MoreHorizontal className="size-4" /></button>
-      </div>{open && <ul className="ml-3 border-l pl-2">{renderNodes(node.children)}</ul>}</li>
+      </div><FolderChildren open={open} render={() => renderNodes(node.children!)} /></li>
     })
   }
   const menuButton = 'flex min-h-9 w-full items-center rounded-md px-3 py-1.5 text-left text-sm hover:bg-accent focus:bg-accent focus:outline-none disabled:opacity-50'
   const writableMenu = operations.canWrite && menu && menu.path !== 'raw' && !menu.path.startsWith('raw/')
+  const treeOpen = Boolean(filter) || !closedViews.includes('tree')
+  const editorsOpen = !closedViews.includes('editors')
+  const favoritesOpen = !closedViews.includes('favorites')
+  const editorCount = workspace.groupOrder.reduce((count, id) => count + workspace.groups[id].tabs.length, 0)
+  const toggleView = (id: string) => setClosedViews(previous => previous.includes(id) ? previous.filter(view => view !== id) : [...previous, id])
   return <div ref={root} className="flex h-full min-h-0 flex-col">
     <div className="flex h-9 shrink-0 items-center justify-between gap-2 px-3"><h2 className="text-xs font-semibold text-muted-foreground">탐색기</h2><div className="flex items-center">
       {operations.canWrite && <><Button variant="ghost" size="icon-sm" aria-label="새 노트" disabled={operations.busy} onClick={() => operations.newNote(workspace.activePath ? parentFolder(workspace.activePath) : '')}><FilePlus2 className="size-4" /></Button><Button variant="ghost" size="icon-sm" aria-label="새 가상 폴더" disabled={operations.busy} onClick={() => operations.newFolder()}><FolderPlus className="size-4" /></Button></>}
-      <Button variant="ghost" size="icon-sm" aria-label="현재 노트 위치 표시" disabled={!workspace.activePath} onClick={() => workspace.revealFolder(workspace.activePath)}><LocateFixed className="size-4" /></Button>
+      <Button variant="ghost" size="icon-sm" aria-label="현재 노트 위치 표시" disabled={!workspace.activePath || isGraphTab(workspace.activePath)} onClick={() => workspace.revealFolder(workspace.activePath)}><LocateFixed className="size-4" /></Button>
     </div></div>
     <div className="shrink-0 px-2 pb-2"><Input aria-label="노트 경로 필터" className="h-8" placeholder="경로·제목 필터…" value={filter} onChange={event => setFilter(event.target.value)} /></div>
     {operations.me.error && <div className="space-y-2 px-2 pb-2"><ErrorNotice error={operations.me.error} /><Button size="sm" variant="outline" onClick={() => void operations.me.refetch()}>권한 다시 확인</Button></div>}
     {operations.panel}
-    <div className="min-h-0 flex-1 overflow-auto px-2 pb-2">
-      {tree.isPending && <Loading label="노트 목록 불러오는 중…" />}
-      {tree.error && <div className="space-y-2"><ErrorNotice error={tree.error} /><Button variant="outline" onClick={() => void tree.refetch()}>다시 시도</Button></div>}
-      {!filter && [['즐겨찾기', workspace.favoritePaths], ['최근 노트', workspace.recentPaths.slice(0, 8)]].map(([label, paths]) => <section key={label as string} className="mb-3"><h3 className="px-2 py-2 text-xs text-muted-foreground">{label}</h3><ul>{(paths as string[]).map(path => <li key={path}><button className={cn('explorer-row w-full', workspace.activePath === path && 'bg-accent')} title={path} onContextMenu={event => openMenu(event, path, false)} onKeyDown={event => { if (event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10') openMenu(event, path, false); else if (event.key === 'F2' && operations.canWrite && !path.startsWith('raw/')) { event.preventDefault(); operations.move(path) } }} onClick={() => workspace.openNote(path)}><FileText className="size-3.5 shrink-0" /><span className="truncate">{workspace.knownTitles[path] || path}</span></button></li>)}</ul>{!(paths as string[]).length && <p className="px-2 text-xs text-muted-foreground">아직 없습니다.</p>}</section>)}
-      <div className={cn('mb-1 flex items-center justify-between rounded-md', dropFolder === '' && 'bg-accent ring-2 ring-ring')} onContextMenu={event => openMenu(event, '', true)} onDragOver={event => { if (operations.canWrite && event.dataTransfer.types.includes('application/x-llmwiki-note')) { event.preventDefault(); setDropFolder('') } }} onDragLeave={() => setDropFolder(null)} onDrop={event => drop(event, '')}><h3 className="px-2 py-2 text-xs text-muted-foreground">저장소 루트 · 노트 {filtered.length}개</h3><button type="button" className="min-h-8 px-1 text-muted-foreground" aria-label="저장소 루트 작업 메뉴" aria-haspopup="menu" onClick={event => openMenu(event, '', true)}><MoreHorizontal className="size-4" /></button></div>
-      <nav aria-label="위키 폴더와 노트"><ul>{renderNodes(nodes)}</ul></nav>
-      {tree.data && !filtered.length && <p className="p-2 text-sm text-muted-foreground">{filter ? '일치하는 노트가 없습니다.' : '지식 저장소가 비어 있습니다.'}</p>}
-      {operations.canWrite && <p className="mt-3 px-2 text-xs text-muted-foreground">F2 이름 변경 · Shift+F10 메뉴 · 폴더에 끌어 이동 (모바일에서는 메뉴의 이동 사용)</p>}
+    <div className="flex min-h-0 flex-1 flex-col">
+      {!filter && editorCount > 0 && <section aria-label="열린 편집기" className="flex shrink-0 flex-col border-b"><ViewHeader title="열린 편집기" open={editorsOpen} onToggle={() => toggleView('editors')} />{editorsOpen && <div className="max-h-[min(12rem,25vh)] overflow-auto px-2 pb-1">{workspace.groupOrder.map((groupId, index) => workspace.groups[groupId].tabs.length > 0 && <div key={groupId} role="group" aria-label={`${index + 1} 그룹`}>{workspace.groupOrder.length > 1 && <button type="button" className="flex h-5 w-full items-center px-2 text-left text-[11px] text-muted-foreground hover:text-foreground" onClick={() => workspace.focusGroup(groupId)}>{index + 1} 그룹</button>}<ul>{workspace.groups[groupId].tabs.map(tab => {
+        const graph = isGraphTab(tab.path)
+        const label = graph ? '그래프' : workspace.knownTitles[tab.path] || tab.path.split('/').pop()!
+        const shown = workspace.groups[groupId].activePath === tab.path
+        const current = shown && groupId === workspace.activeGroupId
+        return <li key={tab.path} className={cn('group/editor flex min-w-0 items-center rounded-sm', current ? 'bg-accent' : shown && 'bg-accent/50')}><button type="button" className={cn('explorer-row min-w-0 flex-1', !tab.pinned && 'italic')} title={graph ? '그래프' : tab.path} aria-current={current ? 'page' : undefined} draggable onDragStart={event => setTabDragData(event, groupId, tab.path, graph ? '그래프' : workspace.knownTitles[tab.path])} onClick={() => workspace.openNote(tab.path, { group: groupId })} onKeyDown={event => { if (event.key === 'Delete') { event.preventDefault(); workspace.closeTab(tab.path, groupId) } }}>{graph ? <Network className="size-3.5 shrink-0" /> : <FileText className="size-3.5 shrink-0" />}<span className="truncate">{label}</span>{!graph && parentFolder(tab.path) && <span className="min-w-0 shrink truncate text-xs text-muted-foreground">{parentFolder(tab.path)}</span>}{!graph && <DirtyIndicator path={tab.path} />}</button><button type="button" title="편집기 닫기" aria-label={`${label} 편집기 닫기`} className={cn('flex h-7 shrink-0 items-center px-1 text-muted-foreground hover:text-foreground group-focus-within/editor:opacity-100 group-hover/editor:opacity-100 [@media(hover:none)]:opacity-100', !current && 'opacity-0')} onClick={() => workspace.closeTab(tab.path, groupId)}><X className="size-3.5" /></button></li>
+      })}</ul></div>)}</div>}</section>}
+      {!filter && workspace.favoritePaths.length > 0 && <section aria-label="즐겨찾기" className="flex shrink-0 flex-col border-b"><ViewHeader title="즐겨찾기" open={favoritesOpen} onToggle={() => toggleView('favorites')} />{favoritesOpen && <ul className="max-h-[min(10rem,20vh)] overflow-auto px-2 pb-1">{workspace.favoritePaths.map(path => <li key={path}><button className={cn('explorer-row w-full', workspace.activePath === path && 'bg-accent')} title={path} draggable onDragStart={event => setNoteDragData(event, path, { title: workspace.knownTitles[path], move: operations.canWrite && !operations.busy && !path.startsWith('raw/') })} onDragEnd={() => { clearFolderHover(); setDropFolder(null) }} onContextMenu={event => openMenu(event, path, false)} onKeyDown={event => { if (event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10') openMenu(event, path, false); else if (event.key === 'F2' && operations.canWrite && !path.startsWith('raw/')) { event.preventDefault(); operations.move(path) } }} onClick={() => workspace.openNote(path)}><FileText className="size-3.5 shrink-0" /><span className="truncate">{workspace.knownTitles[path] || path}</span></button></li>)}</ul>}</section>}
+      <section aria-label="저장소 루트" className={cn('flex min-w-0 flex-col', treeOpen ? 'min-h-32 flex-1' : 'shrink-0')}>
+        <ViewHeader title={`저장소 루트 · 노트 ${filtered.length}개`} open={treeOpen} onToggle={() => toggleView('tree')} className={cn('explorer-folder', dropFolder === '' && 'bg-accent ring-2 ring-ring')} onContextMenu={event => openMenu(event, '', true)} onDragOver={event => overFolder(event, '')} onDragLeave={leaveFolder} onDrop={event => drop(event, '')} actions={<button type="button" className="flex h-6 shrink-0 items-center px-1 text-muted-foreground hover:text-foreground" aria-label="저장소 루트 작업 메뉴" aria-haspopup="menu" onClick={event => openMenu(event, '', true)}><MoreHorizontal className="size-4" /></button>} />
+        {treeOpen && <div className="min-h-0 flex-1 overflow-auto px-2 pb-2">
+          {tree.isPending && <Loading label="노트 목록 불러오는 중…" />}
+          {tree.error && <div className="space-y-2"><ErrorNotice error={tree.error} /><Button variant="outline" onClick={() => void tree.refetch()}>다시 시도</Button></div>}
+          <nav aria-label="위키 폴더와 노트"><ul>{renderNodes(nodes)}</ul></nav>
+          {tree.data && !filtered.length && <p className="p-2 text-sm text-muted-foreground">{filter ? '일치하는 노트가 없습니다.' : '지식 저장소가 비어 있습니다.'}</p>}
+          {operations.canWrite && <p className="mt-3 px-2 text-xs text-muted-foreground">F2 이름 변경 · Shift+F10 메뉴 · 폴더에 끌어 이동 (모바일에서는 메뉴의 이동 사용)</p>}
+        </div>}
+      </section>
     </div>
     {menu && createPortal(<div ref={menuRef} role="menu" aria-label={`${menu.path || '저장소 루트'} 작업`} className="fixed z-[100] max-h-[calc(100dvh-1rem)] w-56 overflow-y-auto rounded-lg border bg-popover p-1 text-popover-foreground shadow-xl" style={{ left: menu.x, top: menu.y }} onKeyDown={event => {
       if (event.key === 'Escape' || event.key === 'Tab') { if (event.key === 'Escape') event.preventDefault(); setMenu(null) }

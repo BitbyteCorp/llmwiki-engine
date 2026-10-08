@@ -8,6 +8,7 @@ import { openChat } from '@/lib/chat-context'
 import { useWorkspace, type Workspace } from './context'
 import type { PaletteMode } from './palettes'
 import type { PanelId } from './registry'
+import { isGraphTab } from './layout'
 
 type Shortcut = { key: string; mod?: boolean; alt?: boolean; shift?: boolean; hint?: string }
 type BindingContext = {
@@ -22,38 +23,44 @@ type BindingContext = {
 type Binding = { id: string; label: string; shortcuts: Shortcut[]; outsideInput?: boolean; scope?: string; run(context: BindingContext, event: KeyboardEvent): void }
 
 function noteCommand(context: BindingContext, command: EditorCommand) {
-  const path = context.workspace.activeGroupPath
+  const path = isGraphTab(context.workspace.activePath) ? '' : context.workspace.activePath
   if (path || command === 'new') dispatchEditorCommand(command, path || undefined, command === 'new' ? undefined : { exactPath: true })
 }
-function closeActiveGroup({ workspace }: BindingContext) {
-  if (workspace.activeGroup === 2) workspace.closeSplit()
-  else if (workspace.activeGroupPath) workspace.closeTab(workspace.activeGroupPath)
+function closeActiveTab({ workspace }: BindingContext) {
+  if (workspace.activePath) workspace.closeTab(workspace.activePath)
 }
 function selectTab({ workspace }: BindingContext, index: number) {
-  const tab = workspace.tabs[index]
-  if (tab) workspace.openNote(tab.path, { split: workspace.activeGroup === 2 })
+  const tab = workspace.groups[workspace.activeGroupId]?.tabs[index]
+  if (tab) workspace.openNote(tab.path, { group: workspace.activeGroupId })
+}
+
+export function saveDirtyGroups(workspace: Workspace): void {
+  for (const groupId of workspace.groupOrder) {
+    const path = workspace.groups[groupId]?.activePath
+    if (path && !isGraphTab(path) && workspace.isEditorOwner(groupId, path) && getEditorStatus(path)?.dirty) dispatchEditorCommand('save', path, { exactPath: true })
+  }
 }
 
 /** Binding execution, help rows, and palette hints all use this registry. */
 export const workspaceKeybindings: readonly Binding[] = [
   { id: 'editor-save', label: '현재 그룹 노트 저장', shortcuts: [{ key: 's', mod: true }], run: context => noteCommand(context, 'save') },
-  { id: 'editor-save-all', label: '열린 그룹의 변경된 노트 모두 저장', shortcuts: [{ key: 's', mod: true, alt: true }], run: context => {
-    for (const path of new Set([context.workspace.activePath, context.workspace.splitPath])) {
-      if (path && getEditorStatus(path)?.dirty) dispatchEditorCommand('save', path, { exactPath: true })
-    }
-  } },
-  { id: 'editor-edit', label: '편집 / 읽기 전환', shortcuts: [{ key: 'e', mod: true }], run: context => noteCommand(context, getEditorStatus(context.workspace.activeGroupPath)?.mode === 'edit' || getEditorStatus(context.workspace.activeGroupPath)?.mode === 'split' ? 'view' : 'edit') },
+  { id: 'editor-save-all', label: '열린 그룹의 변경된 노트 모두 저장', shortcuts: [{ key: 's', mod: true, alt: true }], run: context => saveDirtyGroups(context.workspace) },
+  { id: 'editor-edit', label: '편집 / 읽기 전환', shortcuts: [{ key: 'e', mod: true }], run: context => noteCommand(context, getEditorStatus(context.workspace.activePath)?.mode === 'edit' || getEditorStatus(context.workspace.activePath)?.mode === 'split' ? 'view' : 'edit') },
   { id: 'editor-preview', label: '원문 + 미리보기', shortcuts: [{ key: 'v', mod: true, shift: true }], run: context => noteCommand(context, 'preview') },
   { id: 'editor-discard', label: '변경 버리기', shortcuts: [{ key: 'd', mod: true, alt: true }], run: context => noteCommand(context, 'discard') },
   { id: 'editor-new', label: '새 노트', shortcuts: [{ key: 'n', alt: true }], outsideInput: true, run: context => noteCommand(context, 'new') },
-  { id: 'close', label: '현재 탭 / 그룹 닫기', shortcuts: [{ key: 'w', alt: true }], outsideInput: true, run: closeActiveGroup },
+  { id: 'close', label: '현재 탭 닫기', shortcuts: [{ key: 'w', alt: true }], outsideInput: true, run: closeActiveTab },
   { id: 'previous-tab', label: '이전 탭', shortcuts: [{ key: 'ArrowLeft', alt: true }], outsideInput: true, run: context => {
-    const index = context.workspace.tabs.findIndex(tab => tab.path === context.workspace.activeGroupPath)
-    selectTab(context, (index - 1 + context.workspace.tabs.length) % context.workspace.tabs.length)
+    const group = context.workspace.groups[context.workspace.activeGroupId]
+    if (!group?.tabs.length) return
+    const index = group.tabs.findIndex(tab => tab.path === group.activePath)
+    selectTab(context, (index - 1 + group.tabs.length) % group.tabs.length)
   } },
   { id: 'next-tab', label: '다음 탭', shortcuts: [{ key: 'ArrowRight', alt: true }], outsideInput: true, run: context => {
-    const index = context.workspace.tabs.findIndex(tab => tab.path === context.workspace.activeGroupPath)
-    selectTab(context, (index + 1) % context.workspace.tabs.length)
+    const group = context.workspace.groups[context.workspace.activeGroupId]
+    if (!group?.tabs.length) return
+    const index = group.tabs.findIndex(tab => tab.path === group.activePath)
+    selectTab(context, (index + 1) % group.tabs.length)
   } },
   { id: 'select-tab', label: '번호로 탭 선택', shortcuts: Array.from({ length: 9 }, (_, index) => ({ key: String(index + 1), alt: true, hint: '1–9' })), outsideInput: true, run: (context, event) => selectTab(context, Number(event.code.replace('Digit', '') || event.key) - 1) },
   { id: 'reopen', label: '닫은 탭 다시 열기', shortcuts: [{ key: 't', alt: true, shift: true }], outsideInput: true, run: context => context.workspace.reopenClosed() },
@@ -65,20 +72,23 @@ export const workspaceKeybindings: readonly Binding[] = [
   { id: 'search', label: '검색 패널 초점', shortcuts: [{ key: 'f', mod: true, shift: true }], run: context => context.selectPanel('search') },
   { id: 'history', label: '이력 패널 초점', shortcuts: [{ key: 'h', mod: true, shift: true }], run: context => context.selectPanel('history') },
   { id: 'settings', label: '설정 열기', shortcuts: [{ key: ',', mod: true }], run: context => context.openSettings() },
-  { id: 'split', label: '노트 분할 보기 전환', shortcuts: [{ key: '\\', mod: true }], run: context => context.workspace.toggleSplit() },
+  { id: 'split', label: '편집 그룹 오른쪽 분할', shortcuts: [{ key: '\\', mod: true }], run: context => context.workspace.splitEditor('right') },
   { id: 'open-side', label: '초점 탭을 분할에 열기', shortcuts: [{ key: 'Enter', mod: true }], scope: '[role="tab"]', run: (context, event) => {
     const target = event.target instanceof Element ? event.target.closest<HTMLElement>('[role="tab"]') : null
     const path = target?.dataset.tabPath || target?.title
-    if (path) context.workspace.openNote(path, { split: true })
+    if (path) {
+      if (target?.dataset.groupId) context.workspace.setActiveGroup(target.dataset.groupId)
+      context.workspace.openNote(path, { group: 'side' })
+    }
   } },
-  { id: 'focus-group', label: '편집 그룹 초점', shortcuts: [{ key: '1', mod: true, hint: '1 / 2' }, { key: '2', mod: true, hint: '1 / 2' }], run: (context, event) => context.workspace.focusGroup(event.code === 'Digit2' || event.key === '2' ? 2 : 1) },
+  { id: 'focus-group', label: '번호로 편집 그룹 초점', shortcuts: Array.from({ length: 9 }, (_, index) => ({ key: String(index + 1), mod: true, hint: '1–9' })), run: (context, event) => context.workspace.focusGroup(Number(shortcutKey(event)) - 1) },
   { id: 'quickopen', label: '노트 빠르게 열기', shortcuts: [{ key: 'p', mod: true }], run: context => context.setMode('quickopen') },
   { id: 'commands', label: '명령 팔레트', shortcuts: [{ key: 'k', mod: true }, { key: 'p', mod: true, shift: true }], run: context => context.setMode('commands') },
   { id: 'theme', label: '밝은 / 어두운 테마 전환', shortcuts: [{ key: 't', mod: true, alt: true }], run: context => context.toggleTheme() },
   { id: 'editor-rename', label: '탐색기 / 탭 이름 바꾸기', shortcuts: [{ key: 'F2' }], outsideInput: true, scope: '[role="tab"], [data-explorer-path]', run: (context, event) => {
     const target = event.target instanceof Element ? event.target.closest<HTMLElement>('[role="tab"]') : null
     const path = target?.dataset.tabPath || target?.title
-    if (path) dispatchEditorCommand('rename', path, { exactPath: true })
+    if (path && !isGraphTab(path)) dispatchEditorCommand('rename', path, { exactPath: true })
   } },
   { id: 'help', label: '단축키 도움말', shortcuts: [{ key: '?' }, { key: 'F1' }], run: context => context.setMode('help') },
 ]

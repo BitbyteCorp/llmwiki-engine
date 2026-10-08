@@ -1,0 +1,47 @@
+/* Editor group grid, tab strips, and drop feedback share the motion tokens. */
+.workspace-editor-grid { height: 100%; min-height: 0; min-width: 0; overflow: hidden; }
+.workspace-editor-split { height: 100%; min-height: 0; min-width: 0; }
+.workspace-editor-split:not(:has([data-separator="active"])) > [data-panel],
+.workspace-shell-panels:not(:has([data-separator="active"])) > [data-panel] { transition: flex-grow var(--motion-slow) var(--ease-in-out); }
+.workspace-editor-group { --group-enter-x: 0px; --group-enter-y: 8px; position: relative; display: flex; flex-direction: column; height: 100%; min-height: 0; min-width: 0; overflow: hidden; background: var(--background); animation: workspace-group-enter var(--motion-slow) var(--ease-out) both; }
+.workspace-editor-group[data-entry-side="left"] { --group-enter-x: -8px; --group-enter-y: 0px; }
+.workspace-editor-group[data-entry-side="right"] { --group-enter-x: 8px; --group-enter-y: 0px; }
+.workspace-editor-group[data-entry-side="top"] { --group-enter-y: -8px; }
+.workspace-editor-group::before { content: ""; position: absolute; inset: 0 0 auto; z-index: 3; height: 2px; background: var(--primary); opacity: 0; pointer-events: none; transition: opacity var(--motion-base) var(--ease-out); }
+.workspace-editor-group[data-active="true"]::before { opacity: 1; }
+.workspace-editor-group[data-active="true"] .workspace-tabs { background: color-mix(in srgb, var(--primary) 5%, var(--secondary)); }
+@keyframes workspace-group-enter { from { opacity: 0; transform: translate(var(--group-enter-x), var(--group-enter-y)); } to { opacity: 1; transform: translate(0, 0); } }
+.workspace-editor-separator { position: relative; z-index: 4; flex-shrink: 0; touch-action: none; background: var(--border); transition: background var(--motion-fast) var(--ease-out); }
+.workspace-editor-separator[aria-orientation="vertical"] { width: 1px; height: 100%; cursor: col-resize; }
+.workspace-editor-separator[aria-orientation="horizontal"] { height: 1px; width: 100%; cursor: row-resize; }
+.workspace-editor-separator:hover, .workspace-editor-separator[data-separator="active"], .workspace-editor-separator:focus-visible { background: var(--ring); }
+.workspace-editor-separator:focus-visible { outline: 2px solid var(--ring); outline-offset: -1px; }
+/* The reader is deliberately not a containing block: the drop overlay spans the
+   whole group (tab strip included) so a split preview shows the new window. */
+.workspace-tabs { display: flex; min-height: 40px; flex-shrink: 0; border-bottom: 1px solid var(--border); background: var(--secondary); transition: background var(--motion-base) var(--ease-out); }
+.workspace-tablist { position: relative; display: flex; align-items: stretch; flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; }
+.workspace-tab { position: relative; display: flex; flex-shrink: 0; align-items: center; max-width: 256px; border-right: 1px solid var(--border); transform-origin: center; transition: opacity var(--motion-fast) var(--ease-out), background var(--motion-base) var(--ease-out); }
+.workspace-tab::before { content: ""; position: absolute; inset: 0 0 auto; height: 2px; background: var(--primary); opacity: 0; transform: scaleX(.7); transition: opacity var(--motion-base) var(--ease-out), transform var(--motion-base) var(--ease-out); }
+.workspace-tab.is-active { background: var(--background); }
+.workspace-tab.is-active::before { opacity: 1; transform: scaleX(1); }
+.workspace-tab.is-dragging { opacity: .4; }
+.workspace-tab button { transition: color var(--motion-fast) var(--ease-out), background var(--motion-fast) var(--ease-out); }
+.workspace-tab-insertion { position: absolute; top: 5px; bottom: 5px; z-index: 5; width: 2px; border-radius: var(--radius-md); background: var(--primary); pointer-events: none; transform: translateX(-1px); transition: left var(--motion-fast) var(--ease-out); animation: workspace-indicator-enter var(--motion-fast) var(--ease-out) both; }
+@keyframes workspace-indicator-enter { from { opacity: 0; } to { opacity: 1; } }
+.workspace-tabs-empty { align-self: center; flex: 1; min-width: 0; padding: 8px 12px; overflow: hidden; color: var(--muted-foreground); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-tab-tools { display: flex; flex-shrink: 0; align-items: center; gap: 1px; padding: 0 3px; border-left: 1px solid var(--border); }
+.workspace-drop-overlay { position: absolute; inset: 4px; z-index: 20; display: flex; align-items: center; justify-content: center; border: 1px solid color-mix(in srgb, var(--primary) 55%, transparent); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--primary) 12%, transparent); opacity: 0; visibility: hidden; pointer-events: none; transition: inset var(--motion-base) var(--ease-out), opacity var(--motion-fast) var(--ease-out), visibility var(--motion-fast); }
+.workspace-drop-overlay[data-visible="true"] { opacity: 1; visibility: visible; }
+.workspace-drop-overlay[data-zone="left"] { right: 50%; }
+.workspace-drop-overlay[data-zone="right"] { left: 50%; }
+.workspace-drop-overlay[data-zone="top"] { bottom: 50%; }
+.workspace-drop-overlay[data-zone="bottom"] { top: 50%; }
+.workspace-drop-label { max-width: calc(100% - 12px); padding: 5px 10px; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--popover); color: var(--foreground); font-size: 12px; text-align: center; box-shadow: 0 4px 12px color-mix(in srgb, var(--foreground) 12%, transparent); }
+.workspace-activity { position: relative; }
+.workspace-activity-indicator { position: absolute; left: 0; z-index: 1; width: 2px; border-radius: var(--radius-md); background: var(--primary); pointer-events: none; transition: transform var(--motion-slow) var(--ease-spring), opacity var(--motion-base) var(--ease-out); }
+.workspace-activity > button { transition: color var(--motion-fast) var(--ease-out), background var(--motion-fast) var(--ease-out); }
+@media (max-width: 767px) {
+  .workspace-mobile-groups { display: flex; flex-direction: column; overflow-y: auto; }
+  .workspace-mobile-groups[data-multiple="true"] > .workspace-editor-group { flex: 1 0 min(75dvh, 600px); min-height: 280px; border-bottom: 1px solid var(--border); }
+  .workspace-mobile-groups[data-multiple="false"] > .workspace-editor-group { flex: 1; }
+}

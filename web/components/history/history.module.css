@@ -2,6 +2,9 @@
 .diff { width: 100%; border-collapse: collapse; font-family: var(--font-mono), monospace; font-size: 12px; line-height: 1.7; }
 .diff td { white-space: pre-wrap; overflow-wrap: anywhere; vertical-align: top; padding: 0 8px; }
 .split { table-layout: fixed; min-width: 600px; }
+.unified { table-layout: fixed; min-width: 0; }
+.unified td { white-space: pre-wrap; overflow-wrap: break-word; word-break: break-word; }
+.diff th { padding: 5px 8px; text-align: left; font-family: var(--font-sans), sans-serif; font-weight: 600; white-space: normal; overflow-wrap: anywhere; background: var(--muted); border-bottom: 1px solid var(--border); }
 .number { width: 3rem; user-select: none; text-align: right; color: var(--muted-foreground); background: var(--muted); border-right: 1px solid var(--border); }
 .diff .fold { white-space: normal; background: var(--muted); color: var(--muted-foreground); padding: 5px 8px; }
 .added { background: var(--diff-added); color: var(--diff-added-foreground); }
@@ -15,9 +18,15 @@
 .blameMeta { position: sticky; top: 0; display: flex; align-items: center; gap: 6px; width: 191px; height: 24px; white-space: nowrap; }
 .blameNumber { position: sticky; left: 212px; z-index: 1; min-width: 3rem; width: 3rem; user-select: none; text-align: right; color: var(--muted-foreground); background: var(--muted); border-right: 1px solid var(--border); }
 .blameContent { white-space: pre; height: 24px; }
+.blameGroupHeader { display: none; }
+.blameGroupMeta { display: flex; align-items: center; gap: 8px; min-width: 0; font-family: var(--font-sans), sans-serif; font-size: 11px; }
 .blamePopover { position: fixed; z-index: 80; width: min(288px, calc(100vw - 16px)); max-height: min(212px, calc(100dvh - 16px)); overflow: auto; display: grid; gap: .5rem; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; background: var(--card); color: var(--foreground); border: 1px solid var(--border); border-radius: .375rem; padding: 12px; box-shadow: 0 8px 24px color-mix(in srgb, var(--foreground) 18%, transparent); }
 @media (max-width: 640px) {
-  .gutter { width: 168px; min-width: 168px; }
-  .blameMeta { width: 147px; }
-  .blameNumber { left: 168px; min-width: 2.5rem; width: 2.5rem; }
+  .blame { table-layout: fixed; }
+  .gutter { display: none; }
+  .blameGroupHeader { display: table-row; }
+  .blame .blameGroupHeader td { padding: 4px 8px; background: var(--muted); border-top: 1px solid var(--border); border-left: 4px solid var(--link); }
+  .blameGroupMeta { white-space: normal; }
+  .blameNumber { left: 0; min-width: 2.5rem; width: 2.5rem; }
+  .blameContent { width: calc(100% - 2.5rem); white-space: pre-wrap; overflow-wrap: anywhere; }
 }

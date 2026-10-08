@@ -5,25 +5,30 @@ import { useQuery } from '@tanstack/react-query'
 import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { noteHref } from '@/components/common'
 import { api } from '@/lib/api'
-import { confirmEditorLeave, getEditorStatus, useEditorStatus } from '@/components/editor/state'
+import { clearDraft, confirmEditorLeave, getEditorStatus, markDraftTransfer, renameDraft, subscribeEditorStatus } from '@/components/editor/state'
+import { notify } from '@/components/notifications'
+import { createWorkspace, GRAPH_TAB_PATH, isGraphTab, groupOrder, insertGroup, MAX_EDITOR_GROUPS, moveTab as moveLayoutTab, removeGroup, renamePath, removePath, visitGroup, validateV2, migrateV1, type WorkspaceState, type GroupId, type LayoutNode, type SplitSide, type DropTarget } from './layout'
 
-export type WorkspaceTab = { path: string; pinned: boolean }
-type NoteInfo = { path: string; updatedSha: string; body: string }
-type StoredWorkspace = { tabs: WorkspaceTab[]; splitPath: string | null; splitRatio: number; favoritePaths: string[]; recentPaths: string[]; knownTitles: Record<string, string>; closed: WorkspaceTab[] }
-export type Workspace = Omit<StoredWorkspace, 'closed'> & {
+export { MAX_EDITOR_GROUPS } from './layout'
+export type { WorkspaceTab, GroupId, EditorGroup, SplitNode, LayoutNode, SplitSide, DropTarget } from './layout'
+export type NoteInfo = { path: string; updatedSha: string; body: string }
+export type Workspace = Omit<WorkspaceState, 'closed'> & {
+  groupOrder: GroupId[]
   activePath: string
-  activeGroup: 1 | 2
-  activeGroupPath: string
-  setActiveGroup(group: 1 | 2): void
-  focusGroup(group: 1 | 2): void
-  closeSplit(): void
-  setSplitRatio(ratio: number): void
-  openNote(path: string, options?: { pin?: boolean; split?: boolean; fragment?: string }): void
-  closeTab(path: string): void
-  pinTab(path: string): void
-  closeOthers(path: string): void
+  setActiveGroup(id: GroupId): void
+  focusGroup(target: GroupId | number): void
+  openNote(path: string, options?: { pin?: boolean; fragment?: string; group?: GroupId | 'side'; ref?: string }): void
+  openNoteAt(path: string, target: DropTarget): void
+  moveTab(source: { groupId: GroupId; path: string }, target: DropTarget, options?: { copy?: boolean }): void
+  splitEditor(side?: SplitSide): void
+  closeTab(path: string, groupId?: GroupId): void
+  closeOthers(path: string, groupId?: GroupId): void
+  closeGroup(groupId: GroupId): void
+  pinTab(path: string, groupId?: GroupId): void
   reopenClosed(): void
-  toggleSplit(): void
+  setSplitSizes(splitId: string, sizes: number[]): void
+  resetSplitSizes(splitId: string): void
+  isEditorOwner(groupId: GroupId, path: string): boolean
   revealFolder(path: string): void
   toggleFavorite(path: string): void
   rememberTitle(path: string, title: string): void
@@ -32,82 +37,173 @@ export type Workspace = Omit<StoredWorkspace, 'closed'> & {
   noteInfo: NoteInfo | null
   setNoteInfo(info: NoteInfo | null): void
 }
-const empty: StoredWorkspace = { tabs: [], splitPath: null, splitRatio: 0.5, favoritePaths: [], recentPaths: [], knownTitles: {}, closed: [] }
 const Context = createContext<Workspace | null>(null)
-const key = 'llmwiki.workspace.v1'
-
-function clampSplitRatio(ratio: unknown): number {
-  return typeof ratio === 'number' && Number.isFinite(ratio) ? Math.min(0.8, Math.max(0.2, ratio)) : 0.5
+const storagePrefix = 'llmwiki.workspace.v2'
+const capNotice = () => notify({ title: `편집기 그룹은 최대 ${MAX_EDITOR_GROUPS}개까지 열 수 있습니다.`, description: '현재 그룹에서 노트를 엽니다.' })
+const activeHref = (state: WorkspaceState) => {
+  const group = state.groups[state.activeGroupId]
+  return isGraphTab(group?.activePath ?? '') ? '/graph' : group?.activePath ? noteHref(group.activePath) + (group.ref ? `?ref=${encodeURIComponent(group.ref)}` : '') : '/wiki?empty=1'
 }
-
-function visit(state: StoredWorkspace, path: string, pin = false): StoredWorkspace {
-  state = { ...state, tabs: state.tabs.map(tab => !tab.pinned && getEditorStatus(tab.path)?.dirty ? { ...tab, pinned: true } : tab) }
-  const existing = state.tabs.find(tab => tab.path === path)
-  let tabs: WorkspaceTab[]
-  if (existing) tabs = pin ? state.tabs.map(tab => tab.path === path ? { ...tab, pinned: true } : tab) : state.tabs
-  else {
-    const preview = state.tabs.findIndex(tab => !tab.pinned)
-    tabs = [...state.tabs]
-    if (!pin && preview !== -1) tabs[preview] = { path, pinned: false }
-    else tabs.push({ path, pinned: pin })
+function freshGroupId(state: WorkspaceState) {
+  let index = 1
+  while (state.groups[`group-${index}`]) index += 1
+  return `group-${index}`
+}
+function ownerFor(state: WorkspaceState, path: string, remembered?: string) {
+  if (remembered && state.groups[remembered]?.activePath === path) return remembered
+  return groupOrder(state.layout).find(id => state.groups[id]?.activePath === path)
+}
+function leavingFor(state: WorkspaceState, id: string, path: string) {
+  const previous = state.groups[id]?.activePath
+  return previous && !isGraphTab(previous) && previous !== path ? [previous] : []
+}
+const notePaths = (paths: string[]) => paths.filter(path => !isGraphTab(path))
+function updateSizes(node: LayoutNode, id: string, sizes?: number[]): LayoutNode {
+  if (node.type === 'group') return node
+  if (node.id === id) {
+    const valid = sizes && sizes.length === node.children.length && sizes.every(size => Number.isFinite(size) && size > 0)
+    const values = valid ? sizes : node.children.map(() => 1)
+    const sum = values.reduce((total, size) => total + size, 0)
+    return { ...node, sizes: values.map(size => size / sum * 100) }
   }
-  return { ...state, tabs, recentPaths: [path, ...state.recentPaths.filter(item => item !== path)].slice(0, 30) }
+  return { ...node, children: node.children.map(child => updateSizes(child, id, sizes)) }
 }
 
 export function WorkspaceProvider({ children, userId }: { children: ReactNode; userId?: number }) {
   const pathname = usePathname()
+  const searchParams = useSearchParams()
+  const urlPath = pathname === '/graph' ? GRAPH_TAB_PATH : pathname.startsWith('/wiki/') ? pathname.slice(6).split('/').map(decodeURIComponent).join('/') : ''
+  const urlRef = pathname === '/graph' ? undefined : searchParams.get('ref') || undefined
   const router = useRouter()
-  const activePath = pathname.startsWith('/wiki/') ? pathname.slice(6).split('/').map(decodeURIComponent).join('/') : ''
-  const activePathRef = useRef(activePath)
-  activePathRef.current = activePath
-  const storageKey = `${key}.${userId ?? 'default'}`
-  const [state, setState] = useState<StoredWorkspace>(empty)
+  const storageKey = `${storagePrefix}.${userId ?? 'default'}`
+  const [state, setState] = useState<WorkspaceState>(createWorkspace)
   const stateRef = useRef(state)
-  stateRef.current = state
   const [restoredKey, setRestoredKey] = useState<string | null>(null)
   const ready = restoredKey === storageKey
-  const [activeGroup, setActiveGroup] = useState<1 | 2>(1)
-  const currentGroup = state.splitPath && activeGroup === 2 ? 2 : 1
+  const [noteInfo, setNoteInfo] = useState<NoteInfo | null>(null)
+  const owners = useRef(new Map<string, string>())
   const focusFrame = useRef<number | null>(null)
-  const focusGroup = useCallback((group: 1 | 2) => {
-    setActiveGroup(group)
+  const pendingFragments = useRef(new Map<string, { path: string; fragment: string }>())
+  const readyReaders = useRef(new Map<string, string>())
+  const tree = useQuery({ queryKey: ['notes/tree'], queryFn: api.tree })
+  const commit = useCallback((next: WorkspaceState) => {
+    for (const [id, path] of readyReaders.current) if (next.groups[id]?.activePath !== path) readyReaders.current.delete(id)
+    const nextOwners = new Map<string, string>()
+    for (const id of groupOrder(next.layout)) {
+      const path = next.groups[id]?.activePath
+      if (path && !nextOwners.has(path)) nextOwners.set(path, ownerFor(next, path, owners.current.get(path))!)
+    }
+    owners.current = nextOwners
+    stateRef.current = next
+    setState(next)
+  }, [])
+  const navigate = useCallback((next: WorkspaceState, mode: 'push' | 'replace', fragment?: string) => {
+    window.dispatchEvent(new Event('workspace-navigation'))
+    router[mode](activeHref(next) + (fragment ? `#${encodeURIComponent(fragment)}` : ''))
+  }, [router])
+  const setActiveGroup = useCallback((id: GroupId) => {
+    const current = stateRef.current
+    if (!current.groups[id] || current.activeGroupId === id) return
+    const next = { ...current, activeGroupId: id }
+    commit(next)
+    navigate(next, 'replace')
+  }, [commit, navigate])
+  const focusGroup = useCallback((target: GroupId | number) => {
+    const id = typeof target === 'number' ? groupOrder(stateRef.current.layout)[target] : target
+    if (!id || !stateRef.current.groups[id]) return
+    setActiveGroup(id)
     if (focusFrame.current !== null) cancelAnimationFrame(focusFrame.current)
     focusFrame.current = requestAnimationFrame(() => {
       focusFrame.current = null
-      const selected = group === 2 && stateRef.current.splitPath ? 2 : 1
-      const region = document.querySelector<HTMLElement>(`[data-workspace-group="${selected}"]`)
-      const target = region?.querySelector<HTMLElement>('.cm-content[contenteditable="true"]')
-        ?? region?.querySelector<HTMLElement>('[data-workspace-reader] > section > [tabindex="0"]')
-        ?? region
-      target?.focus({ preventScroll: true })
+      const region = Array.from(document.querySelectorAll<HTMLElement>('[data-workspace-group]')).find(element => element.dataset.workspaceGroup === id)
+      const element = region?.querySelector<HTMLElement>('.cm-content[contenteditable="true"]') ?? region?.querySelector<HTMLElement>('[data-workspace-reader] > section > [tabindex="0"]') ?? region
+      element?.focus({ preventScroll: true })
     })
-  }, [])
+  }, [setActiveGroup])
   useEffect(() => () => { if (focusFrame.current !== null) cancelAnimationFrame(focusFrame.current) }, [])
-  useEffect(() => { if (!state.splitPath) setActiveGroup(1) }, [state.splitPath])
-  const setSplitRatio = useCallback((ratio: number) => {
-    const splitRatio = clampSplitRatio(ratio)
-    setState(previous => previous.splitRatio === splitRatio ? previous : { ...previous, splitRatio })
+  const emitFragment = useCallback((id: string, clear = false) => {
+    const pending = pendingFragments.current.get(id)
+    if (!pending || stateRef.current.groups[id]?.activePath !== pending.path) return
+    window.dispatchEvent(new CustomEvent('workspace-group-fragment', { detail: { groupId: id, ...pending } }))
+    if (clear) pendingFragments.current.delete(id)
   }, [])
-  const searchParams = useSearchParams()
-  const tree = useQuery({ queryKey: ['notes/tree'], queryFn: api.tree })
-  const activeEditor = useEditorStatus(activePath)
-  const splitEditor = useEditorStatus(state.splitPath ?? '')
   useEffect(() => {
-    if (!activeEditor?.dirty && !splitEditor?.dirty) return
-    setState(previous => {
-      const tabs = previous.tabs.map(tab => !tab.pinned && getEditorStatus(tab.path)?.dirty ? { ...tab, pinned: true } : tab)
-      return tabs.some((tab, index) => tab !== previous.tabs[index]) ? { ...previous, tabs } : previous
-    })
-  }, [activeEditor?.dirty, splitEditor?.dirty])
+    const listener = (event: Event) => {
+      const detail = (event as CustomEvent<{ groupId: string; path: string }>).detail
+      readyReaders.current.set(detail.groupId, detail.path)
+      if (pendingFragments.current.get(detail.groupId)?.path === detail.path) emitFragment(detail.groupId, true)
+    }
+    window.addEventListener('workspace-reader-ready', listener)
+    return () => window.removeEventListener('workspace-reader-ready', listener)
+  }, [emitFragment])
+  const queueFragment = useCallback((id: string, path: string, fragment?: string) => {
+    pendingFragments.current.delete(id)
+    if (!fragment) return
+    pendingFragments.current.set(id, { path, fragment })
+    requestAnimationFrame(() => emitFragment(id, readyReaders.current.get(id) === path))
+  }, [emitFragment])
+  useEffect(() => {
+    let restored = createWorkspace()
+    try {
+      const saved = localStorage.getItem(storageKey)
+      restored = saved !== null ? validateV2(JSON.parse(saved)) : migrateV1(JSON.parse(localStorage.getItem(`llmwiki.workspace.v1.${userId ?? 'default'}`) || 'null'))
+    } catch { /* Private storage and stale sessions still allow an in-memory workspace. */ }
+    if (urlPath) {
+      const showing = restored.groups[restored.activeGroupId]?.activePath === urlPath ? restored.activeGroupId : groupOrder(restored.layout).find(id => restored.groups[id]?.activePath === urlPath)
+      restored = visitGroup(restored, showing ?? restored.activeGroupId, urlPath)
+      const id = restored.activeGroupId
+      restored = { ...restored, groups: { ...restored.groups, [id]: { ...restored.groups[id], ref: urlRef } } }
+    }
+    commit(restored)
+    setRestoredKey(storageKey)
+  // The current URL is reconciled on restore; later changes are handled below.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [storageKey, commit])
+  useEffect(() => {
+    if (!ready || (pathname !== '/graph' && !pathname.startsWith('/wiki'))) return
+    if (pathname === '/graph' && searchParams.size) router.replace('/graph', { scroll: false })
+    const current = stateRef.current
+    let next = current
+    if (urlPath) {
+      const showing = current.groups[current.activeGroupId]?.activePath === urlPath ? current.activeGroupId : groupOrder(current.layout).find(id => current.groups[id]?.activePath === urlPath)
+      next = showing ? { ...current, activeGroupId: showing } : visitGroup(current, current.activeGroupId, urlPath, false, urlRef, new Set(Object.values(current.groups).flatMap(group => group.tabs.filter(tab => !isGraphTab(tab.path) && getEditorStatus(tab.path)?.dirty).map(tab => tab.path))))
+      const id = next.activeGroupId
+      if (next.groups[id].ref !== urlRef) next = { ...next, groups: { ...next.groups, [id]: { ...next.groups[id], ref: urlRef } } }
+    } else if (searchParams.get('empty') === '1' && current.groups[current.activeGroupId]?.activePath) {
+      const id = current.activeGroupId
+      next = { ...current, groups: { ...current.groups, [id]: { ...current.groups[id], activePath: '', ref: undefined } } }
+    }
+    if (next !== current) commit(next)
+  }, [urlPath, urlRef, pathname, searchParams, ready, commit, router])
+  useEffect(() => {
+    if (!ready) return
+    try { localStorage.setItem(storageKey, JSON.stringify(state)) } catch { /* Storage may be unavailable. */ }
+  }, [state, ready, storageKey])
+  useEffect(() => subscribeEditorStatus(() => {
+    const current = stateRef.current
+    let changed = false
+    const groups = Object.fromEntries(Object.entries(current.groups).map(([id, group]) => [id, { ...group, tabs: group.tabs.map(tab => {
+      if (!isGraphTab(tab.path) && !tab.pinned && getEditorStatus(tab.path)?.dirty) { changed = true; return { ...tab, pinned: true } }
+      return tab
+    }) }]))
+    if (changed) commit({ ...current, groups })
+  }), [commit])
+  useEffect(() => {
+    if (pathname !== '/wiki' || searchParams.get('empty') === '1' || !tree.data?.files.length || !ready) return
+    const defaultPath = tree.data.files.includes('index.md') ? 'index.md' : tree.data.files[0]
+    if (!confirmEditorLeave(leavingFor(stateRef.current, stateRef.current.activeGroupId, defaultPath))) return
+    router.replace(noteHref(defaultPath))
+  }, [pathname, searchParams, tree.data, ready, router])
   useEffect(() => {
     const sameDocument = (left: URL, right: URL) => left.origin === right.origin && left.pathname === right.pathname && left.search === right.search
-    const confirmDestination = (destination: URL) => {
-      if (destination.origin !== window.location.origin || (destination.pathname !== '/wiki' && !destination.pathname.startsWith('/wiki/'))) return confirmEditorLeave()
+    const confirmDestination = (destination: URL, groupId?: string) => {
+      if (destination.origin !== window.location.origin || (destination.pathname !== '/graph' && destination.pathname !== '/wiki' && !destination.pathname.startsWith('/wiki/'))) return confirmEditorLeave(notePaths(Object.values(stateRef.current.groups).flatMap(group => group.tabs.map(tab => tab.path))))
       let path = ''
-      try { path = destination.pathname.slice(6).split('/').map(decodeURIComponent).join('/') } catch { return confirmEditorLeave() }
-      const leaving = activePathRef.current ? [activePathRef.current] : []
-      if (path !== activePathRef.current && path === stateRef.current.splitPath) leaving.push(path)
-      return confirmEditorLeave(leaving)
+      try { path = destination.pathname === '/graph' ? GRAPH_TAB_PATH : destination.pathname.slice(6).split('/').map(decodeURIComponent).join('/') } catch { return confirmEditorLeave(notePaths(Object.values(stateRef.current.groups).flatMap(group => group.tabs.map(tab => tab.path)))) }
+      const current = stateRef.current
+      if (groupId && current.groups[groupId]) return confirmEditorLeave(leavingFor(current, groupId, path))
+      if (Object.values(current.groups).some(group => group.activePath === path && path)) return true
+      return confirmEditorLeave(leavingFor(current, current.activeGroupId, path))
     }
     const click = (event: MouseEvent) => {
       if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
@@ -115,11 +211,11 @@ export function WorkspaceProvider({ children, userId }: { children: ReactNode; u
       if (!anchor || anchor.hasAttribute('download') || (anchor.target && anchor.target !== '_self')) return
       const destination = new URL(anchor.href, window.location.href)
       if (!['http:', 'https:'].includes(destination.protocol) || sameDocument(destination, new URL(window.location.href))) return
-      if (!confirmDestination(destination)) { event.preventDefault(); event.stopImmediatePropagation() }
+      const groupId = anchor.closest<HTMLElement>('[data-workspace-group]')?.dataset.workspaceGroup
+      if (!confirmDestination(destination, groupId)) { event.preventDefault(); event.stopImmediatePropagation() }
     }
     const beforeUnload = (event: BeforeUnloadEvent) => {
-      const current = stateRef.current
-      const paths = [activePathRef.current, current.splitPath ?? '', ...current.tabs.map(tab => tab.path)]
+      const paths = notePaths(Object.values(stateRef.current.groups).flatMap(group => group.tabs.map(tab => tab.path)))
       if (!paths.some(path => getEditorStatus(path)?.dirty)) return
       event.preventDefault()
       event.returnValue = ''
@@ -147,11 +243,7 @@ export function WorkspaceProvider({ children, userId }: { children: ReactNode; u
     history.pushState = push
     history.replaceState = replace
     const popstate = (event: PopStateEvent) => {
-      if (restoring) {
-        restoring = false
-        event.stopImmediatePropagation()
-        return
-      }
+      if (restoring) { restoring = false; event.stopImmediatePropagation(); return }
       const destination = new URL(window.location.href)
       const destinationIndex = typeof event.state?.[marker] === 'number' ? event.state[marker] as number : null
       if (!sameDocument(destination, acceptedUrl) && !confirmDestination(destination)) {
@@ -176,156 +268,153 @@ export function WorkspaceProvider({ children, userId }: { children: ReactNode; u
       if (history.replaceState === replace) history.replaceState = originalReplace
     }
   }, [])
-  useEffect(() => {
-    if (pathname !== '/wiki' || searchParams.get('empty') === '1' || !tree.data?.files.length) return
-    const defaultPath = tree.data.files.includes('index.md') ? 'index.md' : tree.data.files[0]
-    if (stateRef.current.splitPath === defaultPath && !confirmEditorLeave([defaultPath])) return
-    router.replace(noteHref(defaultPath))
-  }, [pathname, searchParams, tree.data, router])
-  const [noteInfo, setNoteInfo] = useState<NoteInfo | null>(null)
-  const [pendingSplitFragment, setPendingSplitFragment] = useState<{ path: string; fragment: string } | null>(null)
-  useEffect(() => {
-    if (!pendingSplitFragment || state.splitPath !== pendingSplitFragment.path || !pathname.startsWith('/wiki')) return
-    const frame = requestAnimationFrame(() => {
-      window.dispatchEvent(new CustomEvent('workspace-split-fragment', { detail: pendingSplitFragment }))
-      setPendingSplitFragment(null)
-    })
-    return () => cancelAnimationFrame(frame)
-  }, [pendingSplitFragment, state.splitPath, pathname])
-  useEffect(() => {
-    let restored = empty
-    try {
-      const saved = JSON.parse(localStorage.getItem(storageKey) || 'null') as StoredWorkspace | null
-      if (saved && Array.isArray(saved.tabs) && saved.tabs.every(tab => typeof tab.path === 'string' && typeof tab.pinned === 'boolean') && Array.isArray(saved.favoritePaths) && Array.isArray(saved.recentPaths) && Array.isArray(saved.closed) && saved.knownTitles && typeof saved.knownTitles === 'object' && (saved.splitPath === null || typeof saved.splitPath === 'string')) restored = { ...saved, splitRatio: clampSplitRatio(saved.splitRatio) }
-    } catch { /* Private storage and stale sessions still allow an in-memory workspace. */ }
-    setState(restored)
-    setActiveGroup(1)
-    setRestoredKey(storageKey)
-  }, [storageKey])
-  useEffect(() => {
-    if (!ready || !activePath) return
-    setState(previous => visit(previous, activePath))
-  }, [activePath, ready])
-  useEffect(() => {
-    if (!ready) return
-    try { localStorage.setItem(storageKey, JSON.stringify(state)) } catch { /* Storage may be unavailable. */ }
-  }, [state, ready, storageKey])
-  const confirmPrimaryNavigation = useCallback((path: string, closing: string[] = []) => {
-    const leaving = [...closing]
-    if (activePathRef.current !== path) {
-      if (activePathRef.current) leaving.push(activePathRef.current)
-      if (stateRef.current.splitPath === path) leaving.push(path)
+  const openNote = useCallback((path: string, options?: { pin?: boolean; fragment?: string; group?: GroupId | 'side'; ref?: string }) => {
+    if (!path) return
+    let current = stateRef.current
+    let id = options?.group ?? (current.groups[current.activeGroupId]?.activePath === path ? current.activeGroupId : groupOrder(current.layout).find(id => current.groups[id]?.activePath === path) ?? current.activeGroupId)
+    if (id === 'side') {
+      const order = groupOrder(current.layout)
+      id = order[order.indexOf(current.activeGroupId) + 1]
+      if (!id) {
+        id = freshGroupId(current)
+        if (order.length >= MAX_EDITOR_GROUPS) { capNotice(); id = current.activeGroupId }
+        else current = insertGroup(current, current.activeGroupId, 'right', { id, tabs: [], activePath: '' })
+      }
     }
-    return confirmEditorLeave(leaving)
-  }, [])
-  const openNote = useCallback((path: string, options?: { pin?: boolean; split?: boolean; fragment?: string }) => {
+    if (!current.groups[id] || !confirmEditorLeave(leavingFor(current, id, path))) return
+    const dirty = new Set(Object.values(current.groups).flatMap(group => group.tabs.filter(tab => !isGraphTab(tab.path) && getEditorStatus(tab.path)?.dirty).map(tab => tab.path)))
+    const next = visitGroup(current, id, path, options?.pin, isGraphTab(path) ? undefined : options?.ref, dirty)
+    commit(next)
+    queueFragment(id, path, isGraphTab(path) ? undefined : options?.fragment)
+    navigate(next, 'push', isGraphTab(path) ? undefined : options?.fragment)
+    if (options?.group) focusGroup(id)
+  }, [commit, queueFragment, navigate, focusGroup])
+  const moveTab = useCallback((source: { groupId: GroupId; path: string }, target: DropTarget, options?: { copy?: boolean }) => {
     const current = stateRef.current
-    if (options?.split) {
-      if (!confirmEditorLeave(current.splitPath && current.splitPath !== path && current.splitPath !== activePathRef.current ? [current.splitPath] : [])) return
-    } else if (!confirmPrimaryNavigation(path)) return
-    if (options?.split) {
-      setState(previous => ({ ...previous, splitPath: path }))
-      setPendingSplitFragment(options.fragment ? { path, fragment: options.fragment } : null)
-      focusGroup(2)
-      return
+    if (!current.groups[source.groupId]?.tabs.some(tab => tab.path === source.path) || !current.groups[target.groupId]) return
+    if (target.kind === 'split' && source.groupId === target.groupId && current.groups[source.groupId].tabs.length === 1 && !options?.copy) return
+    if (target.kind === 'split' && groupOrder(current.layout).length >= MAX_EDITOR_GROUPS) capNotice()
+    const resolved: DropTarget = target.kind === 'split' && groupOrder(current.layout).length >= MAX_EDITOR_GROUPS ? { kind: 'group', groupId: target.groupId } : target
+    if (resolved.kind !== 'split' && !confirmEditorLeave(leavingFor(current, resolved.groupId, source.path))) return
+    const next = moveLayoutTab(current, source, resolved, options)
+    if (next === current) return
+    const oldOwner = ownerFor(current, source.path, owners.current.get(source.path))
+    const newOwner = ownerFor(next, source.path, oldOwner)
+    if (!isGraphTab(source.path) && oldOwner !== newOwner && getEditorStatus(source.path)?.dirty) markDraftTransfer(source.path)
+    commit(next)
+    navigate(next, 'push')
+    focusGroup(next.activeGroupId)
+  }, [commit, navigate, focusGroup])
+  const openNoteAt = useCallback((path: string, target: DropTarget) => {
+    const current = stateRef.current
+    if (!path || !current.groups[target.groupId]) return
+    let next = current
+    let id = target.groupId
+    if (target.kind === 'split') {
+      if (groupOrder(current.layout).length >= MAX_EDITOR_GROUPS) capNotice()
+      else {
+        id = freshGroupId(current)
+        next = insertGroup(current, target.groupId, target.side, { id, tabs: [], activePath: '' })
+      }
     }
-    setState(previous => visit(previous, path, options?.pin))
-    setActiveGroup(1)
-    window.dispatchEvent(new Event('workspace-navigation'))
-    router.push(noteHref(path) + (options?.fragment ? `#${encodeURIComponent(options.fragment)}` : ''))
-  }, [router, confirmPrimaryNavigation, focusGroup])
-  const closeTab = useCallback((path: string) => {
+    if (!confirmEditorLeave(leavingFor(next, id, path))) return
+    next = visitGroup(next, id, path, true)
+    if (target.kind === 'tabs') next = moveLayoutTab(next, { groupId: id, path }, target)
+    commit(next)
+    queueFragment(id, path)
+    navigate(next, 'push')
+    focusGroup(id)
+  }, [commit, queueFragment, navigate, focusGroup])
+  const splitEditor = useCallback((side: SplitSide = 'right') => {
     const current = stateRef.current
-    const tab = current.tabs.find(item => item.path === path)
-    if (!tab) return
-    const index = current.tabs.indexOf(tab)
-    const remaining = current.tabs.filter(item => item.path !== path)
-    const nextPath = remaining[Math.min(index, remaining.length - 1)]?.path ?? ''
-    if (path === activePath ? !confirmPrimaryNavigation(nextPath, [path]) : !confirmEditorLeave([path])) return
-    setState(previous => ({ ...previous, tabs: remaining, splitPath: previous.splitPath === path ? null : previous.splitPath, closed: [...previous.closed, tab].slice(-20) }))
-    if (path === activePath) router.push(nextPath ? noteHref(nextPath) : '/wiki?empty=1')
-  }, [activePath, router, confirmPrimaryNavigation])
-  const pinTab = useCallback((path: string) => setState(previous => ({ ...previous, tabs: previous.tabs.map(tab => tab.path === path ? { ...tab, pinned: true } : tab) })), [])
-  const closeOthers = useCallback((path: string) => {
-    const leaving = stateRef.current.tabs.filter(tab => tab.path !== path).map(tab => tab.path)
-    if (!confirmPrimaryNavigation(path, leaving)) return
-    setState(previous => ({ ...previous, tabs: previous.tabs.filter(tab => tab.path === path), closed: [...previous.closed, ...previous.tabs.filter(tab => tab.path !== path)].slice(-20) }))
-    router.push(noteHref(path))
-  }, [router, confirmPrimaryNavigation])
+    const group = current.groups[current.activeGroupId]
+    if (!group?.activePath) return
+    if (groupOrder(current.layout).length >= MAX_EDITOR_GROUPS) { capNotice(); return }
+    const next = moveLayoutTab(current, { groupId: group.id, path: group.activePath }, { kind: 'split', groupId: group.id, side }, { copy: true })
+    commit(next)
+    navigate(next, 'replace')
+    focusGroup(next.activeGroupId)
+  }, [commit, navigate, focusGroup])
+  const closeTab = useCallback((path: string, groupId?: GroupId) => {
+    const current = stateRef.current
+    const id = groupId ?? current.activeGroupId
+    const group = current.groups[id]
+    const index = group?.tabs.findIndex(tab => tab.path === path) ?? -1
+    if (!group || index < 0 || !confirmEditorLeave(notePaths([path]))) return
+    const tab = group.tabs[index]
+    const tabs = group.tabs.filter(item => item.path !== path)
+    const activePath = group.activePath === path ? tabs[Math.min(index, tabs.length - 1)]?.path ?? '' : group.activePath
+    let next = { ...current, groups: { ...current.groups, [id]: { ...group, tabs, activePath, ref: activePath === group.activePath ? group.ref : undefined } }, closed: [...current.closed, tab].slice(-20) }
+    if (!tabs.length) next = removeGroup(next, id)
+    pendingFragments.current.delete(id)
+    commit(next)
+    if (id === current.activeGroupId) { navigate(next, 'push'); focusGroup(next.activeGroupId) }
+  }, [commit, navigate, focusGroup])
+  const closeOthers = useCallback((path: string, groupId?: GroupId) => {
+    const current = stateRef.current
+    const id = groupId ?? current.activeGroupId
+    const group = current.groups[id]
+    if (!group?.tabs.some(tab => tab.path === path)) return
+    const removed = group.tabs.filter(tab => tab.path !== path)
+    if (!confirmEditorLeave(notePaths(removed.map(tab => tab.path)))) return
+    const next = { ...current, groups: { ...current.groups, [id]: { ...group, tabs: group.tabs.filter(tab => tab.path === path), activePath: path, ref: group.activePath === path ? group.ref : undefined } }, closed: [...current.closed, ...removed].slice(-20) }
+    commit(next)
+    if (id === current.activeGroupId) navigate(next, 'push')
+  }, [commit, navigate])
+  const closeGroup = useCallback((id: GroupId) => {
+    const current = stateRef.current
+    const group = current.groups[id]
+    if (!group || !confirmEditorLeave(notePaths(group.tabs.map(tab => tab.path)))) return
+    const next = removeGroup({ ...current, closed: [...current.closed, ...group.tabs].slice(-20) }, id)
+    pendingFragments.current.delete(id)
+    commit(next)
+    if (id === current.activeGroupId) { navigate(next, 'replace'); focusGroup(next.activeGroupId) }
+  }, [commit, navigate, focusGroup])
+  const pinTab = useCallback((path: string, groupId?: GroupId) => {
+    const current = stateRef.current
+    const id = groupId ?? current.activeGroupId
+    const group = current.groups[id]
+    if (group) commit({ ...current, groups: { ...current.groups, [id]: { ...group, tabs: group.tabs.map(tab => tab.path === path ? { ...tab, pinned: true } : tab) } } })
+  }, [commit])
   const reopenClosed = useCallback(() => {
-    const tab = stateRef.current.closed.at(-1)
-    if (!tab) return
-    if (!confirmPrimaryNavigation(tab.path)) return
-    setState(previous => ({ ...visit(previous, tab.path, tab.pinned), closed: previous.closed.slice(0, -1) }))
-    router.push(noteHref(tab.path))
-  }, [router, confirmPrimaryNavigation])
-  const closeSplit = useCallback(() => {
-    const splitPath = stateRef.current.splitPath
-    if (!splitPath || (splitPath !== activePathRef.current && !confirmEditorLeave([splitPath]))) return
-    setPendingSplitFragment(null)
-    setState(previous => ({ ...previous, splitPath: null }))
-    focusGroup(1)
-  }, [focusGroup])
-  const toggleSplit = useCallback(() => {
-    if (stateRef.current.splitPath) { closeSplit(); return }
-    if (!activePathRef.current) return
-    setPendingSplitFragment(null)
-    setState(previous => ({ ...previous, splitPath: activePathRef.current }))
-    focusGroup(2)
-  }, [closeSplit, focusGroup])
+    const current = stateRef.current
+    const tab = current.closed.at(-1)
+    if (!tab || !confirmEditorLeave(leavingFor(current, current.activeGroupId, tab.path))) return
+    const next = { ...visitGroup(current, current.activeGroupId, tab.path, tab.pinned), closed: current.closed.slice(0, -1) }
+    commit(next)
+    navigate(next, 'push')
+  }, [commit, navigate])
+  const setSplitSizes = useCallback((id: string, sizes: number[]) => commit({ ...stateRef.current, layout: updateSizes(stateRef.current.layout, id, sizes) }), [commit])
+  const resetSplitSizes = useCallback((id: string) => commit({ ...stateRef.current, layout: updateSizes(stateRef.current.layout, id) }), [commit])
+  const isEditorOwner = useCallback((id: string, path: string) => ownerFor(stateRef.current, path, owners.current.get(path)) === id, [])
   const revealFolder = useCallback((path: string) => window.dispatchEvent(new CustomEvent('workspace-reveal', { detail: path })), [])
-  const toggleFavorite = useCallback((path: string) => setState(previous => ({ ...previous, favoritePaths: previous.favoritePaths.includes(path) ? previous.favoritePaths.filter(item => item !== path) : [...previous.favoritePaths, path] })), [])
-  const rememberTitle = useCallback((path: string, title: string) => setState(previous => previous.knownTitles[path] === title ? previous : { ...previous, knownTitles: { ...previous.knownTitles, [path]: title } }), [])
+  const toggleFavorite = useCallback((path: string) => { if (isGraphTab(path)) return; const current = stateRef.current; commit({ ...current, favoritePaths: current.favoritePaths.includes(path) ? current.favoritePaths.filter(item => item !== path) : [...current.favoritePaths, path] }) }, [commit])
+  const rememberTitle = useCallback((path: string, title: string) => { if (isGraphTab(path)) return; const current = stateRef.current; if (current.knownTitles[path] !== title) commit({ ...current, knownTitles: { ...current.knownTitles, [path]: title } }) }, [commit])
   const renameNotePath = useCallback((from: string, to: string) => {
-    const move = (path: string) => path === from ? to : path
-    const migrateTabs = (tabs: WorkspaceTab[]) => {
-      const merged: WorkspaceTab[] = []
-      for (const tab of tabs) {
-        const path = move(tab.path)
-        const existing = merged.find(item => item.path === path)
-        if (existing) existing.pinned ||= tab.pinned
-        else merged.push({ ...tab, path })
-      }
-      return merged
-    }
-    setState(previous => {
-      const knownTitles = { ...previous.knownTitles }
-      if (Object.hasOwn(knownTitles, from)) { knownTitles[to] = knownTitles[from]; delete knownTitles[from] }
-      return {
-        ...previous,
-        tabs: migrateTabs(previous.tabs),
-        splitPath: previous.splitPath === from ? to : previous.splitPath,
-        favoritePaths: [...new Set(previous.favoritePaths.map(move))],
-        recentPaths: [...new Set(previous.recentPaths.map(move))],
-        closed: previous.closed.map(tab => ({ ...tab, path: move(tab.path) })),
-        knownTitles,
-      }
-    })
+    if (isGraphTab(from) || isGraphTab(to)) return
+    const current = stateRef.current
+    const next = renamePath(current, from, to)
+    renameDraft(from, to)
+    const owner = owners.current.get(from)
+    if (owner) { owners.current.delete(from); owners.current.set(to, owner) }
+    for (const [id, pending] of pendingFragments.current) if (pending.path === from) pendingFragments.current.set(id, { ...pending, path: to })
+    commit(next)
     setNoteInfo(previous => previous?.path === from ? { ...previous, path: to } : previous)
-    setPendingSplitFragment(previous => previous?.path === from ? { ...previous, path: to } : previous)
-    if (activePathRef.current === from) router.replace(noteHref(to) + window.location.search + window.location.hash)
-  }, [router])
+    if (current.groups[current.activeGroupId]?.activePath === from) router.replace(activeHref(next) + window.location.hash)
+  }, [commit, router])
   const removeNotePath = useCallback((path: string) => {
-    const remaining = stateRef.current.tabs.filter(tab => tab.path !== path)
-    const next = remaining.find(tab => tab.path !== stateRef.current.splitPath || !getEditorStatus(tab.path)?.dirty)
-    setState(previous => {
-      const knownTitles = { ...previous.knownTitles }
-      delete knownTitles[path]
-      return {
-        ...previous,
-        tabs: previous.tabs.filter(tab => tab.path !== path),
-        splitPath: previous.splitPath === path ? null : previous.splitPath,
-        favoritePaths: previous.favoritePaths.filter(item => item !== path),
-        recentPaths: previous.recentPaths.filter(item => item !== path),
-        closed: previous.closed.filter(tab => tab.path !== path),
-        knownTitles,
-      }
-    })
+    if (isGraphTab(path)) return
+    const current = stateRef.current
+    const next = removePath(current, path)
+    clearDraft(path)
+    for (const [id, pending] of pendingFragments.current) if (pending.path === path) pendingFragments.current.delete(id)
+    commit(next)
     setNoteInfo(previous => previous?.path === path ? null : previous)
-    setPendingSplitFragment(previous => previous?.path === path ? null : previous)
-    if (activePathRef.current === path) router.replace(next ? noteHref(next.path) : '/wiki?empty=1')
-  }, [router])
-  return <Context.Provider value={{ ...state, activePath, activeGroup: currentGroup, activeGroupPath: currentGroup === 2 ? state.splitPath! : activePath, setActiveGroup, focusGroup, closeSplit, setSplitRatio, openNote, closeTab, pinTab, closeOthers, reopenClosed, toggleSplit, revealFolder, toggleFavorite, rememberTitle, renameNotePath, removeNotePath, noteInfo: noteInfo?.path === activePath ? noteInfo : null, setNoteInfo }}>{children}</Context.Provider>
+    if (current.groups[current.activeGroupId]?.activePath === path) navigate(next, 'replace')
+  }, [commit, navigate])
+  const activePath = state.groups[state.activeGroupId]?.activePath ?? ''
+  const { closed: _closed, ...workspaceState } = state
+  return <Context.Provider value={{ ...workspaceState, groupOrder: groupOrder(state.layout), activePath, setActiveGroup, focusGroup, openNote, openNoteAt, moveTab, splitEditor, closeTab, closeOthers, closeGroup, pinTab, reopenClosed, setSplitSizes, resetSplitSizes, isEditorOwner, revealFolder, toggleFavorite, rememberTitle, renameNotePath, removeNotePath, noteInfo: !isGraphTab(activePath) && noteInfo?.path === activePath ? noteInfo : null, setNoteInfo }}>{children}</Context.Provider>
 }
 
 export function useWorkspace() {
