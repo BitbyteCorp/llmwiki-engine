@@ -180,13 +180,15 @@ export function WorkspaceShell({ user, children }: { user: User; children: React
   }
   const activityExpanded = mobile ? mobileOpen : !layout.collapsed
   const selectedActivityIndex = items.findIndex(panel => panel.id === layout.selected)
+  // The graph button sits after tags; panels below it shift the indicator by one slot.
+  const graphAfterIndex = items.findIndex(panel => panel.id === 'tags')
+  const selectedActivitySlot = selectedActivityIndex + (selectedActivityIndex > graphAfterIndex ? 1 : 0)
   const activity = <nav aria-label="활동 표시줄" className="workspace-activity flex w-12 shrink-0 flex-col items-center gap-1 border-r bg-secondary py-2">
-    <span aria-hidden="true" className="workspace-activity-indicator" style={{ top: 8, height: 40, transform: `translateY(${Math.max(0, selectedActivityIndex) * 44}px)`, opacity: selectedActivityIndex < 0 ? 0 : activityExpanded ? 1 : 0.35 }} />
-    {items.map(panel => <button type="button" key={panel.id} aria-label={`${panel.label} (${panel.key})`} title={panel.label} aria-pressed={layout.selected === panel.id && activityExpanded} className={cn('flex size-10 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground', layout.selected === panel.id && activityExpanded && 'bg-accent text-foreground')} onClick={() => {
+    <span aria-hidden="true" className="workspace-activity-indicator" style={{ top: 8, height: 40, transform: `translateY(${Math.max(0, selectedActivitySlot) * 44}px)`, opacity: selectedActivityIndex < 0 ? 0 : activityExpanded ? 1 : 0.35 }} />
+    {items.flatMap((panel, index) => [<button type="button" key={panel.id} aria-label={`${panel.label} (${panel.key})`} title={panel.label} aria-pressed={layout.selected === panel.id && activityExpanded} className={cn('flex size-10 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground', layout.selected === panel.id && activityExpanded && 'bg-accent text-foreground')} onClick={() => {
       if (!mobile && layout.selected === panel.id && !layout.collapsed) setSidebarCollapsed(true)
       else selectPanel(panel.id)
-    }}><panel.icon className="size-5" /></button>)}
-    <button type="button" aria-label="그래프 (Graph)" title="그래프" className="flex size-10 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground" onClick={() => workspace.openNote(GRAPH_TAB_PATH)}><Network className="size-5" /></button>
+    }}><panel.icon className="size-5" /></button>, ...(index === graphAfterIndex ? [<button type="button" key="graph" aria-label="그래프 (Graph)" title="그래프" className="flex size-10 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground" onClick={() => workspace.openNote(GRAPH_TAB_PATH)}><Network className="size-5" /></button>] : [])])}
     <Button variant="ghost" size="icon-sm" className="mt-auto" aria-label="설정" title={`설정 (${shortcutHint('settings', shortcutPlatform)})`} onClick={() => navigate('/settings')}><Settings /></Button>
   </nav>
   const panels = <div ref={primary} className="h-full min-h-0 bg-secondary">{items.map(panel => <div key={panel.id} data-panel-id={panel.id} hidden={layout.selected !== panel.id} className="h-full min-h-0"><panel.component userId={user.id} /></div>)}</div>
