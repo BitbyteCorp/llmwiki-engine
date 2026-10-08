@@ -71,6 +71,12 @@ export class DreamRunsRepository {
     return row ? toRun(row) : null;
   }
 
+  failInterrupted(error: string, finishedAt: string): string[] {
+    const rows = this.db.prepare(`UPDATE dream_runs SET status = 'failed', error = ?, finished_at = ?
+      WHERE status = 'running' RETURNING id`).all(error, finishedAt) as Array<{ id: string }>;
+    return rows.map(row => fromStorageId(row.id));
+  }
+
   backupStatus(): { lastAttempt: DreamRun | null; lastSuccess: DreamRun | null } {
     const attempt = this.db.prepare(`SELECT * FROM dream_runs WHERE push_at IS NOT NULL
       ORDER BY push_at DESC, rowid DESC LIMIT 1`).get() as DreamRunRow | undefined;

@@ -2,9 +2,9 @@
 
 import { useEffect, type ReactNode } from 'react'
 import Link from 'next/link'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowUpRight, CheckCircle2, CircleX, Clock3, LoaderCircle } from 'lucide-react'
-import { importsApi, importKeys, type ImportKind, type ImportStatus } from '@/lib/api'
+import { api, importsApi, importKeys, type ImportKind, type ImportStatus } from '@/lib/api'
 import { onLiveEvent } from '@/lib/events'
 import { EmptyState, ErrorNotice, Loading, formatDate, noteHref } from '@/components/common'
 import { Button } from '@/components/ui/button'
@@ -24,8 +24,20 @@ function DetailField({ title, children }: { title: string; children: ReactNode }
 
 export function ImportDetail({ id, onClose }: { id: string; onClose: () => void }) {
   const client = useQueryClient()
+  const me = useQuery({ queryKey: ['me'], queryFn: api.me })
   const detail = useQuery({ queryKey: importKeys.detail(id), queryFn: ({ signal }) => importsApi.detail(id, signal) })
   const record = detail.data
+  const retry = useMutation({
+    mutationFn: () => importsApi.retry(id),
+    onSettled: async () => {
+      await Promise.all([
+        client.invalidateQueries({ queryKey: importKeys.detail(id) }),
+        client.invalidateQueries({ queryKey: importKeys.lists }),
+      ])
+    },
+  })
+  const user = me.data?.user
+  const canRetry = user && user.role !== 'viewer' && (user.role === 'admin' || user.id === record?.userId)
   useEffect(() => onLiveEvent('job.updated', (event) => {
     if (record?.jobs.some((job) => job.jobId === event.jobId)) {
       void client.invalidateQueries({ queryKey: importKeys.detail(id) })
@@ -40,6 +52,11 @@ export function ImportDetail({ id, onClose }: { id: string; onClose: () => void 
       {record && <>
         <div className="flex flex-wrap items-end justify-between gap-2 border-b pb-2"><div className="flex flex-wrap items-center gap-2"><ImportStatusBadge status={record.status} />{record.jobs.length > 0 && <span className="text-xs text-muted-foreground">완료 {record.jobs.filter((job) => job.status === 'succeeded').length}/{record.jobs.length}</span>}</div><Button variant="ghost" size="sm" disabled={detail.isFetching} onClick={() => void detail.refetch()}>{detail.isFetching ? '갱신 중…' : '새로고침'}</Button></div>
         {record.error && <ErrorNotice error={record.error} />}
+        {record.status === 'failed' && record.jobs.length === 0 && <div className="space-y-2">
+          {canRetry && record.retryable && <Button disabled={retry.isPending} onClick={() => retry.mutate()}>{retry.isPending ? '가져오는 중…' : '다시 가져오기'}</Button>}
+          {!record.retryable && record.retryReason && <p className="text-label-13 text-muted-foreground">{record.retryReason}</p>}
+          {retry.error && <ErrorNotice error={retry.error} />}
+        </div>}
         <dl className="grid gap-x-6 gap-y-1.5 text-label-13">
           <DetailField title="가져오기 ID"><code>{record.id}</code></DetailField>
           <DetailField title="요청자 ID">{record.userId}</DetailField>

@@ -5,6 +5,7 @@ import type { Config } from '../config.js';
 import { CONFIG, DB, LOGGER } from '../common/tokens.js';
 import { EventsService } from '../events/events.service.js';
 import { KnowledgeRepo } from '../knowledge/repo.js';
+import { UsageService } from '../usage/usage.service.js';
 import { chunkNote, normalizedNoteHash, wikilinkTargets, type NoteChunk } from './chunking.js';
 import { embedTexts } from './embeddings.js';
 import { NoteTargetResolver } from './link-resolver.js';
@@ -33,10 +34,12 @@ export class IndexerService implements OnModuleInit, OnModuleDestroy {
     @Inject(LOGGER) private readonly log: Logger,
     private readonly repo: KnowledgeRepo,
     @Optional() private readonly events?: EventsService,
+    @Optional() private readonly usage?: UsageService,
   ) {}
 
   onModuleInit(): void {
     this.init();
+    if (this.config.jobsAutostart === false) return;
     this.poll = setInterval(() => {
       if (this.syncing || this.pollTask) return;
       this.pollTask = (async () => {
@@ -179,7 +182,10 @@ export class IndexerService implements OnModuleInit, OnModuleDestroy {
       }
       if (missing.length) {
         try {
-          const embeddings = await embedTexts(config, missing.map(([, input]) => input));
+          const embeddings = await embedTexts(config, missing.map(([, input]) => input), undefined, ({ model, inputTokens }) => {
+            this.usage?.record({ lane: 'embedding', model, inputTokens, cachedInputTokens: 0,
+              outputTokens: 0, reasoningTokens: 0 });
+          });
           for (let index = 0; index < missing.length; index++) {
             const bytes = Buffer.from(new Float32Array(embeddings[index]).buffer);
             vectors.set(missing[index]![0], bytes);

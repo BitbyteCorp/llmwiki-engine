@@ -31,7 +31,7 @@ describe('operations HTTP boundary', () => {
   let sessions: SessionsService;
   let logRows: Record<string, unknown>[];
   const repo = { headSha: vi.fn(async () => 'a'.repeat(40)) };
-  const index = { indexedSha: 'a'.repeat(40), headSha: 'a'.repeat(40), syncing: false, lastSyncAt: '2026-01-01T00:00:00.000Z', lastError: null as string | null, pendingVectors: 0, embedding: { configured: false, model: 'test', dimensions: 3, ready: false } };
+  const index = { indexedSha: 'a'.repeat(40) as string | null, headSha: 'a'.repeat(40), syncing: false, lastSyncAt: '2026-01-01T00:00:00.000Z', lastError: null as string | null, pendingVectors: 0, embedding: { configured: false, model: 'test', dimensions: 3, ready: false } };
   const indexer = { status: vi.fn(async () => ({ ...index })) };
 
   beforeEach(async () => {
@@ -84,8 +84,16 @@ describe('operations HTTP boundary', () => {
     await request(app.getHttpServer()).get('/readyz').expect(200, { ok: true, initialIndex: 'ready', checks: { database: true, repository: true, index: true } });
   });
 
-  it('withdraws readiness on index errors, unusable HEAD, rejected status, or database loss', async () => {
-    readiness.markInitialIndexReady();
+  it('accepts intentionally skipped initial indexing without requiring a fresh index', async () => {
+    readiness.markInitialIndexSkipped();
+    index.indexedSha = null;
+    index.pendingVectors = 2;
+    await request(app.getHttpServer()).get('/readyz').expect(200, { ok: true, initialIndex: 'skipped', checks: { database: true, repository: true, index: true } });
+  });
+
+  it.each(['ready', 'skipped'] as const)('withdraws %s readiness on index errors, unusable HEAD, rejected status, or database loss', async (initialIndex) => {
+    if (initialIndex === 'ready') readiness.markInitialIndexReady();
+    else readiness.markInitialIndexSkipped();
     index.lastError = 'embedding unavailable';
     const unhealthyIndex = await request(app.getHttpServer()).get('/readyz').expect(503);
     expect(unhealthyIndex.body.error.code).toBe('service_unavailable');

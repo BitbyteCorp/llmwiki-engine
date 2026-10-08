@@ -21,7 +21,7 @@ import { AuditService } from '../src/audit/audit.service.js';
 import { UsersService } from '../src/auth/users.service.js';
 import { UsersRepository } from '../src/auth/users.repository.js';
 
-const schemas = ['001_core.sql', '002_auth.sql', '004_chat.sql', '010_chat.sql', '011_platform.sql', '013_acl.sql'].map((name) =>
+const schemas = ['001_core.sql', '002_auth.sql', '004_chat.sql', '010_chat.sql', '011_platform.sql', '013_acl.sql', '023_message_error_code.sql'].map((name) =>
   readFileSync(new URL(`../src/db/migrations/${name}`, import.meta.url), 'utf8'));
 const stamp = '2026-10-07T00:00:00.000Z';
 const legacyConversationId = '00000000-0000-4000-8000-000000000001';
@@ -148,7 +148,7 @@ describe('detached replayable generations', () => {
       { id: 1, event: 'generation', data: { generationId: generation.id, userMessageId: started.userMessageId } },
       { id: 2, event: 'status', data: { phase: 'queued' } },
       { id: 3, event: 'tool', data: tool },
-      { id: 4, event: 'error', data: { code: 'generation_cancelled', message: 'Generation cancelled' } },
+      { id: 4, event: 'error', data: expect.objectContaining({ code: 'generation_cancelled', errorCode: 'cancelled' }) },
     ];
     expect(events(await body)).toEqual(expected);
     expect(events(await (await replay(generation.id)).text())).toEqual(expected);
@@ -269,7 +269,7 @@ describe('detached replayable generations', () => {
       { id: 1, event: 'generation', data: { generationId: generation.id, userMessageId: started.userMessageId } },
       { id: 2, event: 'status', data: { phase: 'queued' } },
       { id: 3, event: 'delta', data: { text: 'Partial answer' } },
-      { id: 4, event: 'error', data: { code: 'generation_cancelled', message: 'Generation cancelled' } },
+      { id: 4, event: 'error', data: expect.objectContaining({ code: 'generation_cancelled', errorCode: 'cancelled' }) },
     ]);
     expect(service.get(generation.id, 2).status).toBe('cancelled');
     expect(db.prepare('SELECT status FROM messages WHERE id = ?').get(toStorageId(started.assistantMessageId))).toEqual({ status: 'cancelled' });
@@ -286,7 +286,7 @@ describe('detached replayable generations', () => {
     await settle();
     const output = events(await (await replay(generation.id)).text());
     expect(output.at(-1)).toEqual({
-      id: 4, event: 'error', data: { code: 'generation_failed', message: 'Generation failed' },
+      id: 4, event: 'error', data: expect.objectContaining({ code: 'generation_failed', errorCode: 'unknown' }),
     });
     expect(service.get(generation.id, 1).status).toBe('failed');
     expect(service.active(conversationId)).toBe(false);
@@ -308,7 +308,7 @@ describe('detached replayable generations', () => {
       expect(reopened.prepare('SELECT status FROM messages WHERE id = ?').get(toStorageId(started.assistantMessageId))).toEqual({ status: 'interrupted' });
       expect(events(await (await replay(generation.id, 3, '2')).text())).toEqual([
         { id: 3, event: 'delta', data: { text: 'Before crash' } },
-        { id: 4, event: 'error', data: { code: 'generation_interrupted', message: 'Generation interrupted by server restart' } },
+        { id: 4, event: 'error', data: expect.objectContaining({ code: 'generation_interrupted', errorCode: 'unknown' }) },
       ]);
       restarted.onModuleInit();
       expect(events(await (await replay(generation.id, 3, '4')).text())).toEqual([]);
@@ -331,7 +331,7 @@ describe('detached replayable generations', () => {
     service.onModuleDestroy();
     expect(signal.aborted).toBe(true);
     expect(events(await body).at(-1)).toEqual({
-      id: 3, event: 'error', data: { code: 'generation_cancelled', message: 'Generation cancelled' },
+      id: 3, event: 'error', data: expect.objectContaining({ code: 'generation_cancelled', errorCode: 'cancelled' }),
     });
     expect(service.get(generation.id, 1).status).toBe('cancelled');
     await settle();

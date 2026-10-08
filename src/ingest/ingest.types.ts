@@ -25,5 +25,6 @@ export interface ImportRecord {
   id: string; userId: number; kind: ImportKind; source: string; sha: string | null;
   status: 'extracting' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
   rawPaths: string[]; jobs: ImportJob[]; error: string | null;
+  retryable: boolean; retryReason: string | null;
   createdAt: string; updatedAt: string; finishedAt: string | null;
 }

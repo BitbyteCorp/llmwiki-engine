@@ -14,9 +14,9 @@
 
 `DreamingModule`은 `KnowledgeModule`, `AgentModule`, `RagModule`을 가져오고 `DreamRunsRepository`와 `DreamingService`를 제공·내보낸다. 서비스는 지식 저장소, 도니, 인덱서, 검색·catalog·비교 서비스, ACL·감사 서비스와 `CONFIG`, `LOGGER` 토큰, 실행 기록 저장소, 전역 `EventsService`를 생성자 DI로 받는다.
 
-`DreamRunsRepository`는 실행 기록 SQL, 성공 체크포인트 조회, 미학습 사용자 메시지 조회와 학습 완료 표시를 담당한다. `DreamRun`과 대화 입력 형식은 `dream-run.types.ts`에 두며, 서비스는 배치·머지·백업 흐름을 담당한다.
+`DreamRunsRepository`는 실행 기록 SQL, 중단된 실행의 실패 처리, 성공 체크포인트 조회, 미학습 사용자 메시지 조회와 학습 완료 표시를 담당한다. `DreamRun`과 대화 입력 형식은 `dream-run.types.ts`에 두며, 서비스는 배치·머지·백업 흐름을 담당한다.
 
-HTTP 진입점인 `main.ts`만 스케줄러를 명시적으로 시작한다. `dreaming.commands.ts`의 `registerDreamCommands`는 Nest 애플리케이션 컨텍스트에서 서비스를 조회하므로 CLI는 스케줄러를 시작하지 않는다. 종료 훅은 스케줄러를 중단하고 진행 중인 배치가 끝날 때까지 기다린 뒤 반환하므로 DB 종료 전에 학습 완료 표시와 실행 기록 저장을 마친다.
+HTTP 진입점인 `main.ts`는 `app.init()` 직후 `recoverInterrupted()`로 중단 기록을 동기적으로 정리하고 스케줄러를 명시적으로 시작한다. `JOBS_AUTOSTART=false`여도 HTTP 시작 시 기록 정리는 수행하지만 `start()`는 예약 실행을 만들지 않으며 수동 실행은 유지한다. 설정의 운영 경계는 [자동 실행 중지](operations.md#자동-실행-중지)를 따른다. `dreaming.commands.ts`의 `registerDreamCommands`는 Nest 애플리케이션 컨텍스트에서 서비스를 조회하지만 CLI 컨텍스트 생성은 스케줄러를 시작하거나 중단 기록을 정리하지 않으므로, 같은 DB를 사용하는 별도 HTTP 프로세스의 실행 중 기록을 바꾸지 않는다. 종료 훅은 스케줄러를 중단하고 진행 중인 배치가 끝날 때까지 기다린 뒤 반환하므로 DB 종료 전에 학습 완료 표시와 실행 기록 저장을 마친다.
 
 
 ### 실행 시각과 입력
@@ -93,13 +93,15 @@ main에서 `dream-YYYY-MM-DD` 작업 워크트리를 파생한다. 날짜는 스
 
 꿈꾸기 후 GitHub에 main을 하루 한 번 push한다. 꿈꾸기가 실패하더라도 main push는 시도한다. GitHub는 백업이므로, 정리 작업의 실패가 이미 main에 반영된 지식의 백업까지 막아서는 안 되기 때문이다.
 
-로컬 전용 저장소에서는 push를 건너뛰고 이유를 로그에 남긴다. push 오류는 배치를 실패로 기록하지만 이미 main에 반영하고 학습 완료로 표시한 메시지는 되돌리지 않는다. push는 머지 락 안에서 실행하며 성공 결과에는 실제 원격 이름과 전송한 SHA를 남긴다. 수동 CLI 실행 결과는 JSON으로 출력하고 실패 시 종료 코드 1을 설정한다.
+로컬 전용 저장소에서는 push를 건너뛰고 이유를 로그에 남긴다. push 오류는 `push.status='failed'`와 `push.reason`에만 기록하며 정리 실행의 성공·실패와 오류를 바꾸지 않는다. main 반영·재인덱싱·학습 완료 표시까지 성공했다면 `status='succeeded'`, `error=null`과 입력 체크포인트를 유지하므로 다음 실행이 이미 처리한 입력 커밋을 다시 검토하지 않는다. 도니를 호출하지 않은 백업 전용 실행도 push 실패만으로 로컬 체크포인트를 무효화하지 않는다. 반대로 정리·머지·재인덱싱 자체의 실패는 계속 실패로 남는다. push는 머지 락 안에서 실행하며 성공 결과에는 실제 원격 이름과 전송한 SHA를 남긴다. 수동 CLI 실행 결과는 JSON으로 출력하고 정리 실행이 실패한 경우에만 종료 코드 1을 설정한다.
 
 ### 실행 기록과 운영 조회
 
 `dream_runs`는 시작·종료 시각, 상태, 입력 커밋 범위, 머지 SHA, 기존 `pushed` 불리언과 오류를 저장한다. 추가 필드는 도니 최종 응답인 `summary`(없으면 `null`), 이번 머지에서 실제 바뀐 `changedPaths`, 검증된 일기 경로 `journalPath`(정리하지 않은 날은 `null`)다. `mode`는 `local`, `structural`, `sweep` 중 선택한 모드이며 선택 전 실패나 정리 없는 실행에서는 `null`이다. 선택 후 실패한 실행은 선택한 모드를 유지한다. `focus`는 순환 점검 디렉터리이며 그 밖의 모드에서는 `null`이다. `structuralChanges`는 워크트리에서 성공한 이동·삭제 도구 호출의 목록이며 각 항목은 `{ kind: 'move' | 'delete', from: string, to?: string }`이다. 삭제에는 `to`가 없고 구조 변경이 없으면 빈 배열이다. 이후 정리나 머지가 실패해도 이 목록은 보존하므로 main에 반영한 변경 목록과는 구분한다. push 결과는 `push.status`(`pending`, `succeeded`, `skipped`, `failed`), `remote`, `sha`, `at`, `reason`으로 별도 보존한다. 확인할 수 없는 원격과 SHA는 `null`이며 추측하지 않는다.
 
 `DreamRunsRepository.get(id)`는 상세 실행 또는 `null`을 반환한다. `list({ before, limit })`는 시작 시각 내림차순, 같은 시각에서는 ID 내림차순으로 조회한다. `before`는 이전 페이지의 마지막 실행 ID이며 시각 커서도 지원한다. 기본 한도는 50개이고 최대 200개다. `latest()`는 가장 최근 실행, `running()`은 실행 중인 기록을 반환하며 없으면 `null`이다. `backupStatus()`는 push 시도가 끝난 마지막 실행 `lastAttempt`와 성공한 마지막 push 실행 `lastSuccess`를 반환한다. 정리 자체가 실패했어도 push가 성공했다면 `lastSuccess`에 포함한다.
+
+HTTP 시작 시 명시적으로 호출하는 `recoverInterrupted()`는 이전 프로세스가 남긴 `status='running'` 기록을 `failed`로 바꾸고 종료 시각과 엔진 재시작으로 중단되었다는 오류를 저장한다. 기존 입력 범위·머지 결과·요약과 모든 push 필드는 보존하며 변경된 실행마다 `dream.updated` 실패 이벤트를 발행한다. 이미 완료된 기록은 건드리지 않으며 다시 호출해도 추가 변경이나 이벤트는 없다. 같은 프로세스에서 같은 저장소 객체의 실제 실행이 진행 중이면 복구 호출도 그 실행을 중단 처리하지 않는다. 이 메모리 상태는 다른 프로세스의 실행을 알 수 없으므로 Nest 초기화 훅에서는 복구하지 않는다. 실행 중복 방지는 DB의 `running` 행이 아니라 저장소 객체별 메모리 상태로 판단하므로, 오래된 행 자체가 다음 수동 실행을 막지는 않지만 HTTP 재시작 시 운영 화면에 계속 실행 중으로 남지 않도록 정리한다.
 
 시작 기록을 저장한 뒤와 최종 결과를 저장한 뒤에 `dream.updated` 이벤트를 발행한다. 이벤트는 실행 ID와 상태만 포함하므로 클라이언트는 상세 데이터를 다시 조회한다. push가 끝나기 전에는 완료 상태 이벤트를 보내지 않는다. 기존 DB는 `008_ops.sql`로 운영 필드를 확장하며, 과거의 성공 불리언은 성공 상태로 이관하되 기록되지 않은 원격·SHA는 채우지 않는다. `021_dream_modes.sql`은 `mode`, `focus`, `structural_changes`를 추가한다. 과거 실행은 모드와 점검 디렉터리가 `null`이며 구조 변경 목록은 빈 배열이다.
 

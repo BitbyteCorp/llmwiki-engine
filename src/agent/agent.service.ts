@@ -1,4 +1,4 @@
-import { HttpException, Inject, Injectable } from '@nestjs/common';
+import { HttpException, Inject, Injectable, Optional } from '@nestjs/common';
 import type { Response, ResponseCreateParamsBase, ResponseInput } from 'openai/resources/responses/responses';
 import { z } from 'zod';
 import GithubSlugger from 'github-slugger';
@@ -20,6 +20,7 @@ import { runWrite, resolveConflicts } from './writes.js';
 import { AclService } from '../acl/acl.service.js';
 import type { User } from '../auth/users.types.js';
 import { capOutput, pageContent, PAGE_MAX_LINES, sliceCodePoints } from './output.js';
+import { UsageService } from '../usage/usage.service.js';
 
 
 function responseText(response: Response): string {
@@ -148,6 +149,7 @@ export class AgentService {
     private readonly repo: KnowledgeRepo,
     private readonly search: SearchService,
     private readonly acl: AclService,
+    @Optional() private readonly usage?: UsageService,
   ) {}
 
   async runAgent(opts: RunAgentOptions): Promise<{ text: string; toolCalls: number }> {
@@ -181,6 +183,7 @@ export class AgentService {
       usage.cachedInputTokens += delta.cachedInputTokens;
       usage.outputTokens += delta.outputTokens;
       usage.reasoningTokens += delta.reasoningTokens;
+      this.usage?.record({ lane, model: response.model || model, ...delta });
       opts.onUsage?.(delta);
     };
     const lane = opts.lane ?? 'chat';
@@ -490,8 +493,8 @@ export class AgentService {
           const path = notePath(note.path);
           assertCurrentPolicy();
           if (options.user) this.acl.assertRead(options.user, path);
-          readNotes.set(path, { content: note.content, sha: note.sha });
-          options.onSource?.(path);
+          // Pinned context is only a page; restore the full immutable version for later reads.
+          await readNote(path, note.sha);
         } else if (item.type === 'function_call' && item.name === 'read_note') {
           try {
             const { path } = readArgs.parse(JSON.parse(item.arguments));
@@ -564,7 +567,14 @@ export class AgentService {
       options.onEvent?.('tool', { name: 'read_note', state: 'start', summary: path, path });
       try {
         const note = await readNote(path, ref);
-        input.push({ role: 'user', content: `${contextPrefix}${JSON.stringify(note)}${selectionPrefix}${JSON.stringify(options.context.selection ?? '')}` });
+        const context = {
+          path: note.path,
+          sha: note.sha,
+          ...pageContent(note.content),
+          readHint: '나머지는 read_note에 같은 path와 nextOffset, nextCharOffset(있을 때)을 전달해 이어 읽는다. 이 노트는 고정된 sha 버전으로 계속 읽힌다.',
+        };
+        const selection = sliceCodePoints(options.context.selection ?? '', 0, 32_000);
+        input.push({ role: 'user', content: `${contextPrefix}${JSON.stringify(context)}${selectionPrefix}${JSON.stringify(selection)}` });
       } finally {
         options.onEvent?.('tool', { name: 'read_note', state: 'end', summary: path, path });
       }

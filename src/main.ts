@@ -66,15 +66,20 @@ async function main(): Promise<void> {
     });
     app.useGlobalFilters(new HttpExceptionFilter(log));
     await app.init();
+    app.get(DreamingService).recoverInterrupted();
     const readiness = app.get(ReadinessService);
-    lifecycle.initialIndex = app.get(IndexerService).syncToHead().then(() => {
-      readiness.markInitialIndexReady();
-    }, (error: unknown) => {
-      readiness.markInitialIndexError();
-      log.error({ err: error }, 'Initial knowledge indexing failed; readiness remains unavailable');
-    });
-    app.get(WriteJobsService).start();
-    app.get(DreamingService).start();
+    if (config.jobsAutostart === false) {
+      readiness.markInitialIndexSkipped();
+    } else {
+      lifecycle.initialIndex = app.get(IndexerService).syncToHead().then(() => {
+        readiness.markInitialIndexReady();
+      }, (error: unknown) => {
+        readiness.markInitialIndexError();
+        log.error({ err: error }, 'Initial knowledge indexing failed; readiness remains unavailable');
+      });
+      app.get(WriteJobsService).start();
+      app.get(DreamingService).start();
+    }
     await app.listen(config.port);
     log.info({ port: config.port }, 'llmwiki-engine listening');
   } catch (error) {

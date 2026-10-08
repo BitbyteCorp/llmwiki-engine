@@ -1,4 +1,5 @@
 import type { Citation, TokenUsage } from '../agent/agent.types.js';
+import type { AnswerErrorCode } from '../common/openai-errors.js';
 
 export interface Conversation {
   id: string;
@@ -18,6 +19,7 @@ export interface Message {
   attachments: string[];
   context: MessageContext | null;
   status: 'completed' | 'running' | 'failed' | 'cancelled' | 'interrupted';
+  errorCode?: AnswerErrorCode | null;
   usage: Usage | null;
   model: string | null;
   effort: string | null;

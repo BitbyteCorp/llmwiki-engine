@@ -143,7 +143,7 @@ export function ChatPane({ variant, conversationId, onClose }: { variant: 'panel
             updateAnswer(() => event.data.message);
             setSteps(previous => ({...previous,[event.data.message.id]:(previous[stream.answerId] ?? []).map(step => ({...step,status:'done'}))})); break;
           case 'error':
-            updateAnswer(message => ({...message,status:event.data.code === 'generation_cancelled' ? 'cancelled' : event.data.code === 'generation_interrupted' ? 'interrupted' : 'failed'}));
+            updateAnswer(message => ({...message,status:event.data.code === 'generation_cancelled' ? 'cancelled' : event.data.code === 'generation_interrupted' ? 'interrupted' : 'failed',errorCode:event.data.errorCode ?? null}));
             if (event.data.code !== 'generation_cancelled') setError(new Error(event.data.message)); break;
         }
       }}, stream.controller.signal);
@@ -163,7 +163,7 @@ export function ChatPane({ variant, conversationId, onClose }: { variant: 'panel
     const message = detail.data.messages.findLast(message => message.role === 'assistant' && message.status === 'running');
     if (!message?.generationId || attached.current.has(message.generationId)) return;
     attached.current.add(message.generationId);
-    setLocalMessages(detail.data.messages.map(item => item.id === message.id ? {...item,content:'',citations:[],usage:null} : item));
+    setLocalMessages(detail.data.messages.map(item => item.id === message.id ? {...item,content:'',citations:[],usage:null,errorCode:null} : item));
     void run({conversationId:id,controller:new AbortController(),generationId:message.generationId,answerId:message.id},(handlers,signal) => resumeGeneration(message.generationId!,handlers,signal));
   }, [detail.data,id,run,streaming]);
   const stop = useCallback(async () => {
@@ -198,7 +198,7 @@ export function ChatPane({ variant, conversationId, onClose }: { variant: 'panel
     if (!id || active.current) return;
     const index = messages.findIndex(item => item.id === message.id);
     const resume = kind === 'retry' && message.role === 'assistant' && message.resumable;
-    const answer = resume ? {...message,usage:null,status:'running' as const,resumable:false} : {...message,id:`local-answer-${crypto.randomUUID()}`,role:'assistant' as const,content:'',citations:[],attachments:[],context:null,usage:null,status:'running' as const,resumable:false};
+    const answer = resume ? {...message,usage:null,status:'running' as const,errorCode:null,resumable:false} : {...message,id:`local-answer-${crypto.randomUUID()}`,role:'assistant' as const,content:'',citations:[],attachments:[],context:null,usage:null,status:'running' as const,errorCode:null,resumable:false};
     setLocalMessages([...messages.slice(0,message.role === 'user' ? index+1 : index),answer]);
     await run({conversationId:id,controller:new AbortController(),answerId:answer.id},(handlers,signal) => streamMessageAction(id,message.id,kind,{},handlers,signal));
   };

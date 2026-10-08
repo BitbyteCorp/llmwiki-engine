@@ -174,11 +174,13 @@ pane 안의 기록은 구성원 대화를 최근 활동 순으로 표시한다. 
 
 사용자 질문은 오른쪽 말풍선이며 도니의 답변은 아바타·이름을 가진 전체 너비 본문이다. 메시지는 위키와 같은 Markdown 렌더러를 사용한다. 인용 칩에는 소제목과 본문 미리보기를 제공하고 현재 SHA와 다르면 변경됨 표시와 `?ref=` 과거 노트 링크를 사용한다. 모델·추론 강도·입력·출력·추론 토큰과 스트리밍 커서를 표시한다. hover 또는 키보드 focus로 복사·수정·재생성·새 노트 저장·기존 노트 적용을 연다. 실패·취소·서버 중단은 부분 답변과 인라인 재시도로 표시한다. 질문 수정과 답변 재생성은 이후 대화가 교체된다는 확인을 요구한다.
 
+실패한 답변의 `error` 이벤트와 저장된 메시지에는 안전한 원인 분류인 `errorCode`를 담는다. `rate_limited`는 재시도 후에도 남은 요청 한도 초과, `invalid_request`는 요청 형식 오류, `auth`는 공급자 인증 오류, `provider_error`는 공급자 서버·연결 오류, `timeout`은 시간 초과, `context_too_large`는 문맥 길이 초과, `turn_limit`는 에이전트 턴 한도 초과, `cancelled`는 취소, `unknown`은 분류되지 않은 오류다. 웹은 원인별 짧은 한국어 안내를 기존 부분 답변·재시도 버튼과 함께 표시한다. 이전 메시지처럼 코드가 없으면 기존 상태 안내를 유지하며 재시작에 따른 `interrupted` 안내도 그대로 유지한다. 재시도 실행과 성공한 답변은 이전 실패 코드를 지운다. 공급자 오류 원문과 요청 식별자는 API·SSE에 보내지 않으며 서버 진단 로그의 경계는 [운영](operations.md#요청-로그와-sse)을 따른다.
+
 실패·취소·중단된 답변에 저장된 체크포인트가 있으면 `이어서 다시 시도`, 없으면 `다시 시도`를 표시한다. 이어서 재시도할 때는 같은 assistant 메시지 ID와 기존 부분 본문·인용을 유지하고 이후 메시지는 화면에서 즉시 숨긴다. 서버가 보내는 `delta {text,replace:true}`는 체크포인트의 본문 스냅샷이므로 기존 본문을 덧붙이지 않고 교체하며 빈 본문도 그대로 적용한다. 이후 일반 delta는 그 본문 뒤에 붙인다. 같은 인용을 다시 받으면 경로·소제목·앵커·SHA로 중복을 제거하며 최종 `done` 메시지로 본문과 인용을 확정한다.
 
 메시지는 독립 영역에서 스크롤하고 composer는 하단에 고정한다. 위로 스크롤하면 자동 추적을 멈추며 `최근 메시지로` 버튼으로 돌아온다. 입력 textarea는 내용과 pane 너비에 따라 80–240px로 자동 확장한다. Enter는 전송, Shift+Enter는 줄바꿈이며 IME 조합 중 Enter는 전송하지 않는다. 비어 있는 입력의 위쪽 화살표는 마지막 질문 수정을 연다.
 
-paperclip 버튼·pane 전체 끌어 놓기·클립보드 이미지 붙여넣기로 첨부를 추가한다. 드롭 중에는 pane 전체 오버레이를 표시한다. 전송 전 썸네일·파일 카드·진행률·오류·제거를 제공하고 보낸 첨부도 썸네일과 카드를 유지한다. 이미지는 확대 창으로 열고 파일은 다운로드 링크로 표시한다. 업로드 한도·허용 형식·소유자 다운로드 규칙은 [첨부 API](#rest-api와-저장-규칙)를 따른다.
+paperclip 버튼·pane 전체 끌어 놓기·클립보드 이미지 붙여넣기로 첨부를 추가한다. 드롭 중에는 pane 전체 오버레이를 표시한다. 전송 전 썸네일·파일 카드·진행률·오류·제거를 제공하고 보낸 첨부도 썸네일과 카드를 유지한다. 이미지는 확대 창으로 열고 파일은 다운로드 링크로 표시한다. 업로드 한도·허용 형식·소유자 다운로드와 답변 이력 재생 규칙은 [첨부 파일과 가져오기 업로드](agent.md#첨부-파일과-가져오기-업로드)를 따른다.
 
 파일 전달은 전역 이벤트 대신 pane별 `ChatComposer`의 `files?:{key:number,files:File[]}`를 사용한다. `prompt?:{key:number,content:string,context?}`는 예제 질문과 노트 문맥을 초안으로 전달한다. 배치마다 새 key를 주고 같은 key는 다시 처리하지 않는다. disabled·streaming·edit·submitting 중 들어온 파일 배치는 무시하며 나중에 재생하지 않는다. 빈 대화는 예제 질문 세 개를 제공하고 활성 노트가 있으면 현재 노트 질문을 추가한다. 예제는 초안과 노트 문맥만 채우며 자동 전송하지 않는다. 현재 노트의 메타데이터까지 읽어 둔 경우에만 해당 `updatedSha`도 문맥에 고정한다.
 
@@ -365,7 +367,7 @@ HTTP 연결 종료는 생성 작업을 중지하지 않는다. 명시적 `POST /
 
 구성원 추가 입력은 `{email,role:'editor'|'viewer'}`이며 조회·추가는 `{members:[{userId,email,name,role}]}`를 반환한다. 삭제는 `204`다. presence 입력은 `{typing}`이며 `{expiresAt}`를 반환한다. 30초 동안 갱신하지 않은 사용자는 제거하며 `conversation.presence {conversationId,users:[{id,name,typing}]}`와 `conversation.updated {conversationId,messageId?}` 이벤트는 구성원 userIds에만 전달한다.
 
-업로드 multipart 필드는 `file`, 선택 필드 `purpose=chat|import`이며 기본값은 `chat`이다. chat은 20 MB 이하 PNG/JPEG/WebP/GIF/PDF/UTF-8 text/Markdown이고 실제 바이트를 검사한다. import는 전역 editor 이상만 생성하며 ZIP을 추가 허용하고 100 MB 한도다. import 목적 파일은 chat 첨부로 사용할 수 없다. 응답은 `{id,userId,name,mediaType,size,createdAt,purpose}`다. 다운로드는 소유자만 가능하며 안전한 Content-Disposition과 탐지한 Content-Type을 반환한다. save 입력은 `{path,baseSha}`이고 경로는 `assets/` 아래이며 공용 NoteWriter를 통해 저장한다. 메시지에서 참조하지 않고 assets로 저장하지 않은 업로드는 `UPLOAD_RETENTION_DAYS`(기본 7일) 이후 제거한다.
+첨부 업로드의 multipart 필드·응답·용도별 한도, 소유자 다운로드, `assets/` 저장과 보존 기간 및 답변 재생 예산은 [첨부 파일과 가져오기 업로드](agent.md#첨부-파일과-가져오기-업로드)를 따른다.
 
 임시 업로드 파일명은 응답의 base62 업로드 ID와 같다. 시작 시 기존 UUID 파일명을 같은 식별자의 base62 이름으로 옮긴 뒤 보존 기간 정리를 수행하며, 이미 옮긴 파일과 UUID가 아닌 파일명은 다시 이름을 바꾸지 않는다.
 

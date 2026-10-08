@@ -214,7 +214,9 @@ describe('ACL-aware RAG HTTP with a real repository and index', () => {
     config.searchRerank = 'llm';
     config.searchExpand = stage === 'expansion' ? 'llm' : 'off';
     let revoked: number | undefined;
-    const pending = get('/api/search?q=needle&tags=common&limit=1').then((response) => response);
+    // Earlier requests warmed the shared embedding cache for "needle".
+    const query = stage === 'embeddings' ? 'needle embedding race' : 'needle';
+    const pending = get(`/api/search?q=${encodeURIComponent(query)}&tags=common&limit=1`).then((response) => response);
     try {
       await reached.promise;
       revoked = acl.create({ prefix: 'wiki/public/', subjectType: 'user', subject: String(alice.id), access: 'none' }, admin).id;

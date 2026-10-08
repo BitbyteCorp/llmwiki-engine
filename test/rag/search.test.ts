@@ -1,6 +1,6 @@
 import { Test } from '@nestjs/testing';
 import pino from 'pino';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig, type Config } from '../../src/config.js';
 import { openDb, runMigrations } from '../../src/db/index.js';
 import { AclService } from '../../src/acl/acl.service.js';
@@ -11,11 +11,14 @@ import { CONFIG, DB, LOGGER } from '../../src/common/tokens.js';
 import { embedTexts } from '../../src/rag/embeddings.js';
 import { SearchService } from '../../src/rag/search.service.js';
 import type { SearchHit } from '../../src/rag/types.js';
+import { UsageService } from '../../src/usage/usage.service.js';
+import { UsageRepository } from '../../src/usage/usage.repository.js';
 import { startFakeOpenAI } from '../fake-openai.js';
 
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
+  vi.restoreAllMocks();
 });
 
 async function fixture(overrides: Partial<Config> = {}) {
@@ -26,7 +29,7 @@ async function fixture(overrides: Partial<Config> = {}) {
   const log = pino({ enabled: false });
   const app = await Test.createTestingModule({
     providers: [
-      SearchService,
+      SearchService, UsageService, UsageRepository,
       { provide: AclService, useValue: new AclService(db, new UsersService(new UsersRepository(db)), new AuditService(db)) },
       { provide: CONFIG, useValue: config },
       { provide: DB, useValue: db },
@@ -52,11 +55,11 @@ async function fixture(overrides: Partial<Config> = {}) {
     }
     return id;
   }
-  return { db, config, search, chunk };
+  return { db, config, search, chunk, usage: app.get(UsageService) };
 }
 
 async function vectorFixture(query: string) {
-  const fake = await startFakeOpenAI();
+  const fake = await startFakeOpenAI([], { embeddingUsage: { promptTokens: 13, totalTokens: 17 } });
   cleanup.push(() => fake.close());
   const f = await fixture({ openaiApiKey: 'test-key', openaiBaseUrl: fake.url });
   f.db.exec('CREATE VIRTUAL TABLE chunk_vectors USING vec0(chunk_id INTEGER PRIMARY KEY, embedding float[2])');
@@ -128,6 +131,72 @@ describe('SearchService', () => {
     const f = await vectorFixture('저장');
     f.chunk({ path: 'wiki/a.md', content: '파일 보존 정책', vector: f.queryVector });
     expect((await f.search.search('저장')).map((hit) => hit.path)).toEqual(['wiki/a.md']);
+  });
+
+  it('reuses query embeddings while retrieving fresh results for each filter and index state', async () => {
+    const f = await vectorFixture('storage');
+    f.chunk({ path: 'wiki/one.md', content: 'storage one', vector: f.queryVector });
+    f.chunk({ path: 'raw/two.md', content: 'storage two', kind: 'raw', vector: f.queryVector });
+    const before = f.fake.requests.length;
+    expect((await f.search.search('storage', { folder: 'wiki' })).map((hit) => hit.path)).toEqual(['wiki/one.md']);
+    expect((await f.search.search('storage', { folder: 'raw' })).map((hit) => hit.path)).toEqual(['raw/two.md']);
+    f.chunk({ path: 'wiki/three.md', content: 'storage three', vector: f.queryVector });
+    expect((await f.search.search('storage', { folder: 'wiki' })).map((hit) => hit.path).sort())
+      .toEqual(['wiki/one.md', 'wiki/three.md']);
+    expect(f.fake.requests.slice(before).map((request) => request.path)).toEqual(['/v1/embeddings']);
+    expect(f.usage.aggregate().rows).toEqual([expect.objectContaining({
+      lane: 'embedding', model: 'text-embedding-3-small', calls: 1, inputTokens: 17,
+      cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0,
+    })]);
+  });
+
+  it('expires query embeddings after ten minutes without extending lifetime on a cache hit', async () => {
+    const f = await vectorFixture('storage');
+    f.chunk({ path: 'wiki/one.md', content: 'storage', vector: f.queryVector });
+    let now = Date.now();
+    vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const before = f.fake.requests.length;
+    await f.search.search('storage');
+    now += 599_999;
+    await f.search.search('storage');
+    expect(f.fake.requests.length - before).toBe(1);
+    now += 1;
+    expect((await f.search.search('storage')).map((hit) => hit.path)).toEqual(['wiki/one.md']);
+    expect(f.fake.requests.length - before).toBe(2);
+  });
+
+  it('keys query embeddings by model and dimensions', async () => {
+    const f = await vectorFixture('storage');
+    f.chunk({ path: 'wiki/one.md', content: 'storage', vector: f.queryVector });
+    const before = f.fake.requests.length;
+    await f.search.search('storage');
+    f.config.embeddingModel = 'another-model';
+    f.db.prepare("UPDATE index_meta SET value=? WHERE key='embedding_model'").run(f.config.embeddingModel);
+    await f.search.search('storage');
+    f.config.embeddingDimensions = 3;
+    f.db.prepare("UPDATE index_meta SET value='3' WHERE key='embedding_dimensions'").run();
+    f.db.exec('DROP TABLE chunk_vectors; CREATE VIRTUAL TABLE chunk_vectors USING vec0(chunk_id INTEGER PRIMARY KEY, embedding float[3])');
+    await f.search.search('storage');
+    expect(f.fake.requests.slice(before).map(({ body }) => [body.model, body.dimensions])).toEqual([
+      ['text-embedding-3-small', 2], ['another-model', 2], ['another-model', 3],
+    ]);
+  });
+
+  it('records expansion and rerank usage even when their output cannot be used', async () => {
+    const fake = await startFakeOpenAI([
+      { text: 'not JSON', usage: { inputTokens: 11, cachedInputTokens: 3, outputTokens: 7, reasoningTokens: 2 } },
+      { text: '[0,0]', usage: { inputTokens: 23, cachedInputTokens: 5, outputTokens: 9, reasoningTokens: 4 } },
+    ]);
+    cleanup.push(() => fake.close());
+    const f = await fixture({ openaiApiKey: 'test-key', openaiBaseUrl: fake.url,
+      searchExpand: 'llm', searchRerank: 'llm' });
+    f.chunk({ path: 'wiki/one.md', content: 'storage one' });
+    f.chunk({ path: 'wiki/two.md', content: 'storage two' });
+    expect((await f.search.search('storage')).map((hit) => hit.path)).toEqual(['wiki/one.md', 'wiki/two.md']);
+    expect(f.usage.aggregate().rows).toEqual([expect.objectContaining({
+      lane: 'search', model: f.config.llmModel, calls: 2, inputTokens: 34,
+      cachedInputTokens: 8, outputTokens: 16, reasoningTokens: 6,
+    })]);
   });
 
   it('treats embedded quotes and query operators as literal search text', async () => {

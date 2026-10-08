@@ -28,6 +28,11 @@ describe('environment safety', () => {
   it('requires a production session secret', () => {
     expect(() => loadConfig({ NODE_ENV: 'production' })).toThrow(/SESSION_SECRET/);
   });
+  it('parses the autostart safety switch without treating false as truthy', () => {
+    expect(loadConfig({ JOBS_AUTOSTART: 'false' }).jobsAutostart).toBe(false);
+    expect(loadConfig({ JOBS_AUTOSTART: 'true' }).jobsAutostart).toBe(true);
+    expect(() => loadConfig({ JOBS_AUTOSTART: '0' })).toThrow(/JOBS_AUTOSTART/);
+  });
   it('selects the first configured model after trimming and dropping empty entries', () => {
     const config = loadConfig({ LLM_MODELS: ' , model-one, , model-two, ', LLM_REASONING_EFFORT: 'high' });
     expect(config.llmModels).toEqual(['model-one', 'model-two']);
@@ -118,9 +123,14 @@ describe('core database', () => {
         ...job, dedupe_key: null, required_reads: '[]', kind: job.kind === historicalJobKind ? 'agent' : job.kind,
       })));
       expect(db.prepare('SELECT * FROM write_job_events').all()).toEqual(events);
-      expect(db.prepare('SELECT rowid, * FROM imports ORDER BY rowid').all()).toEqual(imports.map(({ job_id: _jobId, ...row }) => row));
-      expect(db.pragma('table_info(imports)')).toEqual(importColumns.filter((column) => column.name !== 'job_id')
-        .map((column, cid) => ({ ...column, cid })));
+      const retryColumns = ['retained_text', 'filename', 'instructions', 'raw_committed'];
+      const upgradedImports = db.prepare('SELECT rowid, * FROM imports ORDER BY rowid').all() as Array<Record<string, unknown>>;
+      expect(upgradedImports.map((row) => Object.fromEntries(Object.entries(row).filter(([key]) => !retryColumns.includes(key)))))
+        .toEqual(imports.map(({ job_id: _jobId, ...row }) => row));
+      // 025 backfills raw_committed only for imports that already reached an integration job.
+      expect(upgradedImports.map((row) => [row.id, row.raw_committed])).toEqual([['import', 1], ['unlinked', 0]]);
+      expect((db.pragma('table_info(imports)') as Array<{ name: string }>).filter((column) => !retryColumns.includes(column.name)))
+        .toEqual(importColumns.filter((column) => column.name !== 'job_id').map((column, cid) => ({ ...column, cid })));
       expect(db.prepare('SELECT * FROM import_jobs').all()).toEqual([{ import_id: 'import', batch: 0, job_id: 'historical', files: '[]' }]);
       expect(schemaSql.all()).toEqual(expect.arrayContaining(expectedSchema));
       expect(db.prepare("SELECT name FROM sqlite_schema WHERE name = 'imports_job'").get()).toBeUndefined();
@@ -134,6 +144,8 @@ describe('core database', () => {
       ]);
       expect(() => db.exec("INSERT INTO import_jobs VALUES ('import', 0, 'duplicate', '[]')")).toThrow(/UNIQUE/);
       expect(() => db.exec("INSERT INTO import_jobs VALUES ('missing', 0, 'historical', '[]')")).toThrow(/FOREIGN KEY/);
+      // 025's raw_committed backfill is itself an UPDATE; only the post-migration update matters here.
+      db.exec('DELETE FROM import_update_probe');
       db.exec("UPDATE imports SET error = 'updated' WHERE id = 'import'");
       expect(db.prepare('SELECT * FROM import_update_probe').all()).toEqual([{ id: 'import' }]);
       expect(db.pragma('foreign_keys', { simple: true })).toBe(1);

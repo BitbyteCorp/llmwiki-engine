@@ -1,3 +1,5 @@
+import type { AnswerErrorCode } from '../../src/common/openai-errors'
+
 export type Role = 'admin' | 'editor' | 'viewer'
 export interface User { id: number; email: string; name: string | null; role: Role; createdAt: string; lastLoginAt: string | null }
 export interface Note { path: string; content: string; frontmatter: Record<string, unknown>; body: string; updatedSha: string }
@@ -17,7 +19,7 @@ export interface Conversation { id: string; title: string; createdAt: string; up
 export interface Citation { path: string; heading?: string; anchor?: string; excerpt?: string; sha?: string }
 export interface MessageContext { notePath: string; ref?: string; selection?: string }
 export interface MessageUsage { inputTokens: number; cachedInputTokens?: number; outputTokens: number; reasoningTokens: number }
-export interface Message { id: string; role: 'user' | 'assistant'; content: string; citations: Citation[]; attachments: string[]; context: MessageContext | null; status: 'completed' | 'running' | 'failed' | 'cancelled' | 'interrupted'; resumable?: boolean; usage: MessageUsage | null; model: string | null; effort: string | null; generationId?: string | null; createdAt: string }
+export interface Message { id: string; role: 'user' | 'assistant'; content: string; citations: Citation[]; attachments: string[]; context: MessageContext | null; status: 'completed' | 'running' | 'failed' | 'cancelled' | 'interrupted'; errorCode?: AnswerErrorCode | null; resumable?: boolean; usage: MessageUsage | null; model: string | null; effort: string | null; generationId?: string | null; createdAt: string }
 export interface Settings { allowlistEnabled: boolean; allowedDomains: string[] }
 export type Requester = Pick<User, 'email' | 'name'>
 
@@ -95,15 +97,22 @@ export interface OpsIndexStatus {
   embedding: { configured: boolean; model: string; dimensions: number; ready: boolean }
 }
 export interface OpsStatus {
+  jobsAutostart: boolean
   queue: { queued: number; running: number; oldestQueuedAt: string | null }; failedJobs: OpsJob[]; index: OpsIndexStatus
   dreams: { last: OpsDreamRun | null; running: OpsDreamRun | null }; backup: { lastAttempt: OpsDreamRun | null; lastSuccess: OpsDreamRun | null }
 }
 export interface AuditEvent { id: number; actorId: number | null; action: string; target: string; outcome: string; summary: string | null; createdAt: string }
 export interface AuditFilters { actor?: number; action?: string; before?: string; limit?: number }
-export interface OpsReadyState { ok: true; initialIndex: 'ready'; checks: { database: boolean; repository: boolean; index: boolean } }
+export interface OpsReadyState { ok: true; initialIndex: 'ready' | 'skipped'; checks: { database: boolean; repository: boolean; index: boolean } }
+export interface OpsUsageRow {
+  day: string; lane: string; model: string; calls: number
+  inputTokens: number; cachedInputTokens: number; outputTokens: number; reasoningTokens: number
+}
+export interface OpsUsage { days: number; rows: OpsUsageRow[] }
 export const opsApi = {
   status: (signal?: AbortSignal) => request<OpsStatus>('/api/admin/ops', { signal }),
   ready: (signal?: AbortSignal) => request<OpsReadyState>('/readyz', { signal }),
+  usage: (days = 30, signal?: AbortSignal) => request<OpsUsage>(`/api/admin/usage${query({ days })}`, { signal }),
   audit: (filters: AuditFilters = {}, signal?: AbortSignal) => request<{ events: AuditEvent[]; nextCursor: string | null }>(`/api/admin/audit${query({ limit: 50, ...filters })}`, { signal }),
   retryJob: (id: string) => request<{ job: OpsJob }>(`/api/admin/jobs/${encodeURIComponent(id)}/retry`, { method: 'POST' }),
   cancelJob: (id: string) => request<{ job: OpsJob }>(`/api/admin/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }),
@@ -176,6 +185,7 @@ export interface ImportRecord {
   id: string; userId: number; kind: ImportKind; source: string; sha: string | null
   status: ImportStatus; rawPaths: string[]; jobs: ImportJob[]; error: string | null
   createdAt: string; updatedAt: string; finishedAt: string | null
+  retryable: boolean; retryReason: string | null
 }
 export interface ImportInput { kind: ImportKind; url?: string; text?: string; uploadId?: string; filename?: string; instructions?: string }
 export interface ImportUpload { id: string; userId: number; name: string; mediaType: string; size: number; createdAt: string; purpose: 'import' }
@@ -220,6 +230,7 @@ export const importsApi = {
   list: (before?: string, limit = 30, signal?: AbortSignal) => request<{ imports: ImportRecord[] }>(`/api/imports${query({ before, limit })}`, { signal }),
   detail: (id: string, signal?: AbortSignal) => request<ImportRecord>(`/api/imports/${encodeURIComponent(id)}`, { signal }),
   create: (input: ImportInput) => request<{ importId: string; jobIds: string[] }>('/api/imports', { method: 'POST', body: JSON.stringify(input) }),
+  retry: (id: string) => request<{ importId: string; jobIds: string[] }>(`/api/imports/${encodeURIComponent(id)}/retry`, { method: 'POST' }),
   upload: uploadImport,
 }
 // END imports client contracts

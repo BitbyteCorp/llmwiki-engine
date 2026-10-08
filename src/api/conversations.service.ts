@@ -3,11 +3,13 @@ import { createHash } from 'node:crypto';
 import type { ResponseInputContent } from 'openai/resources/responses/responses';
 import type { Logger } from 'pino';
 import { parseApiId } from '../common/ids.js';
+import OpenAI from 'openai';
+import { classifyAnswerError } from '../common/openai-errors.js';
 import { DB, LOGGER } from '../common/tokens.js';
 import { EventsService } from '../events/events.service.js';
 import { AgentService } from '../agent/agent.service.js';
 import { AgentCheckpointsRepository } from '../agent/checkpoints.repository.js';
-import { UploadsService } from '../uploads/uploads.service.js';
+import { CHAT_REPLAY_BUDGET, UploadsService } from '../uploads/uploads.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { ApiError, notFound } from './api-error.js';
 import { ConversationsRepository } from './conversations.repository.js';
@@ -150,20 +152,21 @@ export class ConversationsService implements OnModuleDestroy {
           }
         }
         const inputs:Array<{role:'user'|'assistant';content:string|ResponseInputContent[]}>=[];
-        let attachmentBudget=25*1024*1024;
+        let attachmentBudget=CHAT_REPLAY_BUDGET;
+        let userTurns=0;
         const mapped=new Map<string,ResponseInputContent[]>();
         for(const m of [...history].reverse()) {
+          if(m.role==='user') userTurns++;
           const parts:ResponseInputContent[]=[];
           for(const uploadId of m.attachments) {
             const owner=this.repository.attachmentOwner(m.id,uploadId);
             if(owner===null) continue;
-            const file=this.uploads.get(owner,uploadId);
-            const replay=await this.uploads.parts(owner,[uploadId],attachmentBudget);
-            if(replay.length) {
-              const cost=file.upload.mediaType.startsWith('text/') ? Math.min(file.upload.size,32*1024) : file.upload.size;
-              attachmentBudget=Math.max(0,attachmentBudget-cost);
-            }
-            parts.push(...replay);
+            const replay=await this.uploads.parts(owner,[uploadId],attachmentBudget,{
+              binary:m.role==='user' && userTurns<=2,
+              imageDetail:m.id===user.id && m.attachments.length===1 ? 'auto' : 'low',
+            });
+            attachmentBudget-=replay.bytes;
+            parts.push(...replay.parts);
           }
           mapped.set(m.id,parts);
         }
@@ -238,15 +241,16 @@ export class ConversationsService implements OnModuleDestroy {
         this.repository.finish(assistant.id,answer.text,'completed',answer.citations,answer.usage);
         this.checkpoints.delete(`message:${assistant.id}`);
         this.changed(id,assistant.id);
-        emit('done',{message:{...assistant,content:answer.text,status:'completed',citations:answer.citations,usage:answer.usage ?? null,generationId:generation.id,resumable:false}});
+        emit('done',{message:{...assistant,content:answer.text,status:'completed',errorCode:null,citations:answer.citations,usage:answer.usage ?? null,generationId:generation.id,resumable:false}});
       } catch(error) {
-        const cancelled=signal.aborted;
+        const errorCode=signal.aborted ? 'cancelled' : classifyAnswerError(error);
+        const cancelled=errorCode==='cancelled';
         if(this.repository.message(id,assistant.id,userId)?.generationId===generation.id) {
-          this.repository.finish(assistant.id,partial,cancelled?'cancelled':'failed');
+          this.repository.finish(assistant.id,partial,cancelled?'cancelled':'failed',[],undefined,errorCode);
           this.changed(id,assistant.id);
         }
-        if(!cancelled)this.log.error({err:error,conversationId:id},'Chat answer failed');
-        emit('error',{code:cancelled?'generation_cancelled':'generation_failed',message:cancelled?'Answer generation cancelled':'Unable to generate an answer. Please retry.'});
+        if(!cancelled)this.log.error({err:error,errorCode,openaiRequestId:error instanceof OpenAI.APIError ? error.requestID : undefined,conversationId:id},'Chat answer failed');
+        emit('error',{code:cancelled?'generation_cancelled':'generation_failed',errorCode,message:cancelled?'Answer generation cancelled':'Unable to generate an answer. Please retry.'});
       }
     });
     return generation;

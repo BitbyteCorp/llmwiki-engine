@@ -62,9 +62,32 @@ export class IngestService implements OnApplicationBootstrap, OnModuleDestroy {
     input = { userId, ...parsed.data };
     const importId = newId();
     const source = input.url ?? (input.uploadId ? `upload:${input.uploadId}` : `text:${safeFilename(input.filename ?? 'source.md')}`);
-    this.imports.create(importId, userId, input.kind, source);
+    this.imports.create(importId, userId, input.kind, source, input);
+    return this.process(input, importId, source, userId);
+  }
+
+  async retry(id: string, requesterId: number, admin = false): Promise<{ importId: string; jobIds: string[] }> {
+    const item = this.get(id, requesterId, admin);
+    if (!item.retryable) throw new ApiError(409, 'import_not_retryable', item.retryReason!);
+    const input = this.imports.retryInput(id)!;
+    if (!this.imports.claimRetry(id)) throw new ApiError(409, 'import_not_retryable', 'This source import is already being retried or is no longer retryable');
+    // ID migrations preserve raw filenames, so prefer the recorded provenance path.
+    const previousProvenance = item.sha
+      ? item.rawPaths.find((path) => path.startsWith(`raw/${item.sha}/imports/`) && path.endsWith('.md'))
+        ?? `raw/${item.sha}/imports/${id}.md`
+      : undefined;
+    return this.process(input, id, item.source, requesterId, previousProvenance);
+  }
+
+  private async process(input: IngestInput, importId: string, source: string, actorId: number, previousProvenance?: string): Promise<{ importId: string; jobIds: string[] }> {
+    const { userId } = input;
     this.active.add(importId);
     try {
+      // Older imports may have committed raw before crashing without a job link.
+      if (previousProvenance && await this.repo.fileObjectId(previousProvenance, await this.repo.headSha()) !== null) {
+        this.imports.committed(importId);
+        throw new ApiError(409, 'import_not_retryable', 'The raw source is already stored; source extraction cannot be retried');
+      }
       let buffer: Buffer;
       let mediaType: string;
       let filename = input.filename;
@@ -114,6 +137,7 @@ export class IngestService implements OnApplicationBootstrap, OnModuleDestroy {
       ops.push({ op: 'put', path: sourcePath, content, create: true });
       this.imports.extracted(importId, sha, rawPaths);
       await this.writer.apply({ userId, source: 'import', client: 'ingest', ops, baseSha, message: `Import ${filename}` });
+      this.imports.committed(importId);
       const planned = planBatches(extraction.files.filter((file) => file.markdown).map((file) => ({
         path: `${extractedRoot}/files/${file.path}`, chars: file.buffer.toString('utf8').length,
       })));
@@ -149,12 +173,12 @@ export class IngestService implements OnApplicationBootstrap, OnModuleDestroy {
       });
       this.imports.submitted(importId, submitted);
       this.reconcile(this.imports.get(importId)!);
-      this.audit.record({ actorId: userId, action: 'import.create', target: importId, outcome: 'success', summary: `kind=${input.kind}` });
+      this.audit.record({ actorId, action: 'import.create', target: importId, outcome: 'success', summary: `kind=${input.kind}` });
       return { importId, jobIds: submitted.map((job) => job.jobId) };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Import failed';
       this.imports.update(importId, 'failed', message);
-      this.audit.record({ actorId: userId, action: 'import.create', target: importId, outcome: 'failure', summary: `kind=${input.kind}` });
+      this.audit.record({ actorId, action: 'import.create', target: importId, outcome: 'failure', summary: `kind=${input.kind}` });
       throw error;
     } finally { this.active.delete(importId); }
   }
@@ -203,6 +227,13 @@ export class IngestService implements OnApplicationBootstrap, OnModuleDestroy {
     const current = this.imports.get(item.id)!;
     if (current.status !== item.status && ['succeeded', 'failed', 'cancelled'].includes(current.status)) {
       this.audit.record({ actorId: current.userId, action: 'import.complete', target: current.id, outcome: current.status === 'succeeded' ? 'success' : 'failure', summary: `kind=${current.kind}` });
+    }
+    if (current.retryable && current.kind !== 'url' && current.source.startsWith('upload:')) {
+      try { this.uploads.get(current.userId, current.source.slice(7)); }
+      catch (error) {
+        if (!(error instanceof ApiError) || error.status !== 404) throw error;
+        return { ...current, retryable: false, retryReason: 'The original upload is no longer available; upload the source again' };
+      }
     }
     return current;
   }

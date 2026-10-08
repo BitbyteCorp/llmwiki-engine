@@ -5,8 +5,8 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { Test } from '@nestjs/testing';
 import pino from 'pino';
-import { afterEach, describe, expect, it } from 'vitest';
-import { loadConfig } from '../../src/config.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { loadConfig, type Config } from '../../src/config.js';
 import { openDb, runMigrations } from '../../src/db/index.js';
 import { AclService } from '../../src/acl/acl.service.js';
 import { AuditService } from '../../src/audit/audit.service.js';
@@ -16,11 +16,16 @@ import { CONFIG, DB, LOGGER } from '../../src/common/tokens.js';
 import { KnowledgeRepo, type FileChange } from '../../src/knowledge/repo.js';
 import { IndexerService } from '../../src/rag/indexer.service.js';
 import { SearchService } from '../../src/rag/search.service.js';
+import { UsageService } from '../../src/usage/usage.service.js';
+import { UsageRepository } from '../../src/usage/usage.repository.js';
 import { startFakeOpenAI } from '../fake-openai.js';
 
 const exec = promisify(execFile);
 const cleanup: Array<() => Promise<unknown> | unknown> = [];
-afterEach(async () => { for (const close of cleanup.splice(0).reverse()) await close(); });
+afterEach(async () => {
+  try { for (const close of cleanup.splice(0).reverse()) await close(); }
+  finally { vi.useRealTimers(); }
+});
 
 class GitRepoDouble {
   readonly diffs: Array<string | null> = [];
@@ -62,7 +67,7 @@ class GitRepoDouble {
   }
 }
 
-async function fixture(key = false) {
+async function fixture(key = false, overrides: Partial<Config> = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'llmwiki-rag-'));
   cleanup.push(() => rm(directory, { recursive: true, force: true }));
   const repo = new GitRepoDouble(directory);
@@ -72,14 +77,15 @@ async function fixture(key = false) {
   const db = openDb(':memory:');
   cleanup.push(() => db.close());
   runMigrations(db);
-  const fake = key ? await startFakeOpenAI() : null;
+  const fake = key ? await startFakeOpenAI([], { embeddingUsage: { promptTokens: 13, totalTokens: 17 } }) : null;
   if (fake) cleanup.push(() => fake.close());
   const config = loadConfig({ NODE_ENV: 'test', EMBEDDING_DIMENSIONS: '8',
     ...(fake ? { OPENAI_API_KEY: 'fake', OPENAI_BASE_URL: fake.url } : {}) });
+  Object.assign(config, overrides);
   const log = pino({ level: 'silent' });
   const app = await Test.createTestingModule({
     providers: [
-      IndexerService, SearchService,
+      IndexerService, SearchService, UsageService, UsageRepository,
       { provide: AclService, useValue: new AclService(db, new UsersService(new UsersRepository(db)), new AuditService(db)) },
       { provide: CONFIG, useValue: config },
       { provide: DB, useValue: db },
@@ -91,10 +97,65 @@ async function fixture(key = false) {
   await app.init();
   const indexer = app.get(IndexerService);
   const search = app.get(SearchService);
-  return { config, db, log, repo, fake, indexer, search };
+  return { config, db, log, repo, fake, indexer, search, usage: app.get(UsageService) };
 }
 
 describe('main-derived index', () => {
+  it('records indexing and query embeddings once per provider response, not cache reuse', async () => {
+    const { repo, indexer, search, usage, fake } = await fixture(true);
+    await repo.put('wiki/storage.md', '# Storage\nDurable storage keeps records.');
+    await repo.commit();
+    await indexer.syncToHead();
+    expect(usage.aggregate().rows).toEqual([expect.objectContaining({
+      lane: 'embedding', model: 'text-embedding-3-small', calls: 1, inputTokens: 17,
+      cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0,
+    })]);
+    expect((await search.search('storage')).map((hit) => hit.path)).toEqual(['wiki/storage.md']);
+    await search.search('storage');
+    await indexer.rebuild();
+    expect(fake!.requests.map(({ path }) => path)).toEqual(['/v1/embeddings', '/v1/embeddings']);
+    expect(usage.aggregate().rows).toEqual([expect.objectContaining({
+      lane: 'embedding', model: 'text-embedding-3-small', calls: 2, inputTokens: 34,
+      cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0,
+    })]);
+  });
+
+  it('leaves paused startup unindexed without embedding requests, but permits explicit incremental and full reindexing', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const { repo, db, indexer, fake } = await fixture(true, { jobsAutostart: false, indexPollSeconds: 0.02 });
+    await repo.put('wiki/paused.md', '# Paused\nStartup must not embed this note.');
+    const first = await repo.commit();
+    vi.advanceTimersByTime(100);
+    expect(await indexer.status()).toMatchObject({ indexedSha: null, headSha: first, syncing: false });
+    expect(fake!.requests).toEqual([]);
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'chunk_vectors'").get()).toEqual({ name: 'chunk_vectors' });
+
+    expect(await indexer.reindex({ full: false })).toEqual({ indexedSha: first, changedFiles: 1 });
+    expect(fake!.requests.map(({ path }) => path)).toEqual(['/v1/embeddings']);
+    expect(db.prepare('SELECT vector_pending FROM chunks').get()).toEqual({ vector_pending: 0 });
+    await repo.put('wiki/paused.md', '# Paused\nOnly explicit indexing may embed this changed note.');
+    const second = await repo.commit();
+    vi.advanceTimersByTime(100);
+    expect(await indexer.status()).toMatchObject({ indexedSha: first, headSha: second, syncing: false });
+    expect(fake!.requests).toHaveLength(1);
+    expect(await indexer.reindex({ full: true })).toEqual({ indexedSha: second, changedFiles: 1 });
+    expect(db.prepare('SELECT content FROM chunks').get()).toEqual({ content: '# Paused\nOnly explicit indexing may embed this changed note.' });
+    expect(db.prepare('SELECT vector_pending FROM chunks').get()).toEqual({ vector_pending: 0 });
+    expect(fake!.requests).toHaveLength(2);
+  });
+
+  it.each([true, undefined])('polls and embeds external changes when autostart is %s', async (jobsAutostart) => {
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const { repo, indexer, fake } = await fixture(true, { jobsAutostart, indexPollSeconds: 0.02 });
+    await repo.put('wiki/polled.md', '# Polled\nBackground indexing remains enabled.');
+    const head = await repo.commit();
+    vi.advanceTimersByTime(20);
+    await vi.waitFor(async () => {
+      expect(await indexer.status()).toMatchObject({ indexedSha: head, headSha: head, syncing: false, pendingVectors: 0 });
+    });
+    expect(fake!.requests.map(({ path }) => path)).toEqual(['/v1/embeddings']);
+  });
+
   it('indexes add/modify/delete/rename and resolves links against the latest basenames', async () => {
     const { repo, db, indexer, search } = await fixture();
     await repo.put('wiki/start.md', '# Start\n저장소는 검색된다. [[Target|대상]] [[Future]]');

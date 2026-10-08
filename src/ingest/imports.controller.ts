@@ -19,6 +19,11 @@ export class ImportsController {
   ingest(@Body(new ZodValidationPipe(ingestSchema)) body: z.infer<typeof ingestSchema>, @CurrentUser() user: User) {
     return this.ingestService.ingest({ ...body, userId: user.id });
   }
+  @Post(':id/retry')
+  @Roles('editor')
+  retry(@Param('id', new ZodValidationPipe(idSchema)) id: string, @CurrentUser() user: User) {
+    return this.ingestService.retry(id, user.id, user.role === 'admin');
+  }
   @Get()
   @Roles('viewer')
   list(@Query(new ZodValidationPipe(listSchema)) query: z.infer<typeof listSchema>, @CurrentUser() user: User) {

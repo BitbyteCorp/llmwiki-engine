@@ -28,7 +28,7 @@ import { AclService } from '../src/acl/acl.service.js';
 import { AuditService } from '../src/audit/audit.service.js';
 
 const stamp = '2026-01-01T00:00:00.000Z';
-const schemas = ['001_core.sql', '002_auth.sql', '003_jobs.sql', '004_chat.sql', '007_history.sql', '010_chat.sql', '011_platform.sql', '013_acl.sql', '017_write_job_dedupe.sql', '019_agent_checkpoints.sql', '022_write_job_required_reads.sql'].map((name) =>
+const schemas = ['001_core.sql', '002_auth.sql', '003_jobs.sql', '004_chat.sql', '007_history.sql', '010_chat.sql', '011_platform.sql', '013_acl.sql', '017_write_job_dedupe.sql', '019_agent_checkpoints.sql', '022_write_job_required_reads.sql', '023_message_error_code.sql'].map((name) =>
   readFileSync(new URL(`../src/db/migrations/${name}`, import.meta.url), 'utf8'));
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1H8AAAAASUVORK5CYII=', 'base64');
 let directory: string;
@@ -109,7 +109,7 @@ describe('owner-scoped multipart uploads', () => {
     const posted = await request(app.getHttpServer()).post('/api/uploads').set('x-user', '2')
       .attach('file', Buffer.from('# 안녕\n문서\n'), { filename: 'note.md', contentType: 'application/octet-stream' }).expect(201);
     expect(posted.body.mediaType).toBe('text/markdown');
-    expect(await uploads.parts(2, [posted.body.id])).toEqual([{ type: 'input_text', text: 'Attachment: note.md\n# 안녕\n문서\n' }]);
+    expect((await uploads.parts(2, [posted.body.id])).parts).toEqual([{ type: 'input_text', text: 'Attachment: note.md\n# 안녕\n문서\n' }]);
     await request(app.getHttpServer()).post('/api/uploads').set('x-user', '1').expect(400);
   });
 
@@ -146,8 +146,8 @@ describe('chat replay and retained assets', () => {
     const image = await uploads.save(1, { name: 'image.png', mediaType: 'image/png', buffer: png });
     const pdf = await uploads.save(1, { name: 'paper.pdf', mediaType: 'image/png', buffer: Buffer.from('%PDF-1.7\nexample') });
     const text = await uploads.save(1, { name: 'long.md', mediaType: 'text/markdown', buffer: Buffer.from('a'.repeat(32767) + '한글') });
-    expect(await uploads.parts(1, [image.id, pdf.id, text.id])).toEqual([
-      { type: 'input_image', image_url: `data:image/png;base64,${png.toString('base64')}`, detail: 'auto' },
+    expect((await uploads.parts(1, [image.id, pdf.id, text.id])).parts).toEqual([
+      { type: 'input_image', image_url: `data:image/png;base64,${png.toString('base64')}`, detail: 'low' },
       { type: 'input_file', filename: 'paper.pdf', file_data: 'data:application/pdf;base64,JVBERi0xLjcKZXhhbXBsZQ==' },
       { type: 'input_text', text: 'Attachment: long.md\n' + 'a'.repeat(32767) },
     ]);
@@ -156,14 +156,48 @@ describe('chat replay and retained assets', () => {
   it('enforces replay budgets while still validating missing and foreign IDs after skipped files', async () => {
     const image = await uploads.save(1, { name: 'image.png', mediaType: 'image/png', buffer: png });
     const text = await uploads.save(1, { name: 'short.txt', mediaType: 'text/plain', buffer: Buffer.from('ok') });
-    expect(await uploads.parts(1, [image.id, text.id], 2)).toEqual([{ type: 'input_text', text: 'Attachment: short.txt\nok' }]);
+    expect(await uploads.parts(1, [image.id, text.id], 2)).toEqual({
+      parts: [
+        { type: 'input_text', text: 'Attachment: image.png\n[Omitted: attachment replay budget exceeded. Reattach this file if needed.]' },
+        { type: 'input_text', text: 'Attachment: short.txt\nok' },
+      ],
+      bytes: 2,
+    });
     await expect(uploads.parts(1, [image.id, 'missing'], 0)).rejects.toMatchObject({ status: 404 });
     await expect(uploads.parts(2, [image.id], 0)).rejects.toMatchObject({ status: 404 });
-    const big = Buffer.alloc(14 * 1024 * 1024);
+    const big = Buffer.alloc(4 * 1024 * 1024);
     Buffer.from('%PDF-1.7\n').copy(big);
     const first = await uploads.save(1, { name: 'a.pdf', mediaType: 'application/pdf', buffer: big });
     const second = await uploads.save(1, { name: 'b.pdf', mediaType: 'application/pdf', buffer: big });
-    expect((await uploads.parts(1, [first.id, second.id])).map((part) => part.type === 'input_file' ? part.filename : null)).toEqual(['a.pdf']);
+    const replay = await uploads.parts(1, [first.id, second.id]);
+    expect(replay.parts.filter((part) => part.type === 'input_file').map((part) => part.filename)).toEqual(['a.pdf']);
+    expect(replay.parts.at(-1)).toEqual({ type: 'input_text', text: 'Attachment: b.pdf\n[Omitted: attachment replay budget exceeded. Reattach this file if needed.]' });
+  });
+
+  it('counts base64 expansion and the data URL prefix against the binary replay limit', async () => {
+    const bytes = Buffer.alloc(6 * 1024 * 1024);
+    Buffer.from('%PDF-1.7\n').copy(bytes);
+    const pdf = await uploads.save(1, { name: 'encoded-limit.pdf', mediaType: 'application/pdf', buffer: bytes });
+    expect(await uploads.parts(1, [pdf.id])).toEqual({
+      parts: [{ type: 'input_text', text: 'Attachment: encoded-limit.pdf\n[Omitted: attachment replay budget exceeded. Reattach this file if needed.]' }],
+      bytes: 0,
+    });
+  });
+
+  it('charges only complete UTF-8 text bytes and does not charge omission notices', async () => {
+    const text = await uploads.save(1, { name: 'unicode.md', mediaType: 'text/markdown', buffer: Buffer.from('a'.repeat(32765) + '😀end') });
+    const short = await uploads.save(1, { name: 'short.txt', mediaType: 'text/plain', buffer: Buffer.from('ok') });
+    expect(await uploads.parts(1, [text.id, short.id], 32767)).toEqual({
+      parts: [
+        { type: 'input_text', text: 'Attachment: unicode.md\n' + 'a'.repeat(32765) },
+        { type: 'input_text', text: 'Attachment: short.txt\nok' },
+      ],
+      bytes: 32767,
+    });
+    expect(await uploads.parts(1, [short.id], 0)).toEqual({
+      parts: [{ type: 'input_text', text: 'Attachment: short.txt\n[Omitted: attachment replay budget exceeded. Reattach this file if needed.]' }],
+      bytes: 0,
+    });
   });
 
   it('writes actual asset bytes through NoteWriter, rejects unsafe paths and retains only saved/attached uploads', async () => {
@@ -233,7 +267,7 @@ describe('chat replay and retained assets', () => {
       const downloaded = await request(app.getHttpServer()).get(`/api/uploads/${legacyId}`).set('x-user', '1').expect(200);
       expect(downloaded.text).toBe('legacy');
     }
-    expect(await uploads.parts(1, [legacyId])).toEqual([{ type: 'input_text', text: 'Attachment: legacy.txt\nlegacy' }]);
+    expect((await uploads.parts(1, [legacyId])).parts).toEqual([{ type: 'input_text', text: 'Attachment: legacy.txt\nlegacy' }]);
     await request(app.getHttpServer()).post(`/api/uploads/${legacyId}/save`).set('x-user', '1')
       .send({ path: 'assets/legacy.txt', baseSha: await repo.headSha() }).expect(201);
     db.prepare('DELETE FROM messages WHERE id = ?').run(messageId);

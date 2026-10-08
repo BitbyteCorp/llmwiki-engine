@@ -4,6 +4,8 @@ import { createServer, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
+import { Module } from '@nestjs/common';
+import { NestFactory } from '@nestjs/core';
 import Database from 'better-sqlite3';
 import pino from 'pino';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -88,8 +90,105 @@ async function fixture(slackWebhookUrl?: string, openaiBaseUrl?: string) {
   const serviceAgent = openaiBaseUrl ? new AgentService(config, log, repo, search, acl) : agent;
   const dreaming = new DreamingService(repo, serviceAgent, indexer, search, config, log, runs, events, acl, audit, catalog, comparison);
   const other = new DreamingService(repo, serviceAgent, indexer, search, config, log, runs, events, acl, audit, catalog, comparison);
-  return { root, repo, runs, db, dreaming, other, runAgent, events, seen, warn, logs };
+  return { root, repo, runs, db, dreaming, other, config, runAgent, events, seen, warn, logs };
 }
+
+@Module({})
+class DreamingStartupTestModule {}
+
+it('recovers orphan runs at explicit HTTP startup even with autostart disabled and preserves backup history', async () => {
+  const f = await fixture();
+  f.config.jobsAutostart = false;
+  const interrupted = ['pending', 'succeeded', 'skipped', 'failed'].map((status) => {
+    const run = runRecord(newId(), '2020-01-01T00:00:00.000Z');
+    run.toSha = 'captured-input';
+    run.mergeSha = 'locally-merged';
+    run.summary = 'Preserved local work';
+    run.push = { status: status as DreamRun['push']['status'], remote: 'origin', sha: 'backup-sha',
+      at: '2020-01-01T00:01:00.000Z', reason: 'Preserved backup reason' };
+    run.pushed = status === 'succeeded';
+    f.runs.create(run);
+    f.runs.finish(run);
+    return run;
+  });
+  const completed = runRecord(newId(), '2020-01-02T00:00:00.000Z');
+  Object.assign(completed, { status: 'succeeded', finishedAt: '2020-01-02T00:01:00.000Z' });
+  f.runs.create(completed);
+  f.runs.finish(completed);
+  const app = await NestFactory.createApplicationContext({
+    module: DreamingStartupTestModule,
+    providers: [{ provide: DreamingService, useValue: f.dreaming }],
+  }, { logger: false });
+  resources.push(() => app.close());
+  app.get(DreamingService).recoverInterrupted();
+  for (const run of interrupted) {
+    const recovered = f.runs.get(run.id)!;
+    expect(recovered).toEqual({ ...run, status: 'failed', finishedAt: expect.any(String),
+      error: expect.stringMatching(/interrupted.*restart/i) });
+    expect(Date.parse(recovered.finishedAt!)).toBeGreaterThan(Date.parse(run.startedAt));
+  }
+  expect(f.runs.get(completed.id)).toEqual(completed);
+  expect(f.runs.running()).toBeNull();
+  const failedEvents = interrupted.map(run => ({ type: 'dream.updated', runId: run.id, status: 'failed' }));
+  expect(f.seen).toEqual(expect.arrayContaining(failedEvents));
+  expect(f.seen).toHaveLength(interrupted.length);
+  const recoveryEvents = [...f.seen];
+  const second = await NestFactory.createApplicationContext({
+    module: DreamingStartupTestModule,
+    providers: [{ provide: DreamingService, useValue: f.other }],
+  }, { logger: false });
+  resources.push(() => second.close());
+  second.get(DreamingService).recoverInterrupted();
+  expect(f.seen).toEqual(recoveryEvents);
+  expect(f.runAgent).not.toHaveBeenCalled();
+  const manual = await f.dreaming.runManual();
+  expect(manual.status).toBe('succeeded');
+});
+
+it('opening a CLI context does not recover another process running dream', async () => {
+  const f = await fixture();
+  // A live HTTP process is not represented in this CLI context's WeakMap.
+  const httpRun = runRecord(newId(), new Date().toISOString());
+  f.runs.create(httpRun);
+  const cli = await NestFactory.createApplicationContext({
+    module: DreamingStartupTestModule,
+    providers: [{ provide: DreamingService, useValue: f.dreaming }],
+  }, { logger: false });
+  resources.push(() => cli.close());
+  expect(f.runs.get(httpRun.id)).toEqual(httpRun);
+  expect(f.seen).toEqual([]);
+  expect(f.runAgent).not.toHaveBeenCalled();
+});
+
+it('does not let a stale persisted running row block a manual run', async () => {
+  const f = await fixture();
+  const stale = runRecord(newId(), '2020-01-01T00:00:00.000Z');
+  f.runs.create(stale);
+  const manual = await f.dreaming.runManual();
+  expect(manual.status).toBe('succeeded');
+  expect(f.runs.get(stale.id)?.status).toBe('running');
+});
+
+it.each([false, true])('schedules only when jobsAutostart is enabled (%s)', async (enabled) => {
+  const f = await fixture();
+  f.config.jobsAutostart = enabled;
+  f.config.dreamCron = '* * * * * *';
+  const runOnce = vi.spyOn(f.dreaming, 'runOnce');
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-10-08T00:00:00.000Z'));
+  try {
+    f.dreaming.start();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(runOnce).toHaveBeenCalledTimes(enabled ? 1 : 0);
+    const run = enabled ? await runOnce.mock.results[0].value : await f.dreaming.runManual();
+    expect(run).toMatchObject({ status: 'succeeded', error: null });
+    expect(f.runs.get(run.id)).toEqual(run);
+    expect(await f.repo.readFile('wiki/result.md')).toBe('# Reviewed knowledge\n');
+  } finally {
+    await f.dreaming.stop();
+    vi.useRealTimers();
+  }
+});
 
 async function webhook(handler: (body: string) => number) {
   const server: Server = createServer(async (request, response) => {
@@ -229,6 +328,14 @@ it('rejects manual overlap across service instances but preserves CLI coalescing
   const first = f.dreaming.runManual();
   await entered;
   try {
+    const app = await NestFactory.createApplicationContext({
+      module: DreamingStartupTestModule,
+      providers: [{ provide: DreamingService, useValue: f.other }],
+    }, { logger: false });
+    resources.push(() => app.close());
+    app.get(DreamingService).recoverInterrupted();
+    expect(f.runs.running()?.status).toBe('running');
+    expect(f.seen).toEqual([{ type: 'dream.updated', runId: f.runs.running()!.id, status: 'running' }]);
     await expect(f.other.runManual()).rejects.toMatchObject({ status: 409, code: 'dream_running' });
     expect(f.other.runOnce()).toBe(first);
     expect(f.runs.list().map((run) => run.id)).toEqual([f.runs.running()!.id]);
@@ -308,20 +415,47 @@ it('records actual remote and SHA when backup succeeds despite maintenance failu
   expect(f.runs.backupStatus()).toEqual({ lastAttempt: run, lastSuccess: run });
 });
 
-it('keeps merged results but persists backup failure and sends a private failure notification', async () => {
+it('keeps local success but persists backup failure and sends a private success notification', async () => {
   const payloads: string[] = [];
   const url = await webhook((body) => { payloads.push(body); return 200; });
   const f = await fixture(url);
   await git('git', ['remote', 'add', 'origin', join(f.root, 'SECRET_MISSING_REMOTE')], { cwd: join(f.root, 'knowledge') });
   const run = await f.dreaming.runOnce();
-  expect(run).toMatchObject({ status: 'failed', pushed: false, summary: 'SECRET_SUMMARY',
+  expect(run).toMatchObject({ status: 'succeeded', error: null, pushed: false, summary: 'SECRET_SUMMARY',
     push: { status: 'failed', remote: null, sha: null } });
   expect(run.push.reason).toContain('SECRET_MISSING_REMOTE');
   expect(await f.repo.readFile('wiki/result.md')).toBe('# Reviewed knowledge\n');
   expect(f.runs.get(run.id)).toEqual(run);
   expect(f.runs.backupStatus()).toEqual({ lastAttempt: run, lastSuccess: null });
-  expect(JSON.parse(payloads[0]).text).toMatch(/^Dreaming failed; duration_ms=\d+; merge_sha=[a-f0-9]+; push=failed; push_sha=none$/);
+  expect(JSON.parse(payloads[0]).text).toMatch(/^Dreaming succeeded; duration_ms=\d+; merge_sha=[a-f0-9]+; push=failed; push_sha=none$/);
   expect(payloads[0]).not.toContain('SECRET');
+});
+
+it('keeps the checkpoint on a backup-only run despite real Git push failure', async () => {
+  const f = await fixture();
+  f.db.prepare('DELETE FROM messages').run();
+  await git('git', ['remote', 'add', 'origin', join(f.root, 'missing-backup.git')], { cwd: join(f.root, 'knowledge') });
+  const sha = await f.repo.headSha();
+  const run = await f.dreaming.runOnce();
+  expect(run).toMatchObject({ status: 'succeeded', error: null, mode: null, toSha: sha,
+    mergeSha: null, push: { status: 'failed' } });
+  expect(run.push.reason).toContain('missing-backup.git');
+  expect(f.runs.lastSuccessfulCheckpoint()).toBe(sha);
+  expect(f.runAgent).not.toHaveBeenCalled();
+  expect(f.runs.get(run.id)).toEqual(run);
+  const next = await f.dreaming.runManual();
+  expect(next).toMatchObject({ status: 'succeeded', error: null, mode: null, fromSha: sha, toSha: sha });
+});
+
+it('preserves the genuine maintenance error when backup also fails', async () => {
+  const f = await fixture();
+  f.runAgent.mockRejectedValueOnce(new Error('Maintenance unavailable'));
+  await git('git', ['remote', 'add', 'origin', join(f.root, 'missing-backup.git')], { cwd: join(f.root, 'knowledge') });
+  const run = await f.dreaming.runOnce();
+  expect(run).toMatchObject({ status: 'failed', error: 'Maintenance unavailable', push: { status: 'failed' } });
+  expect(run.push.reason).toContain('missing-backup.git');
+  expect(f.runs.lastSuccessfulCheckpoint()).toBeUndefined();
+  expect(f.runs.unlearnedUserMessages(run.startedAt)).toMatchObject([{ content: 'SECRET_USER_INPUT' }]);
 });
 
 it('rejects synchronous manual reentry from the start event without creating a second run', async () => {

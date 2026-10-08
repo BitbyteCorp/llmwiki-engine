@@ -14,6 +14,20 @@ import { notify } from '@/components/notifications'
 
 type Citation = Message['citations'][number]
 
+function failureReason(errorCode: Message['errorCode']): string {
+  switch (errorCode) {
+    case 'rate_limited': return '요청이 많아 답변 생성이 제한되었습니다.'
+    case 'invalid_request': return '요청 형식 오류로 답변을 생성할 수 없습니다.'
+    case 'auth': return 'AI 서비스 인증에 실패했습니다.'
+    case 'provider_error': return 'AI 서비스 오류로 답변 생성에 실패했습니다.'
+    case 'timeout': return '답변 생성 시간이 초과되었습니다.'
+    case 'context_too_large': return '대화 내용이 너무 길어 답변을 생성할 수 없습니다.'
+    case 'turn_limit': return '답변 생성 단계 한도에 도달했습니다.'
+    case 'cancelled': return '답변 생성이 중지되었습니다.'
+    default: return '답변 생성에 실패했습니다.'
+  }
+}
+
 function CitationLink({ citation, number }: { citation: Citation; number: number }) {
   const [active, setActive] = useState(false)
   const id = useId()
@@ -82,7 +96,7 @@ export function ChatMessageView({ message, steps = [], onEdit, onAction, onPropo
       <div className="flex flex-wrap gap-1.5">{message.citations.map((citation, index) => <CitationLink key={`${citation.path}-${citation.anchor ?? ''}-${index}`} citation={citation} number={index + 1}/>)}</div>
     </section>}
     {unfinished && <div className="mt-2.5 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-warning/30 bg-warning/5 px-2 py-1.5">
-      <p role="status" className="min-w-0 flex-1 text-xs text-muted-foreground">{message.status === 'failed' ? '답변 생성에 실패했습니다.' : message.status === 'cancelled' ? '답변 생성이 중지되었습니다.' : '서버 연결 중단으로 생성이 완료되지 않았습니다.'} 부분 답변입니다.</p>
+      <p role="status" className="min-w-0 flex-1 text-xs text-muted-foreground">{message.status === 'failed' ? failureReason(message.errorCode) : message.status === 'cancelled' ? '답변 생성이 중지되었습니다.' : '서버 연결 중단으로 생성이 완료되지 않았습니다.'} 부분 답변입니다.</p>
       <Button variant="ghost" size="xs" disabled={disabled} onClick={() => onAction(message, 'retry')}><RefreshCw/>{message.resumable ? '이어서 다시 시도' : '다시 시도'}</Button>
     </div>}
     <footer className="mt-1.5">

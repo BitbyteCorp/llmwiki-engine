@@ -571,16 +571,23 @@ describe('DreamingService.runOnce', () => {
     expect(f.repo.pushCount).toBe(1);
   });
 
-  it('leaves merged messages learned even if the backup push fails', async () => {
+  it('preserves the local checkpoint and learned messages when only backup push fails', async () => {
     const f = await fixture();
+    const inputSha = await f.repo.change();
     const messageId = f.addMessage();
     f.repo.pushError = new Error('Backup unavailable');
     const run = await f.dreaming.runOnce();
-    expect(run).toMatchObject({ status: 'failed', pushed: false });
-    expect(run.error).toContain('Backup unavailable');
+    expect(run).toMatchObject({ status: 'succeeded', error: null, toSha: inputSha, pushed: false,
+      push: { status: 'failed', reason: 'Backup unavailable' } });
     expect(await f.repo.readFile(`journal/${inputOf(f.runAgent.mock.calls[0][0]).date}.md`)).toBe(journalContent);
     expect(f.learnedAt(messageId)).toEqual(expect.any(String));
     expect(f.repo.pushCount).toBe(1);
+    const next = await f.dreaming.runOnce();
+    expect(next).toMatchObject({ status: 'succeeded', error: null, fromSha: inputSha });
+    const nextInput = inputOf(f.runAgent.mock.calls[1][0]);
+    expect(nextInput.commits.map(commit => commit.sha)).not.toContain(inputSha);
+    expect(nextInput.changedNotes.map(note => note.change.path)).not.toContain('wiki/deployment.md');
+    expect(nextInput.userMessages).toEqual([]);
   });
 
   it('pins the input snapshot and reviews concurrently added main commits on the next run', async () => {

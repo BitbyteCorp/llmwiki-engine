@@ -7,7 +7,8 @@ import { ApiError } from '../api/api-error.js';
 import { UsersService } from '../auth/users.service.js';
 import { AclService } from '../acl/acl.service.js';
 import type { AclUser } from '../acl/acl.service.js';
-import { LOGGER } from '../common/tokens.js';
+import { CONFIG, LOGGER } from '../common/tokens.js';
+import type { Config } from '../config.js';
 import { EventsService } from '../events/events.service.js';
 import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
 import { sliceCodePoints } from '../agent/output.js';
@@ -35,6 +36,7 @@ export class WriteJobsService implements OnApplicationShutdown {
     private readonly eventsService: EventsService,
     private readonly acl: AclService,
     @Optional() private readonly writer?: NoteWriterService,
+    @Optional() @Inject(CONFIG) private readonly config?: Config,
   ) {}
 
   submit(input: SubmitWriteJob): SubmittedWriteJob {
@@ -191,7 +193,7 @@ export class WriteJobsService implements OnApplicationShutdown {
   }
 
   start(): void {
-    if (this.enabled) return;
+    if (this.config?.jobsAutostart === false || this.enabled) return;
     const interrupted = this.repository.failInterrupted(
       'Engine restarted before the write job completed; retry this failed job.',
       new Date().toISOString(),

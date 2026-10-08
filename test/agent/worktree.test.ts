@@ -4,15 +4,19 @@ import { join } from 'node:path';
 import pino from 'pino';
 import { z } from 'zod';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { AclService } from '../../src/acl/acl.service.js';
+import { AclService } from '../../src/acl/acl.service.js';
 import type { AgentService } from '../../src/agent/agent.service.js';
 import type { AgentTool, RunAgentOptions } from '../../src/agent/agent.types.js';
-import type { ContentPage } from '../../src/agent/output.js';
+import { PAGE_MAX_CHARS, type ContentPage } from '../../src/agent/output.js';
 import { makeWorktreeTools } from '../../src/agent/worktree.js';
 import { resolveConflicts } from '../../src/agent/writes.js';
 import { loadConfig } from '../../src/config.js';
 import { KnowledgeRepo } from '../../src/knowledge/repo.js';
 import type { SearchService } from '../../src/rag/search.service.js';
+import { AuditService } from '../../src/audit/audit.service.js';
+import { UsersService } from '../../src/auth/users.service.js';
+import { UsersRepository } from '../../src/auth/users.repository.js';
+import { openDb, runMigrations } from '../../src/db/index.js';
 
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => {
@@ -109,34 +113,141 @@ describe('paged worktree tools', () => {
     await expect(invoke(tools, 'read_file', { path: 'wiki/boundary.md', limit: 301 })).rejects.toThrow();
   });
 
-  it('allows conflict tools to read continuation pages without shrinking injected revision context', async () => {
-    const { wt, repo, search } = await fixture();
+  it('pages every conflict revision and preserves both tail changes in a real git merge', async () => {
+    const { wt: seed, repo, search } = await fixture();
     const path = 'wiki/conflict.md';
-    const original = 'kept fact\n'.repeat(801) + '<<<<<<< HEAD\nwork\n=======\nmain\n>>>>>>> main\n';
-    await wt.write(path, original);
-    let observedSnapshot = '';
+    const prefix = '# 지식\r\n' + '🧠\\"\t'.repeat(5_000) + '\r\n' + 'kept fact\r\n'.repeat(801);
+    const base = prefix + 'original intent\n';
+    const workBranch = prefix + 'work intent\nwork tail knowledge\n';
+    const main = prefix + 'main intent\nmain tail knowledge\n';
+    await seed.write(path, base);
+    await seed.commit('Seed conflict note', author);
+    await seed.fastForwardMain();
+    const wt = await repo.createWorktree('conflict-work');
+    cleanup.push(() => wt.dispose());
+    const concurrent = await repo.createWorktree('conflict-main');
+    cleanup.push(() => concurrent.dispose());
+    await wt.write(path, workBranch);
+    await wt.commit('Add work tail knowledge', author);
+    await concurrent.write(path, main);
+    await concurrent.commit('Add main tail knowledge', author);
+    await concurrent.fastForwardMain();
+    expect(await wt.mergeMain()).toEqual({ ok: false, conflicts: [path] });
+    const conflicted = await wt.read(path);
+    expect(conflicted).toContain('<<<<<<<');
+    const resolved = prefix + 'work intent\nwork tail knowledge\nmain intent\nmain tail knowledge\n';
     const agent = {
       baseInstructions: async () => '',
       worktreeTools: () => makeWorktreeTools(search, wt, author, acl),
       runAgent: async (options: RunAgentOptions) => {
-        const input = z.object({ files: z.array(z.object({ conflicted: z.string() })) }).parse(JSON.parse(options.input as string));
-        observedSnapshot = input.files[0].conflicted;
-        let reconstructed = '';
-        let offset: number | null = 0;
-        let charOffset = 0;
-        do {
-          const page = await invoke<ContentPage>(options.tools as AgentTool[], 'read_file', { path, offset, charOffset });
-          reconstructed += page.content;
-          offset = page.nextOffset;
-          charOffset = page.nextCharOffset ?? 0;
-        } while (offset !== null);
-        const resolved = reconstructed.replace('<<<<<<< HEAD\nwork\n=======\nmain\n>>>>>>> main\n', 'work and main\n');
+        const input = JSON.parse(options.input as string) as { files: Array<Record<string, ContentPage>> };
+        const file = input.files[0];
+        for (const [version, expected] of Object.entries({ base, workBranch, main, conflicted })) {
+          let page = file[version];
+          expect(page.truncated).toBe(true);
+          expect(JSON.stringify(page.content).length).toBeLessThanOrEqual(PAGE_MAX_CHARS);
+          expect(page.content).not.toContain('tail knowledge');
+          let reconstructed = page.content;
+          while (page.nextOffset !== null) {
+            page = await invoke<ContentPage>(options.tools as AgentTool[],
+              version === 'conflicted' ? 'read_file' : 'read_conflict_version',
+              { path, ...(version === 'conflicted' ? {} : { version }), offset: page.nextOffset, charOffset: page.nextCharOffset ?? 0 });
+            expect(JSON.stringify(page.content).length).toBeLessThanOrEqual(PAGE_MAX_CHARS);
+            expect(page.content.isWellFormed()).toBe(true);
+            reconstructed += page.content;
+          }
+          expect(reconstructed).toBe(expected);
+        }
         await invoke(options.tools as AgentTool[], 'write_file', { path, content: resolved });
+        expect(await invoke<ContentPage>(options.tools as AgentTool[], 'read_conflict_version',
+          { path, version: 'workBranch', offset: 803 })).toMatchObject({ content: 'work intent\nwork tail knowledge\n' });
         return { text: 'Resolved', toolCalls: 3 };
       },
     } as unknown as AgentService;
     await resolveConflicts(agent, repo, acl, wt, [path]);
-    expect(observedSnapshot).toBe(original);
-    expect(await wt.read(path)).toBe('kept fact\n'.repeat(801) + 'work and main\n');
+    await wt.finishMerge(author);
+    await wt.fastForwardMain();
+    expect(await repo.readFile(path)).toBe(resolved);
+  });
+
+  it('distinguishes missing and empty revisions, caps injected lines, and validates revision paging scope', async () => {
+    const { wt, search } = await fixture();
+    const path = 'wiki/conflict.md';
+    const revisions = { base: null, workBranch: '', main: 'fact\n'.repeat(301) };
+    const repo = {
+      readFile: async (_path: string, ref: string) => ref === wt.baseSha ? revisions.base : ref === wt.branch ? revisions.workBranch : revisions.main,
+      log: async () => [],
+    } as unknown as KnowledgeRepo;
+    await wt.write(path, '<<<<<<< HEAD\n=======\nfact\n>>>>>>> main\n');
+    const agent = {
+      baseInstructions: async () => '',
+      worktreeTools: () => makeWorktreeTools(search, wt, author, acl),
+      runAgent: async (options: RunAgentOptions) => {
+        const file = JSON.parse(options.input as string).files[0];
+        expect(file.base).toBeNull();
+        expect(file.workBranch).toEqual({ content: '', totalLines: 0, nextOffset: null, truncated: false });
+        expect(file.main).toEqual({ content: 'fact\n'.repeat(300), totalLines: 301, nextOffset: 300, truncated: true });
+        const tools = options.tools as AgentTool[];
+        expect(await invoke(tools, 'read_conflict_version', { path, version: 'base' }))
+          .toEqual({ path, version: 'base', content: null, totalLines: 0, nextOffset: null, truncated: false });
+        expect(await invoke(tools, 'read_conflict_version', { path, version: 'workBranch' }))
+          .toEqual({ path, version: 'workBranch', content: '', totalLines: 0, nextOffset: null, truncated: false });
+        expect(await invoke(tools, 'read_conflict_version', { path, version: 'main', offset: 300, limit: 300 }))
+          .toMatchObject({ content: 'fact\n', nextOffset: null, truncated: false });
+        for (const args of [
+          { path: 'wiki/private.md', version: 'main' }, { path, version: 'other' },
+          { path, version: 'main', limit: 301 }, { path, version: 'main', offset: -1 },
+          { path, version: 'main', charOffset: -1 }, { path, version: 'main', content: 'overwrite' },
+        ]) await expect(invoke(tools, 'read_conflict_version', args)).rejects.toThrow();
+        await invoke(tools, 'write_file', { path, content: revisions.main });
+        return { text: 'Resolved', toolCalls: 1 };
+      },
+    } as unknown as AgentService;
+    await resolveConflicts(agent, repo, acl, wt, [path]);
+    expect(await wt.read(path)).toBe(revisions.main);
+  });
+
+  it('rechecks read ACLs for captured revision pages when access is revoked mid-resolution', async () => {
+    const { wt, repo, search } = await fixture();
+    const db = openDb(':memory:');
+    runMigrations(db);
+    cleanup.push(async () => db.close());
+    const users = new UsersService(new UsersRepository(db));
+    const admin = users.create({ email: 'admin@conflict.test', role: 'admin' });
+    const editor = users.create({ email: 'editor@conflict.test', role: 'editor' });
+    const acl = new AclService(db, users, new AuditService(db));
+    const path = 'wiki/conflict.md';
+    await wt.write(path, '<<<<<<< HEAD\nwork\n=======\nmain\n>>>>>>> main\n');
+    const original = await wt.read(path);
+    const agent = {
+      baseInstructions: async () => '',
+      worktreeTools: () => makeWorktreeTools(search, wt, author, acl, editor),
+      runAgent: async (options: RunAgentOptions) => {
+        const tools = options.tools as AgentTool[];
+        acl.create({ prefix: path, subjectType: 'everyone', subject: '', access: 'none' }, admin);
+        for (const version of ['base', 'workBranch', 'main']) {
+          await expect(invoke(tools, 'read_conflict_version', { path, version })).rejects.toMatchObject({ status: 404 });
+        }
+        await expect(invoke(tools, 'read_file', { path })).rejects.toMatchObject({ status: 404 });
+        await expect(invoke(tools, 'write_file', { path, content: 'unauthorized' })).rejects.toMatchObject({ status: 404 });
+        expect(await wt.read(path)).toBe(original);
+        acl.create({ prefix: path, subjectType: 'everyone', subject: '', access: 'write' }, admin);
+        await invoke(tools, 'write_file', { path, content: 'work and main\n' });
+        return { text: 'Resolved', toolCalls: 1 };
+      },
+    } as unknown as AgentService;
+    await resolveConflicts(agent, repo, acl, wt, [path], undefined, editor);
+    expect(await wt.read(path)).toBe('work and main\n');
+
+    await wt.write(path, original!);
+    let attempts = 0;
+    agent.runAgent = async () => {
+      attempts++;
+      acl.create({ prefix: path, subjectType: 'everyone', subject: '', access: 'none' }, admin);
+      return { text: 'Unresolved', toolCalls: 0 };
+    };
+    await expect(resolveConflicts(agent, repo, acl, wt, [path], undefined, editor)).rejects.toMatchObject({ status: 404 });
+    expect(attempts).toBe(1);
+    expect(await wt.read(path)).toBe(original);
   });
 });

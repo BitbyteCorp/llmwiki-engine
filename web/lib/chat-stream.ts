@@ -19,7 +19,7 @@ export type ChatStreamEvent =
   | { id: number; event: 'delta'; data: { text: string; replace?: boolean } }
   | { id: number; event: 'usage'; data: MessageUsage }
   | { id: number; event: 'done'; data: { message: Message } }
-  | { id: number; event: 'error'; data: { code: string; message: string } };
+  | { id: number; event: 'error'; data: { code: string; errorCode?: Message['errorCode']; message: string } };
 
 export interface ChatStreamHandlers { onEvent: (event: ChatStreamEvent) => void }
 
@@ -29,11 +29,13 @@ class ConnectionLost extends Error {}
 
 const citationSchema = z.object({ path: z.string(), heading: z.string().optional(), anchor: z.string().optional(), excerpt: z.string().optional(), sha: z.string().optional() });
 const usageSchema = z.object({ inputTokens: z.number(), cachedInputTokens: z.number().optional(), outputTokens: z.number(), reasoningTokens: z.number() });
+const errorCodeSchema = z.enum(['rate_limited', 'invalid_request', 'auth', 'provider_error', 'timeout', 'context_too_large', 'turn_limit', 'cancelled', 'unknown']);
 const messageSchema = z.object({
   id: z.string(), role: z.literal('assistant'), content: z.string(), citations: z.array(citationSchema),
   attachments: z.array(z.string()), context: z.object({ notePath: z.string(), ref: z.string().optional(), selection: z.string().optional() }).nullable(),
   status: z.enum(['completed', 'running', 'failed', 'cancelled', 'interrupted']), usage: usageSchema.nullable(),
   resumable: z.boolean().optional(),
+  errorCode: errorCodeSchema.nullable().optional(),
   model: z.string().nullable(), effort: z.string().nullable(), generationId: z.string().nullable().optional(), createdAt: z.string(),
 });
 const streamEventSchema = z.discriminatedUnion('event', [
@@ -44,7 +46,7 @@ const streamEventSchema = z.discriminatedUnion('event', [
   z.object({ id: z.number(), event: z.literal('delta'), data: z.object({ text: z.string(), replace: z.boolean().optional() }) }),
   z.object({ id: z.number(), event: z.literal('usage'), data: usageSchema }),
   z.object({ id: z.number(), event: z.literal('done'), data: z.object({ message: messageSchema }) }),
-  z.object({ id: z.number(), event: z.literal('error'), data: z.object({ code: z.string(), message: z.string() }) }),
+  z.object({ id: z.number(), event: z.literal('error'), data: z.object({ code: z.string(), errorCode: errorCodeSchema.nullable().optional(), message: z.string() }) }),
 ]);
 
 function persistCursor(generationId: string, cursor: number): void {

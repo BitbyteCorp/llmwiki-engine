@@ -8,6 +8,7 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   PUBLIC_URL: z.url().default('http://localhost:3000'),
   DATA_DIR: z.string().min(1).default('./data'),
+  JOBS_AUTOSTART: z.enum(['true', 'false']).default('true'),
   SESSION_SECRET: optionalText,
   OPENAI_API_KEY: optionalText,
   OPENAI_BASE_URL: z.preprocess((value) => value === '' ? undefined : value, z.url().optional()),
@@ -49,6 +50,7 @@ const envSchema = z.object({
 export interface Config {
   nodeEnv: 'development' | 'test' | 'production';
   port: number; publicUrl: string; dataDir: string; sessionSecret: string;
+  jobsAutostart?: boolean;
   openaiApiKey?: string; openaiBaseUrl?: string; openaiMaxRetries?: number;
   llmModels: string[]; llmModel: string; llmReasoningEffort: string;
   llmBackgroundReasoningEffort: string;
@@ -71,6 +73,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     nodeEnv: parsed.NODE_ENV, port: parsed.PORT, publicUrl: parsed.PUBLIC_URL,
     dataDir: resolve(parsed.DATA_DIR), sessionSecret: parsed.SESSION_SECRET ?? randomBytes(32).toString('hex'),
+    jobsAutostart: parsed.JOBS_AUTOSTART === 'true',
     openaiApiKey: parsed.OPENAI_API_KEY, openaiBaseUrl: parsed.OPENAI_BASE_URL,
     openaiMaxRetries: parsed.OPENAI_MAX_RETRIES,
     llmModels: parsed.LLM_MODELS, llmModel: parsed.LLM_MODELS[0], llmReasoningEffort: parsed.LLM_REASONING_EFFORT,

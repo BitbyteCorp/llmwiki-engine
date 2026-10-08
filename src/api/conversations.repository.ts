@@ -5,9 +5,10 @@ import { DB } from '../common/tokens.js';
 import type { Db } from '../db/index.js';
 import type { Citation } from '../agent/agent.types.js';
 import type { Conversation, Message, MessageContext, Usage } from './conversations.types.js';
+import type { AnswerErrorCode } from '../common/openai-errors.js';
 
 type Row = Omit<Message, 'citations' | 'attachments' | 'context' | 'usage'> & { citations: string; attachments: string; context: string | null; usage: string | null };
-const columns = `m.id,m.role,m.content,m.citations,m.attachments,m.context,m.status,m.usage,m.model,m.effort,m.created_at AS createdAt,
+const columns = `m.id,m.role,m.content,m.citations,m.attachments,m.context,m.status,m.error_code AS errorCode,m.usage,m.model,m.effort,m.created_at AS createdAt,
   g.id AS generationId`;
 const decode = (row: Row): Message => ({ ...row, id: fromStorageId(row.id), generationId: row.generationId ? fromStorageId(row.generationId) : null, citations: (JSON.parse(row.citations) as Array<Citation | string>).map(c => typeof c === 'string' ? { path: c } : c), attachments: (JSON.parse(row.attachments) as string[]).map(fromStorageId), context: row.context ? JSON.parse(row.context) : null, usage: row.usage ? JSON.parse(row.usage) : null });
 
@@ -104,9 +105,9 @@ export class ConversationsRepository {
       return this.message(id,mid,userId)!;
     })();
   }
-  finish(mid: string, content: string, status: Message['status'], citations: Citation[] = [], usage?:Usage): void {
+  finish(mid: string, content: string, status: Message['status'], citations: Citation[] = [], usage?:Usage, errorCode?:AnswerErrorCode): void {
     const stored = toStorageId(mid);
-    this.db.prepare('UPDATE messages SET content=?,status=?,citations=?,usage=? WHERE id=?').run(content,status,JSON.stringify(citations),usage ? JSON.stringify(usage) : null,stored);
+    this.db.prepare('UPDATE messages SET content=?,status=?,citations=?,usage=?,error_code=? WHERE id=?').run(content,status,JSON.stringify(citations),usage ? JSON.stringify(usage) : null,errorCode ?? null,stored);
     this.db.prepare('UPDATE conversations SET updated_at=? WHERE id=(SELECT conversation_id FROM messages WHERE id=?)').run(new Date().toISOString(),stored);
   }
   truncate(id: string, mid: string, include = false): void {

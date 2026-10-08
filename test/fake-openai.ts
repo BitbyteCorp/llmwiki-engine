@@ -17,7 +17,7 @@ export interface FakeFunctionCall {
 }
 
 export type FakeOutputItem = string | FakeFunctionCall | ResponseCompactionItem;
-export type FakeTurn =
+type FakeResponseTurn =
   | FakeOutputItem
   | ({ text: string }
   | { output: readonly FakeOutputItem[] }
@@ -25,6 +25,9 @@ export type FakeTurn =
     usage?: { inputTokens: number; cachedInputTokens?: number; outputTokens: number; reasoningTokens: number };
     status?: 'completed' | 'failed' | 'incomplete';
   };
+export type FakeTurn = FakeResponseTurn | {
+  error: { status: number; message: string; code?: string; type?: string; requestId?: string };
+};
 export type FakeScript = readonly FakeTurn[];
 
 export interface FakeOpenAIRequest {
@@ -84,7 +87,7 @@ function encodeEmbedding(vector: number[]): string {
   return bytes.toString('base64');
 }
 
-function turnItems(turn: FakeTurn): readonly FakeOutputItem[] {
+function turnItems(turn: FakeResponseTurn): readonly FakeOutputItem[] {
   if (typeof turn === 'string') return [turn];
   if ('output' in turn) return turn.output;
   if ('functionCalls' in turn) return turn.text === undefined ? turn.functionCalls : [turn.text, ...turn.functionCalls];
@@ -92,7 +95,7 @@ function turnItems(turn: FakeTurn): readonly FakeOutputItem[] {
   return [turn];
 }
 
-function makeResponse(turn: FakeTurn, number: number, params: z.infer<typeof responseParameters>): Response {
+function makeResponse(turn: FakeResponseTurn, number: number, params: z.infer<typeof responseParameters>): Response {
   const output: FakeWireItem[] = turnItems(turn).map((item, index) => {
     if (typeof item === 'string') {
       return {
@@ -178,7 +181,10 @@ function json(res: ServerResponse, status: number, value: unknown): void {
   res.end(JSON.stringify(value));
 }
 
-export async function startFakeOpenAI(script: FakeScript | FakeResponder = []): Promise<FakeOpenAI> {
+export async function startFakeOpenAI(
+  script: FakeScript | FakeResponder = [],
+  options: { embeddingUsage?: { promptTokens: number; totalTokens: number } } = {},
+): Promise<FakeOpenAI> {
   const requests: FakeOpenAIRequest[] = [];
   let nextTurn = 0;
   const server = createServer(async (req, res) => {
@@ -209,7 +215,8 @@ export async function startFakeOpenAI(script: FakeScript | FakeResponder = []): 
           data: inputs.map((value, index) => {
             const vector = embedding(value, dimensions);
             return { object: 'embedding', index, embedding: request.body.encoding_format === 'base64' ? encodeEmbedding(vector) : vector };
-          }), usage: { prompt_tokens: 0, total_tokens: 0 },
+          }), usage: { prompt_tokens: options.embeddingUsage?.promptTokens ?? 0,
+            total_tokens: options.embeddingUsage?.totalTokens ?? 0 },
         });
         return;
       }
@@ -219,6 +226,12 @@ export async function startFakeOpenAI(script: FakeScript | FakeResponder = []): 
         const turn = typeof script === 'function' ? await script(request, index) : script[index];
         if (turn === undefined) {
           json(res, 400, { error: { type: 'invalid_request_error', code: 'fake_script_exhausted', message: 'Fake OpenAI response script exhausted' } });
+          return;
+        }
+        if (typeof turn !== 'string' && 'error' in turn) {
+          const { status, requestId, ...error } = turn.error;
+          if (requestId) res.setHeader('x-request-id', requestId);
+          json(res, status, { error });
           return;
         }
         const response = makeResponse(turn, index + 1, params);

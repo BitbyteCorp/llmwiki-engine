@@ -106,6 +106,84 @@ describe('grounded chat citations', () => {
     expect(JSON.stringify(events)).not.toContain('Ignore rules');
   });
 
+  it('pages a large pinned historical note and preserves its tail through read_note', async () => {
+    const firstPage = Array.from({ length: 300 }, (_, index) => `Fact ${index}\n`).join('');
+    const tail = '# Tail fact\nHistorical tail knowledge.';
+    const original = firstPage + tail;
+    const { agent, repo, fake } = await fixture([
+      { name: 'read_note', arguments: { path: 'wiki/facts.md', offset: 300 } },
+      '[tail](wiki/facts.md#tail-fact)',
+    ], { 'wiki/facts.md': original });
+    const oldSha = await repo.headSha();
+    const wt = await repo.createWorktree('replace-large-context');
+    try {
+      await wt.write('wiki/facts.md', '# Replacement\nChanged tail.');
+      await wt.commit('Replace context', { name: 'Chat fixture', email: 'chat@example.test' });
+      await wt.fastForwardMain();
+    } finally { await wt.dispose(); }
+    const result = await agent.answer([{ role: 'user', content: 'Explain the tail fact' }], () => {}, undefined, {
+      context: { notePath: 'wiki/facts.md', ref: oldSha },
+    });
+    const initial = fake.requests[0]!.body.input as Array<{ content: string }>;
+    const page = JSON.parse(initial[0]!.content.split('\n')[1]!);
+    expect(page).toMatchObject({ path: 'wiki/facts.md', sha: oldSha, content: firstPage, totalLines: 302, nextOffset: 300, truncated: true });
+    const continued = fake.requests[1]!.body.input as Array<{ type?: string; output?: string }>;
+    const lastPage = JSON.parse(continued.find((item) => item.type === 'function_call_output')!.output!);
+    expect(lastPage).toMatchObject({ content: tail, nextOffset: null, truncated: false, sha: oldSha });
+    expect(page.content + lastPage.content).toBe(original);
+    expect(result.citations).toEqual([{ path: 'wiki/facts.md', sha: oldSha, anchor: 'tail-fact', heading: 'Tail fact' }]);
+  });
+
+  it('caps pinned long lines and selection without splitting emoji and permits character paging', async () => {
+    const firstPage = 'a'.repeat(11_997);
+    const tail = '😀'.repeat(2_000);
+    const { agent, fake } = await fixture([
+      { name: 'read_note', arguments: { path: 'wiki/facts.md', offset: 0, charOffset: 11_997 } },
+      'Done.',
+    ], { 'wiki/facts.md': firstPage + tail });
+    await agent.answer([{ role: 'user', content: 'Continue this note' }], () => {}, undefined, {
+      context: { notePath: 'wiki/facts.md', selection: 'b'.repeat(31_999) + '😀TAIL' },
+    });
+    const initial = fake.requests[0]!.body.input as Array<{ content: string }>;
+    const lines = initial[0]!.content.split('\n');
+    const page = JSON.parse(lines[1]!);
+    expect(page).toMatchObject({ content: firstPage, totalLines: 1, nextOffset: 0, nextCharOffset: 11_997, truncated: true });
+    expect(JSON.parse(lines.at(-1)!)).toBe('b'.repeat(31_999));
+    const continued = fake.requests[1]!.body.input as Array<{ type?: string; output?: string }>;
+    const lastPage = JSON.parse(continued.find((item) => item.type === 'function_call_output')!.output!);
+    expect(lastPage.content).toBe(tail);
+    expect(lastPage.nextOffset).toBeNull();
+  });
+
+  it('restores the whole historical pinned note from a legacy paged checkpoint', async () => {
+    const firstPage = Array.from({ length: 300 }, (_, index) => `Fact ${index}\n`).join('');
+    const tail = '# Historical tail\nPreserved after retry.';
+    const { agent, repo, fake } = await fixture([
+      { name: 'search', arguments: { query: 'tail' } },
+      { name: 'read_note', arguments: { path: 'wiki/facts.md', offset: 300 } },
+      '[tail](wiki/facts.md#historical-tail)',
+    ], { 'wiki/facts.md': firstPage + tail });
+    const oldSha = await repo.headSha();
+    const controller = new AbortController();
+    let checkpoint: AnswerCheckpoint | undefined;
+    await expect(agent.answer([{ role: 'user', content: 'Read the tail' }], () => {}, controller.signal, {
+      context: { notePath: 'wiki/facts.md' },
+      onCheckpoint: (value) => { checkpoint = value; controller.abort(); },
+    })).rejects.toThrow();
+    const wt = await repo.createWorktree('replace-retried-context');
+    try {
+      await wt.write('wiki/facts.md', '# Replacement\nNot the original tail.');
+      await wt.commit('Replace retry context', { name: 'Chat fixture', email: 'chat@example.test' });
+      await wt.fastForwardMain();
+    } finally { await wt.dispose(); }
+    const { readNotes: _snapshots, ...legacyCheckpoint } = checkpoint!;
+    const result = await agent.answer([], () => {}, undefined, { resume: legacyCheckpoint });
+    const continued = fake.requests[2]!.body.input as Array<{ type?: string; output?: string }>;
+    const pages = continued.filter((item) => item.type === 'function_call_output').map((item) => JSON.parse(item.output!));
+    expect(pages.find((page) => page.path === 'wiki/facts.md')).toMatchObject({ content: tail, totalLines: 302, sha: oldSha });
+    expect(result.citations).toEqual([{ path: 'wiki/facts.md', sha: oldSha, anchor: 'historical-tail', heading: 'Historical tail' }]);
+  });
+
   it.each(['snapshot', 'legacy'] as const)('restores %s paged evidence and pinned context after main changes without rebuilding the original input', async (mode) => {
     const { agent, repo, fake } = await fixture([
       { name: 'read_note', arguments: { path: 'wiki/facts.md', offset: 2, limit: 1 } },

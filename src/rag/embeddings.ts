@@ -4,7 +4,12 @@ import type { Config } from '../config.js';
 // 128 chunks of approximately 800 tokens stay below the aggregate API input limit.
 const BATCH_SIZE = 128;
 
-export async function embedTexts(config: Config, texts: string[], signal?: AbortSignal): Promise<number[][]> {
+export async function embedTexts(
+  config: Config,
+  texts: string[],
+  signal?: AbortSignal,
+  onUsage?: (usage: { model: string; inputTokens: number }) => void,
+): Promise<number[][]> {
   signal?.throwIfAborted();
   if (!config.openaiApiKey) throw new Error('OPENAI_API_KEY is required for embeddings');
   const client = createOpenAI(config);
@@ -18,6 +23,7 @@ export async function embedTexts(config: Config, texts: string[], signal?: Abort
       input: batch,
       encoding_format: 'float',
     }, { signal });
+    onUsage?.({ model: response.model, inputTokens: response.usage.total_tokens });
     signal?.throwIfAborted();
     const ordered = response.data.toSorted((a, b) => a.index - b.index);
     if (ordered.length !== batch.length) throw new Error('Embedding API returned an incomplete batch');

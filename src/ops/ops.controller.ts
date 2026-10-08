@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Inject, Param, Post, Query, UseGuards } from '@nestjs/common';
 import type { z } from 'zod';
 import { activityQuerySchema, dreamsQuerySchema, idSchema, reindexSchema } from '../api/api.dto.js';
 import { AuditService } from '../audit/audit.service.js';
@@ -8,6 +8,8 @@ import { RolesGuard } from '../auth/guards/roles.guard.js';
 import { SessionGuard } from '../auth/guards/session.guard.js';
 import type { User } from '../auth/users.types.js';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe.js';
+import { CONFIG } from '../common/tokens.js';
+import type { Config } from '../config.js';
 import { DreamRunsRepository } from '../dreaming/dream-runs.repository.js';
 import { DreamingService } from '../dreaming/dreaming.service.js';
 import { WriteJobsService } from '../jobs/write-jobs.service.js';
@@ -24,6 +26,7 @@ export class OpsController {
     private readonly jobs: WriteJobsService,
     private readonly indexer: IndexerService,
     private readonly audit: AuditService,
+    @Inject(CONFIG) private readonly config: Config,
   ) {}
 
   @Get('dreams')
@@ -61,7 +64,7 @@ export class OpsController {
   @Roles('admin')
   async ops() {
     const { queue, failedJobs } = this.activity.opsJobs();
-    return { queue, failedJobs: await Promise.all(failedJobs.map(async (job) => ({
+    return { jobsAutostart: this.config.jobsAutostart !== false, queue, failedJobs: await Promise.all(failedJobs.map(async (job) => ({
       ...job, resumable: await this.jobs.isResumable(this.jobs.get(job.id)!),
     }))), index: await this.indexer.status(),
       dreams: { last: this.dreams.latest(), running: this.dreams.running() }, backup: this.dreams.backupStatus() };

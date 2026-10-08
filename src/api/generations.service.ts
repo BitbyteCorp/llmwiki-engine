@@ -4,6 +4,8 @@ import type { Statement } from 'better-sqlite3';
 import type { Response } from 'express';
 import { DB } from '../common/tokens.js';
 import type { Db } from '../db/index.js';
+import { answerErrorCodeSchema, classifyAnswerError, type AnswerErrorCode } from '../common/openai-errors.js';
+import { z } from 'zod';
 import { ApiError, notFound } from './api-error.js';
 import type { Generation, GenerationEvent, GenerationStatus } from './generations.types.js';
 import { AclService } from '../acl/acl.service.js';
@@ -14,6 +16,7 @@ export type { Generation, GenerationEvent } from './generations.types.js';
 const columns = `g.id, g.conversation_id AS conversationId, g.user_message_id AS userMessageId,
   g.assistant_message_id AS assistantMessageId, g.user_id AS userId, g.client_id AS clientId,
   g.status, g.model, g.effort, g.created_at AS createdAt, g.finished_at AS finishedAt`;
+const failureSchema = z.object({code:z.string(),message:z.string(),errorCode:answerErrorCodeSchema.default('unknown')});
 interface Frame { seq: number; event: GenerationEvent; data: string }
 interface Job { controller: AbortController; seq: number; terminal: boolean }
 type Listener = (frame: Frame, terminal: boolean) => void;
@@ -40,7 +43,7 @@ export class GenerationsService implements OnModuleInit, OnModuleDestroy {
   private readonly clientGeneration: Statement<[string, string], Generation>;
   private readonly activeGeneration: Statement<[string]>;
   private readonly frames: Statement<[string, number], Frame>;
-  private readonly persistFrame: (id: string, frame: Frame, status: GenerationStatus | null) => boolean;
+  private readonly persistFrame: (id: string, frame: Frame, status: GenerationStatus | null, errorCode: AnswerErrorCode | null) => boolean;
 
   constructor(@Inject(DB) private readonly db: Db, private readonly acl: AclService) {
     this.memberGeneration = db.prepare(`SELECT ${columns} FROM generations g
@@ -52,13 +55,13 @@ export class GenerationsService implements OnModuleInit, OnModuleDestroy {
     const insertFrame = db.prepare<[number, GenerationEvent, string, string]>(`INSERT INTO generation_frames (generation_id,seq,event,data)
       SELECT id,?,?,? FROM generations WHERE id = ? AND status = 'running'`);
     const finish = db.prepare<[GenerationStatus, string, string]>('UPDATE generations SET status = ?, finished_at = ? WHERE id = ?');
-    const failMessage = db.prepare<[GenerationStatus, string]>('UPDATE messages SET status = ? WHERE id = (SELECT assistant_message_id FROM generations WHERE id = ?)');
-    this.persistFrame = db.transaction((id: string, frame: Frame, status: GenerationStatus | null) => {
+    const failMessage = db.prepare<[GenerationStatus, AnswerErrorCode, string]>('UPDATE messages SET status = ?, error_code = ? WHERE id = (SELECT assistant_message_id FROM generations WHERE id = ?)');
+    this.persistFrame = db.transaction((id: string, frame: Frame, status: GenerationStatus | null, errorCode: AnswerErrorCode | null) => {
       const storedId = toStorageId(id)!;
       if (insertFrame.run(frame.seq, frame.event, frame.data, storedId).changes === 0) return false;
       if (status !== null) {
         finish.run(status, new Date().toISOString(), storedId);
-        if (status === 'cancelled' || status === 'failed') failMessage.run(status, storedId);
+        if (status === 'cancelled' || status === 'failed') failMessage.run(status, errorCode ?? 'unknown', storedId);
       }
       return true;
     });
@@ -71,9 +74,9 @@ export class GenerationsService implements OnModuleInit, OnModuleDestroy {
         const storedId = toStorageId(generation.id)!;
         const seq = this.db.prepare<[string], { seq: number }>('SELECT COALESCE(MAX(seq),0)+1 AS seq FROM generation_frames WHERE generation_id = ?').get(storedId)!.seq;
         this.db.prepare('INSERT INTO generation_frames (generation_id,seq,event,data) VALUES (?,?,?,?)')
-          .run(storedId, seq, 'error', JSON.stringify({ code: 'generation_interrupted', message: 'Generation interrupted by server restart' }));
+          .run(storedId, seq, 'error', JSON.stringify({ code: 'generation_interrupted', errorCode: 'unknown', message: 'Generation interrupted by server restart' }));
         this.db.prepare("UPDATE generations SET status = 'interrupted', finished_at = ? WHERE id = ?").run(new Date().toISOString(), storedId);
-        this.db.prepare("UPDATE messages SET status = 'interrupted' WHERE id = ?")
+        this.db.prepare("UPDATE messages SET status = 'interrupted', error_code = 'unknown' WHERE id = ?")
           .run(generation.assistantMessageId === null ? null : toStorageId(generation.assistantMessageId));
       })();
     }
@@ -82,7 +85,7 @@ export class GenerationsService implements OnModuleInit, OnModuleDestroy {
   onModuleDestroy(): void {
     for (const [id, job] of this.jobs) {
       job.controller.abort();
-      this.emit(id, job, 'error', { code: 'generation_cancelled', message: 'Generation cancelled' });
+      this.emit(id, job, 'error', { code: 'generation_cancelled', errorCode: 'cancelled', message: 'Generation cancelled' });
     }
     this.listeners.clear();
   }
@@ -136,10 +139,11 @@ export class GenerationsService implements OnModuleInit, OnModuleDestroy {
       void (async () => {
         try {
           await run(job.controller.signal, (event, data) => { this.emit(generation.id, job, event, data); });
-          if (!job.terminal) this.emit(generation.id, job, 'error', { code: 'generation_failed', message: 'Generation did not complete' });
-        } catch {
+          if (!job.terminal) this.emit(generation.id, job, 'error', { code: 'generation_failed', errorCode: 'unknown', message: 'Generation did not complete' });
+        } catch (error) {
           if (!job.terminal) this.emit(generation.id, job, 'error', {
             code: job.controller.signal.aborted ? 'generation_cancelled' : 'generation_failed',
+            errorCode: job.controller.signal.aborted ? 'cancelled' : classifyAnswerError(error),
             message: job.controller.signal.aborted ? 'Generation cancelled' : 'Generation failed',
           });
         } finally {
@@ -158,7 +162,7 @@ export class GenerationsService implements OnModuleInit, OnModuleDestroy {
     const job = this.jobs.get(generation.id);
     if (!job) return;
     job.controller.abort();
-    this.emit(generation.id, job, 'error', { code: 'generation_cancelled', message: 'Generation cancelled' });
+    this.emit(generation.id, job, 'error', { code: 'generation_cancelled', errorCode: 'cancelled', message: 'Generation cancelled' });
   }
 
   stream(id: string, userId: number, res: Response, lastEventId?: string): void {
@@ -243,9 +247,10 @@ export class GenerationsService implements OnModuleInit, OnModuleDestroy {
   private emit(id: string, job: Job, event: GenerationEvent, data: unknown): void {
     if (job.terminal) return;
     const terminal = event === 'done' || event === 'error';
-    const status: GenerationStatus = job.controller.signal.aborted ? 'cancelled' : event === 'done' ? 'succeeded' : 'failed';
-    const frame: Frame = { seq: job.seq + 1, event, data: JSON.stringify(data) };
-    const inserted = this.persistFrame(id, frame, terminal ? status : null);
+    const failure = event === 'error' ? failureSchema.parse(data) : null;
+    const status: GenerationStatus = job.controller.signal.aborted || failure?.errorCode === 'cancelled' ? 'cancelled' : event === 'done' ? 'succeeded' : 'failed';
+    const frame: Frame = { seq: job.seq + 1, event, data: JSON.stringify(failure ?? data) };
+    const inserted = this.persistFrame(id, frame, terminal ? status : null, failure?.errorCode ?? null);
     if (!inserted) { job.terminal = true; return; }
     job.seq = frame.seq;
     job.terminal = terminal;

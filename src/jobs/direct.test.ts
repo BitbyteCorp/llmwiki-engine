@@ -27,13 +27,14 @@ import { WriteJobsService } from './write-jobs.service.js';
 const git = promisify(execFile);
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); });
-async function fixture() {
+async function fixture(jobsAutostart = true) {
   const dir = await mkdtemp(join(tmpdir(), 'wiki-direct-'));
   const db = openDb(':memory:');
   runMigrations(db);
   db.prepare("INSERT INTO users(id,email,name,role,created_at) VALUES (1,'editor@example.com','Editor','editor','2026-01-01')").run();
   const log = pino({ level: 'silent' });
-  const repo = await KnowledgeRepo.open(loadConfig({ NODE_ENV: 'test', DATA_DIR: dir }), log);
+  const config = loadConfig({ NODE_ENV: 'test', DATA_DIR: dir, JOBS_AUTOSTART: String(jobsAutostart) });
+  const repo = await KnowledgeRepo.open(config, log);
   const repository = new WriteJobsRepository(db);
   const users = new UsersService(new UsersRepository(db));
   const events = new EventsService();
@@ -43,13 +44,38 @@ async function fixture() {
   const agent = { runWrite: vi.fn(async () => ({ summary: 'No changes' })), resolveConflicts: vi.fn(async () => {}) } as unknown as AgentService;
   const acl = new AclService(db, users, new AuditService(db));
   const writer = new NoteWriterService(repository, repo, users, indexer, events, log, acl);
-  const jobs = new WriteJobsService(repository, agent, indexer, repo, users, log, events, acl, writer);
+  const jobs = new WriteJobsService(repository, agent, indexer, repo, users, log, events, acl, writer, config);
   cleanups.push(async () => { await jobs.stop(); db.close(); await rm(dir, { recursive: true, force: true }); });
   async function put(path: string, content: string, create = true, baseSha?: string) {
     return writer.apply({ userId: 1, source: 'web', baseSha: baseSha ?? await repo.headSha(), ops: [{ op: 'put', path, content, create }] });
   }
   return { dir, db, repo, repository, events, published, indexer, agent, jobs, writer, put, acl };
 }
+
+it('leaves persisted direct/revert retries queued while explicit edits and reverts still work with autostart disabled', async () => {
+  const f = await fixture(false);
+  const existing = await f.put('wiki/existing.md', 'preserve until explicitly reverted');
+  const directId = newId();
+  const revertId = newId();
+  const at = new Date().toISOString();
+  f.repository.enqueue(directId, 1, JSON.stringify({
+    userId: 1, source: 'web', baseSha: await f.repo.headSha(),
+    ops: [{ op: 'put', path: 'wiki/startup.md', content: 'do not resume', create: true }],
+  }), at, 'web', undefined, 'direct');
+  f.repository.enqueue(revertId, 1, JSON.stringify({ userId: 1, sha: existing.mergeSha }), at, 'revert', undefined, 'revert');
+  f.jobs.start();
+  await f.jobs.waitForSettled(directId, 20);
+  for (const id of [directId, revertId]) expect(f.jobs.get(id)).toMatchObject({ status: 'queued', startedAt: null });
+  expect(await f.repo.readFile('wiki/startup.md')).toBeNull();
+  expect(await f.repo.readFile('wiki/existing.md')).toBe('preserve until explicitly reverted');
+  const edited = await f.put('wiki/interactive.md', 'manual write');
+  expect(f.jobs.get(edited.jobId)?.status).toBe('succeeded');
+  expect(await f.repo.readFile('wiki/interactive.md')).toBe('manual write');
+  const reverted = await f.writer.applyRevert({ userId: 1, sha: edited.mergeSha });
+  expect(f.jobs.get(reverted.jobId)?.status).toBe('succeeded');
+  expect(await f.repo.readFile('wiki/interactive.md')).toBeNull();
+  expect(f.agent.runWrite).not.toHaveBeenCalled();
+});
 
 it('checks touched paths only, preserves unrelated updates, and rejects stale edits and both move endpoints', async () => {
   const f = await fixture();
@@ -176,8 +202,9 @@ it('retries failed Dony with provenance, cancels only queued jobs and keeps fail
   expect(f.jobs.get(retried.id)?.commits).toContain(failed.commits[0]);
 });
 
-it('replays direct and revert failures immediately outside the Dony queue with original payload and metadata', async () => {
-  const f = await fixture();
+it.each([true, false])('replays direct and revert failures immediately outside the Dony queue with autostart %s', async (jobsAutostart) => {
+  const f = await fixture(jobsAutostart);
+  if (!jobsAutostart) f.jobs.start();
   const createWorktree = f.repo.createWorktree.bind(f.repo);
   vi.spyOn(f.repo, 'createWorktree').mockImplementationOnce(async (id) => {
     const wt = await createWorktree(id);

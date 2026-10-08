@@ -32,7 +32,7 @@ await ingest.ingest({
 
 선택 필드 `filename`은 원문 파일명이고 `instructions`는 최대 10,000자의 요청자 지침이다. 업로드는 `POST /api/uploads`의 multipart `file`과 `purpose=import`로 먼저 생성한다. ZIP은 import 목적에서만 허용하며 해당 업로드를 만든 사용자만 수집할 수 있다. 채팅 첨부와 import ZIP은 서로 교환하지 않는다.
 
-`GET /api/imports?limit=50&before=<importId>`는 `{ imports: [...] }`를 반환하며 viewer 이상이 자신의 기록만 조회한다. admin은 모든 사용자의 기록을 조회한다. `GET /api/imports/:id`도 같은 소유자/admin 규칙을 적용하며 다른 소유자의 기록은 404로 숨긴다. 기록은 `id`, `userId`, `kind`, `source`, `sha`, `status`, `rawPaths`, `jobs`, `error`, `createdAt`, `updatedAt`, `finishedAt`을 포함한다. `jobs`는 배치 순서의 배열이며 각 항목은 0부터 시작하는 `batch`, 최신 재시도의 base62 `jobId`, 현재 작업의 `status`, `error`, 담당 Markdown 파일 수인 `files`를 담는다. 작업의 `merging`은 `running`으로 표현하며 작업 제출 전 수집 실패에서는 `jobs`가 빈 배열이다. 수집 응답은 `{ importId, jobIds }`이며 `jobIds`도 배치 순서다.
+`GET /api/imports?limit=50&before=<importId>`는 `{ imports: [...] }`를 반환하며 viewer 이상이 자신의 기록만 조회한다. admin은 모든 사용자의 기록을 조회한다. `GET /api/imports/:id`도 같은 소유자/admin 규칙을 적용하며 다른 소유자의 기록은 404로 숨긴다. 기록은 `id`, `userId`, `kind`, `source`, `sha`, `status`, `rawPaths`, `jobs`, `error`, `retryable`, `retryReason`, `createdAt`, `updatedAt`, `finishedAt`을 포함한다. `retryable`은 원문 수집을 재실행할 수 있는지 나타내고, 불가능하면 `retryReason`이 이유를 설명하며 가능하면 `null`이다. 보존한 입력 텍스트와 요청자 지침은 응답에 노출하지 않는다. `jobs`는 배치 순서의 배열이며 각 항목은 0부터 시작하는 `batch`, 최신 재시도의 base62 `jobId`, 현재 작업의 `status`, `error`, 담당 Markdown 파일 수인 `files`를 담는다. 작업의 `merging`은 `running`으로 표현하며 작업 제출 전 수집 실패에서는 `jobs`가 빈 배열이다. 수집 응답은 `{ importId, jobIds }`이며 `jobIds`도 배치 순서다.
 
 ### 다운로드 보안과 한도
 다운로더는 자격 증명이 없는 `http`와 `https`만 허용한다. DNS 응답 중 하나라도 사설·루프백·링크 로컬·공유 주소·비전역 주소이면 연결하지 않는다. IPv4 정수 표기와 IPv4-mapped IPv6도 URL 정규화와 주소 검사에서 차단한다. localhost, 로컬 도메인, 메타데이터 호스트, 메타데이터 주소와 IPv6 터널 주소도 차단한다.
@@ -87,6 +87,16 @@ raw/<sha256>/
 `imports` SQLite 테이블은 수집 메타데이터와 집계 상태를 보관한다. `import_jobs`는 `(import_id, batch)` 기본 키와 현재 `job_id`, 담당 경로 JSON 배열인 `files`를 보관하며 작업 ID 인덱스로 이벤트를 연결한다. API·서비스에서는 base62 ID를 쓰고 식별자 열은 [식별자](identifiers.md)의 저장 규칙을 따른다. `020_import_jobs.sql`은 기존 단일 작업을 파일 목록 없는 배치 0으로 옮기고 `imports.job_id`를 제거한다.
 
 집계 상태는 제출 전 `extracting`이다. 아직 종료하지 않은 배치가 있으면 실행 중인 배치가 하나라도 있을 때 `running`, 아니면 `queued`다. 모든 배치가 성공하면 `succeeded`다. 모든 배치가 종료했고 실패가 있으면 `failed`이며 `error`는 첫 실패 배치의 `batch i/n: <작업 오류>`다. 대기 중인 write job을 취소하면 작업이 `failed`(`error: canceled`)로 기록되므로 그 배치도 실패로 집계되어 `batch i/n: canceled`가 된다. 실패 없이 취소된 배치가 있으면 `cancelled`라는 분기는 계약에 남아 있지만 현재 write job에는 별도 취소 상태가 없어 도달하지 않는다. `finishedAt`은 집계 상태가 종료 상태일 때만 설정한다. `job.updated` 이벤트가 상태를 갱신하고, 목록·상세 조회와 시작 시 저장된 write job 및 재시도 연결을 확인하므로 놓친 이벤트도 복구한다. 작업 제출 전에 프로세스가 중단된 기록은 시작 시 실패로 바꾼다. 수집 실패는 기록에 남고 REST는 해당 오류를 반환한다.
+
+`POST /api/imports/:id/retry`는 editor 이상이 소유한 기록이나 admin이 조회할 수 있는 기록에만 허용하며 다른 소유자의 기록은 404로 숨긴다. 원문 다운로드·추출·raw 저장 단계에서 실패했고 연결된 통합 작업도, 커밋된 원문도 없는 기록만 같은 import ID로 재시도한다. 성공 응답은 새 수집과 같은 `{ importId, jobIds }`다. 재시도할 수 없는 상태나 동시에 들어온 재시도는 `409 import_not_retryable`로 거부한다. 실행 전에 SQLite에서 `failed`를 `extracting`으로 원자적으로 바꾸고 이전 `error`와 `finishedAt`을 비운다. 재실패하면 같은 기록을 `failed`로 되돌리고 최신 오류와 종료 시간을 남긴다.
+
+재시도는 최초 수집과 같은 다운로드·추출·불변 raw 저장 경로를 사용한다. URL은 최종 리다이렉트 주소가 아니라 원래 URL에서 다시 다운로드하고, 업로드는 저장된 `source`의 업로드 ID로 다시 읽는다. admin이 재시도해도 업로드 조회·출처의 `importer`·raw 커밋·통합 작업의 소유자는 원래 사용자로 유지한다. 최초 파일명과 요청자 지침도 유지한다. 업로드 행이나 실제 파일이 만료·삭제되었으면 목록과 상세의 `retryReason`에 원본 업로드를 다시 올려야 한다고 표시한다.
+
+`025_import_retry.sql`은 별도 열 `retained_text`, `filename`, `instructions`, `raw_committed`를 추가한다. 새 텍스트 입력은 raw 저장이 성공할 때까지만 SQLite에 보존하며, 성공하면 `retained_text`를 지워 대형 원문을 영구 중복 보관하지 않는다. 업로드 ID는 이미 있는 `source`에만 두고 JSON이나 별도 소유 식별자 열로 복제하지 않는다. `sha`와 `rawPaths`는 raw 저장 시도 전에 기록되므로 이 값만으로 커밋 성공을 판단하지 않고 `raw_committed`로 구분한다. 이전 URL·업로드 기록은 남아 있는 출처로 재시도하지만 이전 텍스트 기록은 원문 입력이 보존되지 않았으므로 다시 제출해야 한다. 이전 기록에서 원문 커밋 후 작업 연결 전에 중단된 경우에는 목록이 재시도 후보로 표시할 수 있으나, 재시도 실행이 기존 출처 Markdown의 git blob을 확인해 원문 재수집을 거부하고 이후 `retryable=false`로 표시한다.
+
+식별자 마이그레이션은 이미 커밋된 raw 파일명을 바꾸지 않는다. 이전 UUID 파일명의 출처 Markdown도 커밋 여부를 확인할 수 있도록 재시도는 현재 base62 import ID로 파일명을 다시 만들기보다 기록의 `rawPaths`에 보존된 출처 경로를 우선 사용한다.
+
+시작 시 수집 상태 조정은 기록과 작업 연결의 정합성만 복구하며 수집 재시도나 통합 작업을 자동 실행하지 않는다. `JOBS_AUTOSTART=false`에서도 수동 수집·수집 재시도·일반 상태 조정은 그대로 동작하고, 통합 작업은 큐에 남는다.
 
 실패한 배치 작업을 재시도하면 새 작업의 `queued` 이벤트에 저장된 `retryOf`가 이전 작업 ID를 가리킨다. 해당 배치의 `job_id`만 새 작업으로 바꾸고 다른 배치의 연결·성공 결과는 유지한다. 집계 상태를 다시 계산하여 미완료 상태로 돌아가면 이전 `error`와 `finishedAt`을 비운다. 원문·출처 경로와 SHA는 그대로 보존하고 수집이나 원문 커밋을 다시 수행하지 않는다. 연속 재시도와 누락 이벤트도 배치별 `retryOf` 연결을 따라 최신 작업으로 복구한다.
 

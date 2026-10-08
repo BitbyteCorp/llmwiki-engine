@@ -9,11 +9,19 @@
 - `GET /healthz`는 기존과 같이 `200 {"ok":true}`를 반환한다. 로그인 없이 호출할 수 있다.
 - `GET /readyz`는 SQLite의 `SELECT 1`, 지식 저장소 `main` HEAD 조회, 최초 인덱싱 완료 상태, 비동기 인덱서 상태의 `lastError`를 확인한다.
 - 최초 인덱싱이 `pending` 또는 `error`이거나 DB·git·인덱서 확인이 실패하면 `503`을 반환한다. 모두 통과해야 `200`이다.
-- 성공 응답은 `{ ok: true, initialIndex: "ready", checks: { database, repository, index } }`다. 실패 응답은 공통 오류 형식인 `{ error: { code: "service_unavailable", message: "Internal server error" } }`이며 내부 확인 결과·오류 문자열·파일 경로를 포함하지 않는다.
+- 성공 응답은 `{ ok: true, initialIndex: "ready", checks: { database, repository, index } }`다. 자동 실행을 끈 서버는 초기 색인을 생략하고 `initialIndex: "skipped"`로 응답하며 나머지 준비 확인은 그대로 수행한다. 실패 응답은 공통 오류 형식인 `{ error: { code: "service_unavailable", message: "Internal server error" } }`이며 내부 확인 결과·오류 문자열·파일 경로를 포함하지 않는다.
 - 최초 인덱싱 성공은 `initialIndex: "ready"`, 실패는 `"error"`로 기록하고 실패 로그를 남긴다. 최초 실패 후에는 원인을 해결하고 엔진을 재시작한다. 최초 준비 이후 발생한 인덱서 오류는 정상 동기화로 해소되면 준비 상태도 회복된다.
 - 임베딩 API 키가 없는 키워드 검색 모드는 그 자체로 준비 실패가 아니다. 최초 동기화 중에는 준비되지 않았지만 이후 증분 동기화가 진행 중이라는 이유만으로 준비 상태를 내리지 않는다.
 
 컨테이너 생존 확인에는 `/healthz`를 쓰고 트래픽 수신 전 확인에는 `/readyz`를 쓴다. 두 경로와 `/metrics`는 Next 화면이 아니라 Nest 컨트롤러가 처리한다.
+
+### 자동 실행 중지
+`JOBS_AUTOSTART=false`는 서버가 사용자 요청 없이 OpenAI 비용을 쓰지 않도록 자동 실행을 중지한다. 기본값은 `true`이며 환경 변수의 검증과 복사 DB의 격리 절차는 [개발 환경](development.md#환경-변수)에 기록한다.
+
+- 시작 시 대기 에이전트 작업의 복구·큐 처리와 대기 중인 직접 저장·되돌리기의 자동 재개를 시작하지 않는다. 새 에이전트 쓰기·가져오기·에이전트 재시도 요청은 작업을 접수해 `queued`로 유지하며, 이 요청의 성공은 실제 지식 저장 완료를 뜻하지 않는다. 큐 처리는 `JOBS_AUTOSTART=true`로 다시 시작할 때 재개한다.
+- 꿈꾸기 cron과 초기·주기 인덱스 동기화를 시작하지 않는다. 가져오기 상태·재시도 연결을 복구하는 비용 없는 재조정은 유지하며, 가져오기 통합 작업이 접수되어도 큐가 자동 실행하지 않는다. 저장된 색인은 그대로 사용하므로 최신 지식과 다를 수 있다.
+- 채팅·검색·노트 제안, 직접 노트 저장·되돌리기와 관리자 꿈꾸기·재색인 수동 실행은 그대로 동작한다. 이 스위치는 모든 OpenAI 호출을 차단하는 방화벽이 아니며 직접 실행한 요청에는 비용이 발생할 수 있다.
+- 관리자 `GET /api/admin/ops`는 `jobsAutostart`를 반환한다. 운영 설정의 개요는 값이 `false`이면 자동 실행이 꺼져 있고 대기 작업·예약 실행이 중지되어 있다는 안내를 표시한다.
 
 ### Prometheus 접근과 지표
 `GET /metrics`는 관리자 웹 세션 또는 `Authorization: Bearer <METRICS_TOKEN>`만 허용한다. 일반 사용자 세션은 `403`, 미인증·잘못된 bearer는 `401`이다. REST API 토큰이나 MCP OAuth 토큰은 지표 인증 수단이 아니다. `METRICS_TOKEN`을 설정하지 않으면 bearer 인증은 비활성화되며 관리자 세션은 계속 사용할 수 있다. bearer가 있는 요청은 관리자 쿠키가 함께 있어도 해당 bearer가 유효해야 한다. 토큰은 SHA-256의 고정 길이 digest를 constant-time 비교한다.
@@ -36,10 +44,19 @@
 
 레이블에는 HTTP 메서드, 등록된 라우트 템플릿, 상태 코드와 고정된 결과만 쓴다. 요청 ID, 사용자 ID, SHA, 노트 경로, 작업 ID, 원문 입력은 지표 레이블로 쓰지 않는다. 등록되지 않은 서버 경로는 `unmatched_backend`, Next 자산은 `next_asset`, Next 화면은 `next_page`로 묶는다.
 
+### LLM 사용량 원장
+관리자 운영 설정은 최근 7·30·90일의 입력·캐시 입력·출력·추론 토큰 합계와 UTC 날짜·용도·모델별 사용량 표를 제공한다. `GET /api/admin/usage?days=N`은 인증된 관리자만 허용하며 `{ days, rows }`를 반환한다. 다른 운영 읽기 API처럼 관리자 세션 또는 관리자의 read scope REST 토큰을 사용한다. `days`는 기본 30이며 1~90의 정수다. 오늘 UTC 날짜를 포함한 N일을 조회하고, 각 행은 `day`, `lane`, `model`, `calls`, `inputTokens`, `cachedInputTokens`, `outputTokens`, `reasoningTokens`를 담는다. 응답은 `Cache-Control: no-store`로 공유 캐시를 금지한다.
+
+`024_llm_usage.sql`의 `llm_usage`는 공급자가 사용량을 반환한 응답 한 건마다 한 행을 저장한다. 도니의 모든 실행 용도, 검색 확장·재정렬의 `search`, 질의·문서 임베딩의 `embedding`을 같은 원장에 기록한다. 실패·미완료 응답도 공급자가 사용량을 보냈다면 포함하지만, 사용량을 받지 못한 실패와 캐시 적중에는 추정 행을 만들지 않는다. 임베딩의 `usage.total_tokens`는 입력 토큰으로 기록한다. 재개 체크포인트의 이전 누적치를 다시 저장하지 않는다.
+
+캐시 입력은 입력의 부분집합이고 추론은 출력의 부분집합이므로 네 열을 더해 총 사용량으로 해석하지 않는다. 모델별 가격·할인·외부 호출을 반영하지 않는 토큰 원장이며 청구 금액이 아니다. 원문 입력·응답·노트 내용은 저장하지 않는다. 선택적인 `owner`와 `ref`는 UUID 열이 아니라 호출자 문맥을 담는 불투명 문자열이며 API 표현을 유지한다. 기록은 90일 보존하고 새 행을 저장할 때 오래된 행을 정리한다.
+
 ### 요청 로그와 SSE
 Next로 전달되기 전에 요청 로깅 미들웨어를 실행한다. `x-request-id`가 `[A-Za-z0-9._:-]{1,128}` 형식이면 그대로 쓰고 아니면 [식별자 규칙](identifiers.md)에 따라 새 요청 식별자를 발급한다. 응답의 `X-Request-ID`에도 같은 값을 넣는다.
 
 응답이 끝나면 Pino 구조화 로그에 `{ method, route, status, ms, requestId, userId }`를 남긴다. 인증된 사용자 ID가 없으면 `userId`는 `null`이다. 원문 URL의 쿼리, 요청·응답 본문, Authorization 헤더와 쿠키를 기록하지 않는다. 요청 ID는 로그에서 문제를 연관 짓는 용도이며 지표의 레이블은 아니다.
+
+도니 대화의 답변 실패는 `Chat answer failed` 로그에 전체 `err`, 안전한 `errorCode`, 대화 식별자와 SDK 오류의 `openaiRequestId`를 함께 기록한다. 취소는 실패 오류 로그를 남기지 않는다. 공급자 오류 원문과 공급자 요청 식별자는 서버 진단에만 사용하며 클라이언트에는 [대화 실패 코드와 안내](web.md#도니-대화-작업-공간)만 전달한다.
 
 역방향 프록시에서는 `text/event-stream` 압축·버퍼링을 끄고 이벤트와 heartbeat가 즉시 전달되게 설정한다. 서버의 압축 제외 정책은 [웹 성능](performance.md), 이벤트 계약과 재연결은 [실시간 이벤트](events.md)에 기록한다.
 

@@ -17,6 +17,7 @@ import { AclModule } from './acl/acl.module.js';
 import { HttpRateLimitModule } from './common/http/rate-limit.module.js';
 import { IngestModule } from './ingest/ingest.module.js';
 import { ExportModule } from './export/export.module.js';
+import { UsageModule } from './usage/usage.module.js';
 
 import { OpsModule } from './ops/ops.module.js';
 @Module({
@@ -37,6 +38,7 @@ import { OpsModule } from './ops/ops.module.js';
     IngestModule,
     ExportModule,
     OpsModule,
+    UsageModule,
   ],
 })
 export class AppModule implements OnApplicationBootstrap, BeforeApplicationShutdown {

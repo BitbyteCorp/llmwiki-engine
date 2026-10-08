@@ -14,7 +14,8 @@ import type { User } from '../auth/users.types.js';
 import { UsersRepository } from '../auth/users.repository.js';
 import { UsersService } from '../auth/users.service.js';
 import { HttpExceptionFilter } from '../common/filters/http-exception.filter.js';
-import { DB } from '../common/tokens.js';
+import { CONFIG, DB } from '../common/tokens.js';
+import { loadConfig } from '../config.js';
 import { openDb, runMigrations, type Db } from '../db/index.js';
 import type { DreamRun } from '../dreaming/dream-run.types.js';
 import { DreamRunsRepository } from '../dreaming/dream-runs.repository.js';
@@ -106,6 +107,7 @@ describe('operations activity and REST', () => {
     const module = await Test.createTestingModule({
       controllers: [OpsController],
       providers: [RolesGuard,
+        { provide: CONFIG, useValue: loadConfig({}) },
         { provide: DB, useValue: db }, { provide: ActivityService, useValue: activity },
         { provide: DreamRunsRepository, useValue: dreams }, { provide: DreamingService, useValue: { runManual: manual } },
         { provide: WriteJobsService, useValue: jobs }, { provide: IndexerService, useValue: index }, AuditService],

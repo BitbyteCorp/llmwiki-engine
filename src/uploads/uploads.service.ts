@@ -2,6 +2,7 @@ import { Inject, Injectable, type OnModuleDestroy, type OnModuleInit } from '@ne
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ResponseInputContent } from 'openai/resources/responses/responses.js';
+import { sliceCodePoints } from '../agent/output.js';
 import { ApiError, notFound } from '../api/api-error.js';
 import { fromStorageId, legacyUuidToApi, newId, toStorageId } from '../common/ids.js';
 import { CONFIG, DB, LOGGER } from '../common/tokens.js';
@@ -12,7 +13,7 @@ import type { Logger } from '../log.js';
 
 export const CHAT_UPLOAD_LIMIT = 20 * 1024 * 1024;
 export const IMPORT_UPLOAD_LIMIT = 100 * 1024 * 1024;
-const REPLAY_BUDGET = 25 * 1024 * 1024;
+export const CHAT_REPLAY_BUDGET = 8 * 1024 * 1024;
 const TEXT_LIMIT = 32 * 1024;
 export type UploadPurpose = 'chat' | 'import';
 export interface Upload {
@@ -43,7 +44,7 @@ function detectMedia(buffer: Buffer, name: string, declared: string, purpose: Up
 
 function safeName(name: string): string {
   const cleaned = name.split(/[\\/]/).at(-1)?.replace(/[\u0000-\u001f\u007f]/gu, '').trim();
-  return cleaned?.slice(0, 255).toWellFormed() || 'upload';
+  return cleaned ? sliceCodePoints(cleaned, 0, 255).toWellFormed() || 'upload' : 'upload';
 }
 
 @Injectable()
@@ -125,7 +126,8 @@ export class UploadsService implements OnModuleInit, OnModuleDestroy {
     } finally { this.saving.delete(stored.upload.id); }
   }
 
-  async parts(userId: number, ids: string[], budget = REPLAY_BUDGET): Promise<ResponseInputContent[]> {
+  async parts(userId: number, ids: string[], budget = CHAT_REPLAY_BUDGET,
+    options: { binary?: boolean; imageDetail?: 'auto' | 'low' } = {}): Promise<{ parts: ResponseInputContent[]; bytes: number }> {
     if (!Number.isFinite(budget) || budget < 0) throw new ApiError(400, 'invalid_input', 'Replay budget must be non-negative');
     // Validate every owner and purpose before considering the replay budget.
     const stored = ids.map((id) => this.get(userId, id));
@@ -133,26 +135,38 @@ export class UploadsService implements OnModuleInit, OnModuleDestroy {
       if (upload.purpose !== 'chat' || upload.mediaType === 'application/zip') throw new ApiError(400, 'invalid_attachment', 'Import uploads cannot be used as chat attachments');
     }
     const parts: ResponseInputContent[] = [];
+    let bytes = 0;
     for (const { upload, path } of stored) {
-      const cost = upload.mediaType.startsWith('text/') ? Math.min(upload.size, TEXT_LIMIT) : upload.size;
-      if (cost > budget) continue;
-      let buffer: Buffer;
-      if (upload.mediaType.startsWith('text/')) {
-        buffer = Buffer.alloc(cost);
-        const fd = openSync(path, 'r');
-        try { readSync(fd, buffer, 0, cost, 0); } finally { closeSync(fd); }
-      } else buffer = readFileSync(path);
-      if (upload.mediaType.startsWith('image/')) {
-        parts.push({ type: 'input_image', image_url: `data:${upload.mediaType};base64,${buffer.toString('base64')}`, detail: 'auto' });
-      } else if (upload.mediaType === 'application/pdf') {
-        parts.push({ type: 'input_file', filename: upload.name, file_data: `data:application/pdf;base64,${buffer.toString('base64')}` });
-      } else {
-        const text = new TextDecoder('utf-8', { fatal: true }).decode(buffer, { stream: upload.size > TEXT_LIMIT });
-        parts.push({ type: 'input_text', text: `Attachment: ${upload.name}\n${text}` });
+      const textFile = upload.mediaType.startsWith('text/');
+      if (!textFile && options.binary === false) {
+        parts.push({ type: 'input_text', text: `Attachment: ${upload.name}\n[Omitted: older binary attachment. Reattach this file if needed.]` });
+        continue;
       }
+      let cost: number;
+      let text = '';
+      const prefix = `data:${upload.mediaType};base64,`;
+      if (textFile) {
+        const limit = Math.min(upload.size, TEXT_LIMIT);
+        const buffer = Buffer.alloc(limit);
+        const fd = openSync(path, 'r');
+        let length: number;
+        try { length = readSync(fd, buffer, 0, limit, 0); } finally { closeSync(fd); }
+        text = new TextDecoder('utf-8', { fatal: true }).decode(buffer.subarray(0, length), { stream: upload.size > length });
+        cost = Buffer.byteLength(text, 'utf8');
+      } else cost = prefix.length + 4 * Math.ceil(upload.size / 3);
+      if (cost > budget) {
+        parts.push({ type: 'input_text', text: `Attachment: ${upload.name}\n[Omitted: attachment replay budget exceeded. Reattach this file if needed.]` });
+        continue;
+      }
+      if (upload.mediaType.startsWith('image/')) {
+        parts.push({ type: 'input_image', image_url: prefix + readFileSync(path).toString('base64'), detail: options.imageDetail ?? (ids.length === 1 ? 'auto' : 'low') });
+      } else if (upload.mediaType === 'application/pdf') {
+        parts.push({ type: 'input_file', filename: upload.name, file_data: prefix + readFileSync(path).toString('base64') });
+      } else parts.push({ type: 'input_text', text: `Attachment: ${upload.name}\n${text}` });
       budget -= cost;
+      bytes += cost;
     }
-    return parts;
+    return { parts, bytes };
   }
 
   cleanup(now = Date.now()): number {

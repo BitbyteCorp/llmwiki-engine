@@ -43,6 +43,7 @@ import { ApiTokensRepository } from '../src/auth/api-tokens.repository.js';
 import { WriteJobsRepository } from '../src/jobs/write-jobs.repository.js';
 import { WriteJobsService } from '../src/jobs/write-jobs.service.js';
 import { IndexerService } from '../src/rag/indexer.service.js';
+import { NoteWriterService } from '../src/jobs/note-writer.service.js';
 
 interface Frame { id: number; event: string; data: Record<string, unknown> }
 function frames(text: string): Frame[] {
@@ -92,7 +93,9 @@ async function fixture(script: FakeScript | FakeResponder, authorRole: 'viewer' 
   const events = new EventsService();
   events.subscribe((event, audience) => published.push({ event, audience }));
   const jobRepository = new WriteJobsRepository(db);
-  const jobs = new WriteJobsService(jobRepository, agent, new IndexerService(config, db, log, repo, events), repo, userService, log, events, acl);
+  const indexer = new IndexerService(config, db, log, repo, events);
+  const jobs = new WriteJobsService(jobRepository, agent, indexer, repo, userService, log, events, acl);
+  const uploads = new UploadsService(config, db, new NoteWriterService(jobRepository, repo, userService, indexer, events, log, acl), log);
   const tokens = new ApiTokensService(new ApiTokensRepository(db), userService, audit);
   let origin = '';
   const module = await Test.createTestingModule({
@@ -103,7 +106,7 @@ async function fixture(script: FakeScript | FakeResponder, authorRole: 'viewer' 
       { provide: AgentService, useValue: agent }, { provide: EventsService, useValue: events },
       { provide: KnowledgeRepo, useValue: repo },
       { provide: WriteJobsService, useValue: jobs },
-      { provide: UploadsService, useValue: { parts: async () => [], get: async () => { throw new Error('No upload in this fixture'); } } },
+      { provide: UploadsService, useValue: uploads },
       { provide: ApiTokensService, useValue: tokens },
       { provide: SessionsService, useValue: {
         sessionUser: (req: Request) => users.get(Number(req.get('x-user-id'))) ?? null,
@@ -144,7 +147,7 @@ async function fixture(script: FakeScript | FakeResponder, authorRole: 'viewer' 
     return result;
   }
   async function send(id: string, input: SubmitMessage) { return stream(`/conversations/${id}/messages`, 'POST', input); }
-  return { request, create, detail, stream, send, agent, fake, repo, published, db, acl, users, jobs, jobRepository, tokens,
+  return { request, create, detail, stream, send, agent, fake, repo, published, db, acl, users, jobs, jobRepository, tokens, uploads,
     checkpoints: module.get(AgentCheckpointsRepository), generations: module.get(GenerationsService), conversations: module.get(ConversationsRepository) };
 }
 async function expectError(response: Response, status: number, code: string) {
@@ -155,6 +158,58 @@ function done(result: Frame[]): Message {
   expect(result.at(-1)?.event).toBe('done');
   return result.at(-1)!.data.message as Message;
 }
+
+describe('chat attachment replay', () => {
+  it('replays binaries only in the latest two user turns and uses auto only for the latest sole attachment', async () => {
+    const f = await fixture(['First answer.', 'Second answer.', 'Third answer.', 'Fourth answer.']);
+    const conversation = await f.create();
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1H8AAAAASUVORK5CYII=', 'base64');
+    const old = await f.uploads.save(1, { name: 'old.png', mediaType: 'image/png', buffer: png });
+    const previous = await f.uploads.save(1, { name: 'previous.png', mediaType: 'image/png', buffer: png });
+    const latest = await f.uploads.save(1, { name: 'latest.png', mediaType: 'image/png', buffer: png });
+    const text = await f.uploads.save(1, { name: 'old.txt', mediaType: 'text/plain', buffer: Buffer.from('Remember this text.') });
+    done(await f.send(conversation.id, { content: 'Old question.', attachments: [old.id, text.id] }));
+    done(await f.send(conversation.id, { content: 'Previous question.', attachments: [previous.id] }));
+    done(await f.send(conversation.id, { content: 'Latest question.', attachments: [latest.id] }));
+    const input = f.fake.requests.at(-1)!.body.input as Array<{ role?: string; content?: Array<Record<string, unknown>> }>;
+    const users = input.filter(item => item.role === 'user');
+    expect(users[0].content).toEqual([
+      { type: 'input_text', text: 'Old question.' },
+      { type: 'input_text', text: 'Attachment: old.png\n[Omitted: older binary attachment. Reattach this file if needed.]' },
+      { type: 'input_text', text: 'Attachment: old.txt\nRemember this text.' },
+    ]);
+    expect(users[1].content?.filter(part => part.type === 'input_image')).toEqual([
+      { type: 'input_image', image_url: `data:image/png;base64,${png.toString('base64')}`, detail: 'low' },
+    ]);
+    expect(users[2].content?.filter(part => part.type === 'input_image')).toEqual([
+      { type: 'input_image', image_url: `data:image/png;base64,${png.toString('base64')}`, detail: 'auto' },
+    ]);
+    done(await f.send(conversation.id, { content: 'Multiple attachments.', attachments: [latest.id, text.id] }));
+    const multiple = f.fake.requests.at(-1)!.body.input as Array<{ role?: string; content?: Array<Record<string, unknown>> }>;
+    expect(multiple.filter(item => item.role === 'user').at(-1)!.content?.filter(part => part.type === 'input_image'))
+      .toEqual([{ type: 'input_image', image_url: `data:image/png;base64,${png.toString('base64')}`, detail: 'low' }]);
+  });
+
+  it('shares one encoded-byte budget across history and prioritizes the newest attachment', async () => {
+    const f = await fixture(['Earlier answer.', 'Newest answer.']);
+    const conversation = await f.create();
+    const bytes = Buffer.alloc(4 * 1024 * 1024);
+    Buffer.from('%PDF-1.7\n').copy(bytes);
+    const older = await f.uploads.save(1, { name: 'older.pdf', mediaType: 'application/pdf', buffer: bytes });
+    const latest = await f.uploads.save(1, { name: 'latest.pdf', mediaType: 'application/pdf', buffer: bytes });
+    done(await f.send(conversation.id, { content: 'Earlier question.', attachments: [older.id] }));
+    done(await f.send(conversation.id, { content: 'Newest question.', attachments: [latest.id] }));
+    const input = f.fake.requests.at(-1)!.body.input as Array<{ role?: string; content?: Array<Record<string, unknown>> }>;
+    const users = input.filter(item => item.role === 'user');
+    expect(users[0].content).toEqual([
+      { type: 'input_text', text: 'Earlier question.' },
+      { type: 'input_text', text: 'Attachment: older.pdf\n[Omitted: attachment replay budget exceeded. Reattach this file if needed.]' },
+    ]);
+    const files = users.flatMap(item => item.content ?? []).filter(part => part.type === 'input_file');
+    expect(files.map(file => file.filename)).toEqual(['latest.pdf']);
+    expect(Buffer.from((files[0].file_data as string).split(',')[1], 'base64').equals(bytes)).toBe(true);
+  });
+});
 
 describe('chat write job monitoring', () => {
   it('returns own job status and the latest subagent snapshot with job links in both tool events', async () => {
@@ -643,6 +698,57 @@ describe('conversation consumer contract', () => {
     await expectError(await f.request(`/conversations/${conversation.id}`, 'GET', undefined, 2), 404, 'not_found');
   });
 
+  it.each([
+    { status: 429, errorCode: 'rate_limited' },
+    { status: 400, errorCode: 'invalid_request' },
+    { status: 500, errorCode: 'provider_error' },
+  ] as const)('exposes a safe $errorCode reason for provider HTTP $status in live SSE, replay and stored messages', async ({ status, errorCode }) => {
+    const privateMessage = `PRIVATE_PROVIDER_FAILURE_${status}`;
+    const privateRequestId = `req_PRIVATE_PROVIDER_${status}`;
+    const f = await fixture([{ error: { status, message: privateMessage, requestId: privateRequestId } }]);
+    const conversation = await f.create();
+    const failed = await f.send(conversation.id, { content: 'Explain citrine' });
+    expect(failed.at(-1)).toMatchObject({
+      event: 'error', data: { code: 'generation_failed', errorCode, message: expect.any(String) },
+    });
+    const detail = await f.detail(conversation.id);
+    const assistant = detail.messages[1];
+    expect(assistant).toMatchObject({ status: 'failed', errorCode, content: '' });
+    expect(f.conversations.message(conversation.id, assistant.id, 1)).toMatchObject({ status: 'failed', errorCode });
+    const replay = await f.stream(`/generations/${failed[0].data.generationId}/events`, 'GET');
+    expect(replay.at(-1)).toMatchObject({ event: 'error', data: { code: 'generation_failed', errorCode } });
+    for (const response of [failed, replay, detail]) {
+      expect(JSON.stringify(response)).not.toContain(privateMessage);
+      expect(JSON.stringify(response)).not.toContain(privateRequestId);
+    }
+    expect(f.fake.requests).toHaveLength(1);
+  });
+
+  it('reports real agent turn exhaustion without exposing its internal error and clears the reason after checkpoint retry', async () => {
+    let finish = false;
+    const f = await fixture(() => finish ? 'Finished after retry.' : { name: 'read_note', arguments: { path: 'wiki/facts.md' } });
+    const conversation = await f.create();
+    const failed = await f.send(conversation.id, { content: 'Explain citrine' });
+    expect(failed.at(-1)).toMatchObject({
+      event: 'error', data: { code: 'generation_failed', errorCode: 'turn_limit', message: expect.any(String) },
+    });
+    const detail = await f.detail(conversation.id);
+    const assistant = detail.messages[1];
+    expect(assistant).toMatchObject({ status: 'failed', errorCode: 'turn_limit', resumable: true });
+    expect(f.conversations.message(conversation.id, assistant.id, 1)).toMatchObject({ status: 'failed', errorCode: 'turn_limit' });
+    const replay = await f.stream(`/generations/${failed[0].data.generationId}/events`, 'GET');
+    expect(replay.at(-1)).toMatchObject({ event: 'error', data: { errorCode: 'turn_limit' } });
+    for (const response of [failed, replay, detail]) expect(JSON.stringify(response)).not.toContain('Dony exceeded maxTurns');
+    expect(f.fake.requests[1].body.input).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'function_call_output', output: expect.stringContaining('yellow quartz') }),
+    ]));
+    finish = true;
+    const resumed = await f.stream(`/conversations/${conversation.id}/messages/${assistant.id}/retry`);
+    expect(done(resumed)).toMatchObject({ id: assistant.id, status: 'completed', errorCode: null, content: 'Finished after retry.' });
+    expect((await f.detail(conversation.id)).messages[1]).toMatchObject({ id: assistant.id, status: 'completed', errorCode: null });
+    expect(f.conversations.message(conversation.id, assistant.id, 1)).toMatchObject({ status: 'completed', errorCode: null });
+  });
+
   it('resumes a failed tool turn on the same assistant with preserved provider input, text and citation ref', async () => {
     let fail = true;
     const preserved = '[Citrine](wiki/facts.md#facts) is yellow. ';
@@ -654,9 +760,9 @@ describe('conversation consumer contract', () => {
     const conversation = await f.create();
     const originalSha = await f.repo.headSha();
     const failed = await f.send(conversation.id, { content: 'Explain citrine', model: 'gpt-6-luna', effort: 'low' });
-    expect(failed.at(-1)).toMatchObject({ event: 'error', data: { code: 'generation_failed' } });
+    expect(failed.at(-1)).toMatchObject({ event: 'error', data: { code: 'generation_failed', errorCode: 'invalid_request' } });
     const before = (await f.detail(conversation.id)).messages;
-    expect(before[1]).toMatchObject({ status: 'failed', content: preserved, resumable: true });
+    expect(before[1]).toMatchObject({ status: 'failed', errorCode: 'invalid_request', content: preserved, resumable: true });
     expect(f.checkpoints.get(`message:${before[1].id}`)).toMatchObject({ text: preserved });
     const originalInput = f.fake.requests[1].body.input;
     const wt = await f.repo.createWorktree('change-before-chat-resume');
@@ -669,7 +775,7 @@ describe('conversation consumer contract', () => {
     const requestCount = f.fake.requests.length;
     const resumed = await f.stream(`/conversations/${conversation.id}/messages/${before[1].id}/retry`);
     expect(done(resumed)).toMatchObject({
-      id: before[1].id, content: `${preserved}It is quartz.`, status: 'completed', model: 'gpt-6-luna', effort: 'low', resumable: false,
+      id: before[1].id, content: `${preserved}It is quartz.`, status: 'completed', errorCode: null, model: 'gpt-6-luna', effort: 'low', resumable: false,
       citations: [{ path: 'wiki/facts.md', heading: 'Facts', anchor: 'facts', sha: originalSha }],
     });
     expect(f.fake.requests[requestCount].body).toMatchObject({ model: 'gpt-6-luna', reasoning: { effort: 'low' }, input: originalInput });
@@ -681,6 +787,8 @@ describe('conversation consumer contract', () => {
     expect(resumed.filter(frame => frame.event === 'delta').slice(1).every(frame => frame.data.replace === undefined)).toBe(true);
     expect(await f.stream(`/generations/${resumed[0].data.generationId}/events`, 'GET')).toEqual(resumed);
     expect((await f.detail(conversation.id)).messages.map(message => message.id)).toEqual(before.map(message => message.id));
+    expect((await f.detail(conversation.id)).messages[1].errorCode).toBeNull();
+    expect(f.conversations.message(conversation.id, before[1].id, 1)?.errorCode).toBeNull();
     expect(f.checkpoints.get(`message:${before[1].id}`)).toBeUndefined();
   });
 
@@ -692,11 +800,12 @@ describe('conversation consumer contract', () => {
     const conversation = await f.create();
     await f.send(conversation.id, { content: 'Original question' });
     const before = (await f.detail(conversation.id)).messages;
-    expect(before[1]).toMatchObject({ status: 'failed', content: '', resumable: false });
+    expect(before[1]).toMatchObject({ status: 'failed', errorCode: 'invalid_request', content: '', resumable: false });
     expect(f.checkpoints.get(`message:${before[1].id}`)).toBeUndefined();
     const resumed = await f.stream(`/conversations/${conversation.id}/messages/${before[1].id}/retry`);
-    expect(done(resumed)).toMatchObject({ content: 'Fresh answer.', resumable: false });
+    expect(done(resumed)).toMatchObject({ content: 'Fresh answer.', errorCode: null, resumable: false });
     expect(done(resumed).id).not.toBe(before[1].id);
+    expect((await f.detail(conversation.id)).messages[1].errorCode).toBeNull();
     expect(f.fake.requests[1].body.input).toEqual([{ role: 'user', content: 'Original question' }]);
     expect(resumed.filter(frame => frame.event === 'delta').every(frame => !frame.data.replace)).toBe(true);
   });
@@ -762,18 +871,19 @@ describe('conversation consumer contract', () => {
     expect(f.checkpoints.get(`message:${assistant.id}`)).toMatchObject({ text: preserved });
     const generationId = assistant.generationId!;
     expect((await f.request(`/generations/${generationId}/cancel`, 'POST')).status).toBe(204);
-    expect(frames(await response.text()).at(-1)).toMatchObject({ event: 'error', data: { code: 'generation_cancelled' } });
+    expect(frames(await response.text()).at(-1)).toMatchObject({ event: 'error', data: { code: 'generation_cancelled', errorCode: 'cancelled' } });
     await oldCaught.promise;
-    expect((await f.detail(conversation.id)).messages[1]).toMatchObject({ id: assistant.id, status: 'cancelled', resumable: true });
+    expect((await f.detail(conversation.id)).messages[1]).toMatchObject({ id: assistant.id, status: 'cancelled', errorCode: 'cancelled', resumable: true });
+    expect(f.conversations.message(conversation.id, assistant.id, 1)?.errorCode).toBe('cancelled');
     const resumed = await f.stream(`/conversations/${conversation.id}/messages/${assistant.id}/retry`);
     expect(f.fake.requests[2].body.input).toEqual(originalInput);
     expect(resumed.filter(frame => frame.event === 'delta')[0].data).toEqual({ text: preserved, replace: true });
-    expect(done(resumed)).toMatchObject({ id: assistant.id, content: `${preserved}Resumed completion.`, status: 'completed', resumable: false });
+    expect(done(resumed)).toMatchObject({ id: assistant.id, content: `${preserved}Resumed completion.`, status: 'completed', errorCode: null, resumable: false });
     providerRelease.resolve();
     oldRelease.resolve();
     await oldFinished.promise;
     await new Promise<void>(resolve => setImmediate(resolve));
-    expect((await f.detail(conversation.id)).messages[1]).toMatchObject({ id: assistant.id, content: `${preserved}Resumed completion.`, status: 'completed', resumable: false });
+    expect((await f.detail(conversation.id)).messages[1]).toMatchObject({ id: assistant.id, content: `${preserved}Resumed completion.`, status: 'completed', errorCode: null, resumable: false });
     expect(f.checkpoints.get(`message:${assistant.id}`)).toBeUndefined();
   });
 

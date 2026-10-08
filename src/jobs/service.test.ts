@@ -24,9 +24,9 @@ const git = promisify(execFile);
 const author = { name: 'Requesting User', email: 'user@example.com' };
 const fixtures: Array<{ dir: string; db: Db; jobs: WriteJobsService }> = [];
 
-async function fixture() {
+async function fixture(jobsAutostart = true) {
   const dir = await mkdtemp(join(tmpdir(), 'llmwiki-jobs-'));
-  const config = loadConfig({ NODE_ENV: 'test', DATA_DIR: dir });
+  const config = loadConfig({ NODE_ENV: 'test', DATA_DIR: dir, JOBS_AUTOSTART: String(jobsAutostart) });
   const log = pino({ level: 'silent' });
   const db = openDb(':memory:');
   runMigrations(db);
@@ -46,7 +46,7 @@ async function fixture() {
   const users = new UsersService(new UsersRepository(db));
   const events = new EventsService();
   const acl = new AclService(db, users, new AuditService(db));
-  const jobs = new WriteJobsService(new WriteJobsRepository(db), agent, indexer, repo, users, log, events, acl);
+  const jobs = new WriteJobsService(new WriteJobsRepository(db), agent, indexer, repo, users, log, events, acl, undefined, config);
   const ctx = { config, db, log, repo, agent, indexer, users, jobs, events };
   fixtures.push({ dir, db, jobs });
   return { dir, ctx, jobs };
@@ -80,6 +80,47 @@ afterEach(async () => {
 });
 
 describe('WriteJobsService with real git and a Dony double', () => {
+  it('keeps startup, submitted and retried agent jobs queued when autostart is disabled', async () => {
+    const { ctx, jobs } = await fixture(false);
+    const before = await ctx.repo.headSha();
+    const startup = jobs.submit({ userId: 1, input: 'Waiting before startup', source: 'mcp' });
+    const canceled = jobs.submit({ userId: 1, input: 'Retry while paused', source: 'chat' });
+    jobs.cancel(canceled.id);
+    jobs.start();
+    const submitted = jobs.submit({ userId: 1, input: 'Waiting after startup', source: 'web' });
+    const retried = jobs.retry(canceled.id);
+    jobs.start();
+    const waited = await jobs.waitForSettled(startup.id, 20);
+    expect(waited).toMatchObject({ timedOut: true, job: { status: 'queued', startedAt: null } });
+    for (const job of [startup, submitted, retried]) {
+      expect(jobs.get(job.id)).toMatchObject({ status: 'queued', startedAt: null });
+      expect(jobs.events(job.id).map(event => event.phase)).toEqual(['queued']);
+    }
+    expect(jobs.events(retried.id)[0]?.detail).toMatchObject({ retryOf: canceled.id });
+    expect(ctx.agent.runWrite).not.toHaveBeenCalled();
+    expect(ctx.agent.resolveConflicts).not.toHaveBeenCalled();
+    expect(await ctx.repo.headSha()).toBe(before);
+  });
+
+  it.each(['running', 'merging'] as const)('leaves interrupted %s jobs and their children untouched when autostart is disabled', async (status) => {
+    const { ctx, jobs } = await fixture(false);
+    const repository = new WriteJobsRepository(ctx.db);
+    const job = jobs.submit({ userId: 1, input: 'Interrupted work', source: 'chat' });
+    repository.markRunning(job.id, job.createdAt);
+    if (status === 'merging') repository.markMerging(job.id, 'Pending merge', []);
+    jobs.phase(job.id, 'editing', { subagent: {
+      id: newId(), name: 'Writer', status: 'running', files: ['wiki/plan.md'],
+      toolCalls: 3, startedAt: job.createdAt,
+    } });
+    const before = jobs.get(job.id);
+    const events = jobs.events(job.id);
+    jobs.start();
+    await jobs.stop();
+    expect(jobs.get(job.id)).toEqual(before);
+    expect(jobs.events(job.id)).toEqual(events);
+    expect(ctx.agent.runWrite).not.toHaveBeenCalled();
+  });
+
   it.each(['queued', 'running', 'merging', 'succeeded'] as const)('reuses persisted %s jobs by dedupe key without new events', async (status) => {
     const { ctx, jobs } = await fixture();
     const input = { userId: 1, input: 'Remember once', source: 'chat' as const, dedupeKey: 'conversation:turn:content' };

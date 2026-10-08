@@ -70,8 +70,20 @@ export class DreamingService implements OnApplicationShutdown {
     private readonly comparison: ComparisonService,
   ) {}
 
+  recoverInterrupted(): void {
+    // Only HTTP startup calls recovery; CLI contexts may share a live server's DB.
+    if (activeRuns.has(this.repo)) return;
+    const interrupted = this.runs.failInterrupted(
+      'Dreaming interrupted by engine restart; run dreaming again to retry.',
+      new Date().toISOString(),
+    );
+    for (const runId of interrupted) {
+      this.events.publish({ type: 'dream.updated', runId, status: 'failed' }, 'all');
+    }
+  }
+
   start(): void {
-    if (this.scheduler) return;
+    if (this.config.jobsAutostart === false || this.scheduler) return;
     this.scheduler = new Cron(this.config.dreamCron, {
       timezone: this.config.tzDream,
       protect: true,
@@ -277,7 +289,7 @@ export class DreamingService implements OnApplicationShutdown {
         if (!result.pushed) log.info({ reason: result.reason }, 'Dreaming backup push skipped');
       } catch (error) {
         run.push = { status: 'failed', remote: null, sha: null, at: new Date().toISOString(), reason: errorText(error) };
-        fail(error);
+        log.warn({ runId: run.id, err: error }, 'Dreaming backup push failed');
       }
       run.finishedAt = new Date().toISOString();
       if (aclWarning) run.summary = [aclWarning, run.summary].filter(Boolean).join('\n\n');

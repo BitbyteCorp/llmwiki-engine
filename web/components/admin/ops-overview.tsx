@@ -10,6 +10,7 @@ import { EmptyState, ErrorNotice, Loading, formatDate } from "@/components/commo
 import { Button } from "@/components/ui/button"
 import { useViewLocation } from "@/components/workspace/view-location"
 import { useOpsActions } from "./ops-actions"
+import { UsageCard } from "./usage-card"
 
 function Section({ title, icon, children, actions }: { title: string; icon: ReactNode; children: ReactNode; actions?: ReactNode }) {
   return <section className="min-w-0 space-y-2"><div className="flex h-7 items-center justify-between gap-2 border-b"><h2 className="flex items-center gap-1.5 text-label-13 font-semibold">{icon}{title}</h2>{actions}</div>{children}</section>
@@ -41,10 +42,11 @@ export function OpsOverview() {
   const data = ops.data
   return <div className="space-y-3">
     <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-2"><p className="text-label-13 text-muted-foreground">{connection === "connected" ? "실시간 변경을 수신하고 있습니다." : "실시간 연결 대기 중 · 새로고침으로 최신 상태를 확인하세요."}</p><Button variant="outline" size="sm" onClick={refresh} disabled={ops.isFetching || jobs.isFetching || ready.isFetching}><RefreshCw className="size-4" />새로고침</Button></div>
+    {data?.jobsAutostart === false && <p role="status" className="rounded-md border border-warning/30 bg-warning/10 px-3 py-2 text-label-13 text-warning">자동 실행 꺼짐 · 대기 작업과 예약 실행이 일시 중지되어 있습니다.</p>}
     {ops.isPending && <Loading label="운영 상태를 불러오는 중…" />}
     {ops.error && <div className="space-y-3"><ErrorNotice error={ops.error} /><Button variant="outline" onClick={() => void ops.refetch()}>운영 상태 다시 시도</Button></div>}
     <Section title="서비스 준비 상태" icon={<ShieldCheck className="size-3.5" />}>
-      {ready.isPending ? <Loading label="준비 상태를 확인하는 중…" /> : ready.error ? <div className="space-y-2"><p className="text-label-13 font-medium text-destructive">준비되지 않았거나 상태를 확인할 수 없습니다.</p><ErrorNotice error={ready.error} /><Button size="sm" variant="outline" onClick={() => void ready.refetch()}>준비 상태 다시 확인</Button></div> : ready.data && <><p role="status" className="text-label-13 font-medium text-primary">정상 · /readyz</p><dl className="grid grid-cols-1 gap-x-6 gap-y-1.5 text-label-13 @2xl/settings-panel:grid-cols-2 @5xl/settings-panel:grid-cols-4"><Field label="초기 색인">{ready.data.initialIndex === "ready" ? "준비 완료" : ready.data.initialIndex}</Field>{(["database", "repository", "index"] as const).map(key => <Field key={key} label={{ database: "데이터베이스", repository: "저장소", index: "검색 색인" }[key]}>{ready.data.checks[key] ? "정상" : "오류"}</Field>)}</dl></>}
+      {ready.isPending ? <Loading label="준비 상태를 확인하는 중…" /> : ready.error ? <div className="space-y-2"><p className="text-label-13 font-medium text-destructive">준비되지 않았거나 상태를 확인할 수 없습니다.</p><ErrorNotice error={ready.error} /><Button size="sm" variant="outline" onClick={() => void ready.refetch()}>준비 상태 다시 확인</Button></div> : ready.data && <><p role="status" className="text-label-13 font-medium text-primary">정상 · /readyz</p><dl className="grid grid-cols-1 gap-x-6 gap-y-1.5 text-label-13 @2xl/settings-panel:grid-cols-2 @5xl/settings-panel:grid-cols-4"><Field label="초기 색인">{ready.data.initialIndex === "ready" ? "준비 완료" : "자동 색인 생략"}</Field>{(["database", "repository", "index"] as const).map(key => <Field key={key} label={{ database: "데이터베이스", repository: "저장소", index: "검색 색인" }[key]}>{ready.data.checks[key] ? "정상" : "오류"}</Field>)}</dl></>}
     </Section>
     {data && <>
       <Section title="쓰기 작업 큐" icon={<Activity className="size-3.5" />}>
@@ -73,6 +75,7 @@ export function OpsOverview() {
         {data.backup.lastAttempt ? <dl className="grid grid-cols-1 gap-x-6 gap-y-1.5 text-label-13 @2xl/settings-panel:grid-cols-2"><Field label="최근 시도">{formatDate(data.backup.lastAttempt.push.at ?? data.backup.lastAttempt.startedAt)}</Field><Field label="결과">{pushLabels[data.backup.lastAttempt.push.status]}</Field><Field label="원격 저장소">{data.backup.lastAttempt.push.remote ?? "설정 없음"}</Field><Field label="push 커밋"><Sha value={data.backup.lastAttempt.push.sha} /></Field>{data.backup.lastAttempt.push.reason && <Field label="결과 사유">{data.backup.lastAttempt.push.reason}</Field>}<Field label="최근 성공">{formatDate(data.backup.lastSuccess?.push.at ?? null)}</Field></dl> : <EmptyState title="원격 push 기록이 없습니다" description="꿈꾸기 실행 후 백업 결과를 확인할 수 있습니다." />}
       </Section>
     </>}
+    <UsageCard />
   </div>
 }
 

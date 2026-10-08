@@ -579,4 +579,61 @@ describe('worktree writing and conflicts', () => {
       { error: expect.stringContaining('Only the listed conflict files may be accessed') },
     ]);
   });
+
+  it('keeps revision snapshots across retries and resolves tail knowledge through the local model tool loop', async () => {
+    const path = 'wiki/conflict.md';
+    const prefix = 'kept fact\n'.repeat(300);
+    const revisions: Record<string, string> = {
+      base: prefix + 'base tail knowledge\n',
+      'work/test': prefix + 'base tail knowledge\nwork tail knowledge\n',
+      main: prefix + 'base tail knowledge\nmain tail knowledge\n',
+    };
+    let content = prefix + '<<<<<<< HEAD\nwork tail knowledge\n=======\nmain tail knowledge\n>>>>>>> main\n';
+    const reads: string[] = [];
+    const { agent, repo, fake } = await fixture((request, index) => {
+      const input = request.body.input as Array<{ content?: string; type?: string; output?: string }>;
+      if (index < 2) {
+        const file = JSON.parse(input[0]!.content!).files[0];
+        for (const version of ['base', 'workBranch', 'main', 'conflicted']) {
+          expect(file[version]).toMatchObject({ content: prefix, nextOffset: 300, truncated: true });
+        }
+        if (index === 0) {
+          for (const ref of Object.keys(revisions)) revisions[ref] = 'changed after snapshot\n';
+          return '아직 충돌을 해결하지 못했다.';
+        }
+        return { functionCalls: [
+          ...['base', 'workBranch', 'main'].map((version) => ({ name: 'read_conflict_version', arguments: { path, version, offset: 300 }, call_id: version })),
+          { name: 'read_file', arguments: { path, offset: 300 }, call_id: 'conflicted' },
+        ] };
+      }
+      if (index === 2) {
+        const outputs = new Map(input.filter((item) => item.type === 'function_call_output')
+          .map((item) => {
+            const page = JSON.parse(item.output!);
+            return [page.version ?? 'conflicted', page.content] as const;
+          }));
+        expect(outputs.get('base')).toBe('base tail knowledge\n');
+        expect(outputs.get('workBranch')).toBe('base tail knowledge\nwork tail knowledge\n');
+        expect(outputs.get('main')).toBe('base tail knowledge\nmain tail knowledge\n');
+        expect(outputs.get('conflicted')).toContain('<<<<<<< HEAD');
+        return { name: 'write_file', arguments: {
+          path, content: prefix + outputs.get('workBranch') + (outputs.get('main') as string).replace('base tail knowledge\n', ''),
+        } };
+      }
+      return '양쪽의 꼬리 지식을 보존했다.';
+    });
+    repo.readFile = async (readPath, ref = 'main') => {
+      if (readPath !== path) return null;
+      reads.push(ref);
+      return revisions[ref] ?? null;
+    };
+    const wt = {
+      branch: 'work/test', baseSha: 'base', read: async () => content,
+      write: async (_path: string, value: string) => { content = value; },
+    } as unknown as Worktree;
+    await agent.resolveConflicts(wt, [path]);
+    expect(reads.sort()).toEqual(['base', 'main', 'work/test']);
+    expect(fake.requests).toHaveLength(4);
+    expect(content).toBe(prefix + 'base tail knowledge\nwork tail knowledge\nmain tail knowledge\n');
+  });
 });
