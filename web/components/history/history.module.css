@@ -26,6 +26,7 @@
   .gutter { display: none; }
   .blameGroupHeader { display: table-row; }
   .blame .blameGroupHeader td { padding: 4px 8px; background: var(--muted); border-top: 1px solid var(--border); border-left: 4px solid var(--link); }
+  .blame .blameGroupHeader:first-child td { border-top: 0; }
   .blameGroupMeta { white-space: normal; }
   .blameNumber { left: 0; min-width: 2.5rem; width: 2.5rem; }
   .blameContent { width: calc(100% - 2.5rem); white-space: pre-wrap; overflow-wrap: anywhere; }

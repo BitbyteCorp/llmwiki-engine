@@ -3,7 +3,7 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { Command } from 'cmdk'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useRouter } from 'next/navigation'
+import { usePathname, useRouter, useSearchParams } from 'next/navigation'
 import { useTheme } from 'next-themes'
 import { api, type Note } from '@/lib/api'
 import { askAgent, openChat } from '@/lib/chat-context'
@@ -38,6 +38,11 @@ export function Palettes({ mode, setMode, admin, selectPanel, toggleSidebar, tog
   const queryClient = useQueryClient()
   const activePath = workspace.activePath
   const activeNotePath = isGraphTab(activePath) ? '' : activePath
+  const pathname = usePathname()
+  const searchParams = useSearchParams()
+  const isHistoryRoute = pathname === '/history' || pathname.startsWith('/history/')
+  const historyRoutePath = isHistoryRoute ? searchParams.get('path') : null
+  const historyNotePath = historyRoutePath || activeNotePath
   const navigation = useRouter()
   const router = { push: (href: string) => { if (confirmEditorLeave()) navigation.push(href) } }
   const { resolvedTheme, setTheme } = useTheme()
@@ -121,7 +126,7 @@ export function Palettes({ mode, setMode, admin, selectPanel, toggleSidebar, tog
     { id: 'close-other-groups', label: '다른 편집 그룹 모두 닫기', keywords: ['Close Other Editor Groups'], disabled: workspace.groupOrder.length < 2, action: () => { for (const groupId of workspace.groupOrder) if (groupId !== workspace.activeGroupId) workspace.closeGroup(groupId) } },
     { id: 'open-side', label: '현재 노트 옆 그룹에 열기', keywords: ['Open Note Side Group'], action: () => workspace.openNote(activePath, { group: 'side' }) },
     { id: 'close-others', label: '다른 탭 모두 닫기', keywords: ['Close Other Tabs'], action: () => workspace.closeOthers(activePath) },
-    { id: 'note-history', label: '이 노트의 변경 이력', keywords: ['Note History Follow Rename'], action: () => router.push(`/history?path=${encodeURIComponent(activePath)}&follow=1`) },
+    { id: 'note-history', label: '이 노트의 변경 이력', keywords: ['Note History Follow Rename'], action: () => router.push(`/history?path=${encodeURIComponent(historyNotePath)}&follow=1`) },
     { id: 'activity-timeline', label: '전체 변경 활동', keywords: ['Activity Timeline History', '이력'], action: () => router.push('/history') },
     { id: 'history-journal', label: '일기', keywords: ['Journal Diary'], action: () => router.push('/journal') },
     { id: 'history-dreams', label: '꿈꾸기 기록', keywords: ['Dreaming Runs'], action: () => router.push('/dreams') },
@@ -130,7 +135,7 @@ export function Palettes({ mode, setMode, admin, selectPanel, toggleSidebar, tog
     { id: 'theme', label: '밝은 / 어두운 테마 전환', keywords: ['Toggle Theme Dark Light'], action: () => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark') },
     { id: 'system-theme', label: '시스템 테마 사용', keywords: ['System Theme'], action: () => setTheme('system') },
     { id: 'help', label: '단축키 도움말', keywords: ['Keyboard Help'], action: () => setMode('help') },
-  ].filter(command => (activePath || !['pin', 'close', 'close-others'].includes(command.id)) && (activeNotePath || !['open-side', 'note-history', 'favorite', 'reveal'].includes(command.id)))
+  ].filter(command => (activePath || !['pin', 'close', 'close-others'].includes(command.id)) && (activeNotePath || !['open-side', 'favorite', 'reveal'].includes(command.id)) && (historyNotePath || command.id !== 'note-history'))
   const suggestedTitles = new Map(suggestions.data?.filter(note => !isGraphTab(note.path)).map(note => [note.path, note.title]) ?? [])
   const files = [...new Set([...suggestions.data?.map(note => note.path) ?? [], ...workspace.recentPaths, ...tree.data?.files ?? []])].filter(path => !isGraphTab(path))
   return <dialog ref={dialog} aria-label={renderedMode === 'quickopen' ? '노트 빠르게 열기' : renderedMode === 'help' ? '단축키 도움말' : '명령 팔레트'} className="workspace-dialog w-[min(36rem,calc(100vw-2rem))] rounded-lg border bg-popover p-0 text-popover-foreground shadow-xl" onCancel={event => { event.preventDefault(); if (!composing.current) setMode(null) }} onClick={event => { if (event.target === event.currentTarget) { const rect = event.currentTarget.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) setMode(null) } }}>
