@@ -247,7 +247,8 @@ export interface HistoryCommitDetail { commit: CommitInfo; files: FileChange[]; 
 export interface HistoryComparison { base: string; head: string; files: FileChange[]; patch: string }
 export interface HistoryRevertPreview { files: FileChange[]; patch: string }
 export interface HistoryRevertResult { jobId: string; mergeSha: string }
-export interface JobEvent { phase: 'queued' | 'preparing' | 'editing' | 'committing' | 'merging' | 'resolving_conflict' | 'indexing' | 'cleanup' | 'done' | 'failed'; at: string; detail: Record<string, unknown> | null }
+export interface JobSubagent { id: string; name: string; status: 'running' | 'completed' | 'failed' | 'cancelled'; files: string[]; toolCalls: number; result?: string; error?: string }
+export interface JobEvent { phase: 'queued' | 'preparing' | 'editing' | 'committing' | 'merging' | 'resolving_conflict' | 'indexing' | 'cleanup' | 'done' | 'failed'; at: string; detail: (Record<string, unknown> & { subagent?: JobSubagent }) | null }
 export interface JobDetail { job: WriteJob; user: Requester; commits: CommitInfo[]; events: JobEvent[] }
 export const historyApi = {
   list: (options: { path?: string; before?: string; limit?: number; follow?: boolean } = {}, signal?: AbortSignal) => request<{ commits: CommitInfo[] }>(`/api/history${query({ path: options.path, before: options.before, limit: options.limit ?? 30, follow: options.follow ? '1' : undefined })}`, { signal }),

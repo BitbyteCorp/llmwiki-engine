@@ -31,6 +31,8 @@ export interface FakeOpenAIRequest {
   body: Record<string, unknown>;
 }
 
+export type FakeResponder = (request: FakeOpenAIRequest, index: number) => FakeTurn | Promise<FakeTurn>;
+
 export interface FakeOpenAI {
   /** OpenAI client baseURL, including /v1. */
   url: string;
@@ -168,7 +170,7 @@ function json(res: ServerResponse, status: number, value: unknown): void {
   res.end(JSON.stringify(value));
 }
 
-export async function startFakeOpenAI(script: FakeScript = []): Promise<FakeOpenAI> {
+export async function startFakeOpenAI(script: FakeScript | FakeResponder = []): Promise<FakeOpenAI> {
   const requests: FakeOpenAIRequest[] = [];
   let nextTurn = 0;
   const server = createServer(async (req, res) => {
@@ -204,14 +206,14 @@ export async function startFakeOpenAI(script: FakeScript = []): Promise<FakeOpen
         return;
       }
       if (request.method === 'POST' && request.path === '/v1/responses') {
-        const turn = script[nextTurn];
+        const params = responseParameters.parse(request.body);
+        const index = nextTurn++;
+        const turn = typeof script === 'function' ? await script(request, index) : script[index];
         if (turn === undefined) {
           json(res, 400, { error: { type: 'invalid_request_error', code: 'fake_script_exhausted', message: 'Fake OpenAI response script exhausted' } });
           return;
         }
-        const params = responseParameters.parse(request.body);
-        nextTurn++;
-        const response = makeResponse(turn, nextTurn, params);
+        const response = makeResponse(turn, index + 1, params);
         if (request.body.stream === true) streamResponse(res, response);
         else json(res, 200, response);
         return;

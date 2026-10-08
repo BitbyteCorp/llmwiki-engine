@@ -5,6 +5,7 @@ import type { AgentService } from './agent.service.js';
 import type { AgentTool } from './agent.types.js';
 import type { AclService, AclUser } from '../acl/acl.service.js';
 import { visibleLog } from '../api/acl-history.js';
+import { SubagentPool } from './subagents.js';
 
 const writeInstructions = `
 지식 쓰기 작업을 작업 워크트리에서 완수한다. 기본 작성 규칙과 다음 절차를 모두 따른다.
@@ -19,6 +20,10 @@ const writeInstructions = `
 8. 태그는 영어 소문자이며 여러 노트에 재사용되는 넓은 주제로 선택한다. 기존의 더 넓은 태그가 적합한지 먼저 확인한다. 버전(v2, arxiv-v2), 일회성 실험·구현 세부 사항(guardrail), 임시 단계·프로젝트 상태는 태그로 만들지 않는다. 버전, 주장 범위, 실험 단계, 프로젝트 결정 맥락은 제목이나 본문에 적는다. 폴더는 큰 구조, 태그는 주제 분류, 위키링크와 색인은 큐레이션된 탐색이라는 역할을 중복하지 않는다.
 9. 변경 파일을 read_file로 다시 읽어 각 지식 단위의 정본 위치와 필요한 탐색 링크, 사실성, 금지된 섹션 제목, 지나치게 좁은 태그, 중복 속성, 읽기 상태 섹션, 비밀값·개인정보, 깨진 색인 링크, placeholder를 검토하고 고친다. 의미 단위마다 검토한 변경을 commit으로 커밋한다. 한 작업에 여러 커밋이 가능하며 메시지는 무엇을 왜 바꿨는지 한국어로 설명한다. author는 요청자, committer는 엔진의 도니 봇으로 도구가 기록한다.
 10. 직접 main 머지나 push를 하지 않는다. 엔진이 이후 직렬 머지, 충돌 해결, 재인덱싱, 워크트리 정리를 수행한다. 마지막 응답은 실제 반영한 각 지식 단위가 어느 파일에 정리되었는지와 주요 수정·거부·열린 쟁점을 간결한 한국어 요약으로만 설명한다. 아직 main에 머지되었다고 주장하지 않는다.
+
+## 위임
+독립적으로 수정할 대상 파일이 3개 이상이거나 작업이 크면 지식 단위와 의존성을 먼저 계획한 뒤 파일 소유권을 나누어 spawn_subagent로 병렬 위임한다. 단순한 단일 노트 쓰기는 직접 처리한다. files에는 정확한 저장소 상대 경로나 /로 끝나는 폴더 접두사를 주며 실행 중인 서브에이전트의 소유권을 겹치지 않는다. index.md, MEMORY.md, AGENTS.md, raw/는 위임할 수 없다. 공용 허브·색인 링크와 메모리, 전체 결과 검증 및 모든 커밋은 부모가 맡는다.
+spawn_subagent는 실행만 시작한다. subagent_status로 즉시 상태를 확인하고 wait_subagents로 결과를 기다린다. 필요하면 message_subagent로 다음 턴의 방향을 수정하거나 cancel_subagent로 취소한다. 서브에이전트는 커밋하거나 재위임할 수 없으며 실패해도 부모 작업은 계속된다. 완료 요약만 믿지 말고 read_file로 실제 파일을 검증·수정한다. 실행 중인 소유 경로는 부모도 수정·삭제·이동할 수 없고 모든 서브에이전트가 끝나기 전에는 커밋할 수 없다. 끝내기 전에 필요한 응답을 모두 기다린다. 부모가 종료하면 아직 실행 중인 서브에이전트는 취소되므로 미완료 작업을 완료로 설명하지 않는다.
 `;
 
 export async function runWrite(
@@ -28,12 +33,27 @@ export async function runWrite(
   author: { name: string; email: string },
   user?: AclUser,
 ): Promise<{ summary: string }> {
-  const result = await agent.runAgent({
-    instructions: `${await agent.baseInstructions(user, user ? (path) => wt.onPhase?.('editing', { sourcePath: path }) : undefined)}\n\n${writeInstructions}`,
-    input: JSON.stringify({ jobId: job.id, source: job.source, request: job.input }),
-    tools: agent.worktreeTools(wt, author, user),
+  const instructions = `${await agent.baseInstructions(user, user ? (path) => wt.onPhase?.('editing', { sourcePath: path }) : undefined)}\n\n${writeInstructions}`;
+  const pool = new SubagentPool({
+    agent, instructions, tools: agent.worktreeTools(wt, author, user), wt,
+    onChange: (snapshot) => {
+      // Task text never enters job events; result/error use the job's input visibility.
+      const { startedAt: _startedAt, finishedAt: _finishedAt, ...subagent } = snapshot;
+      wt.onPhase?.('editing', { subagent });
+    },
   });
-  return { summary: result.text.trim() };
+  try {
+    const result = await agent.runAgent({
+      instructions,
+      input: JSON.stringify({ jobId: job.id, source: job.source, request: job.input }),
+      tools: [...pool.parentTools(), ...pool.tools()],
+      maxTurns: 96,
+    });
+    return { summary: result.text.trim() };
+  } finally {
+    // No child may mutate the worktree during the worker's commit/merge/cleanup.
+    await pool.close();
+  }
 }
 
 const conflictInstructions = `

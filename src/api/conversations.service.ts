@@ -14,6 +14,8 @@ import { AclService } from '../acl/acl.service.js';
 import type { Db } from '../db/index.js';
 import { chatUser, messageSources, readableTurns, redactMessage } from './acl-chat.js';
 import { WriteJobsService } from '../jobs/write-jobs.service.js';
+import type { ChatWriteStatus, ChatWriteSubagent } from '../agent/agent.types.js';
+import { KnowledgeRepo } from '../knowledge/repo.js';
 
 @Injectable()
 export class ConversationsService implements OnModuleDestroy {
@@ -29,6 +31,7 @@ export class ConversationsService implements OnModuleDestroy {
     private readonly acl: AclService,
     @Inject(DB) private readonly db: Db,
     private readonly writeJobs: WriteJobsService,
+    private readonly repo: KnowledgeRepo,
     @Optional() private readonly audit?: AuditService,
   ) { this.presenceTimer.unref(); }
   onModuleDestroy(): void { clearInterval(this.presenceTimer); }
@@ -149,17 +152,81 @@ export class ConversationsService implements OnModuleDestroy {
         }
         emit('status',{phase:'answering'});
         assertAccess();
+        const writeStatus=async(jobId:string):Promise<ChatWriteStatus>=>{
+          signal.throwIfAborted();
+          this.access(id,userId,true);
+          assertAccess();
+          const job=this.writeJobs.get(jobId);
+          if(!job || job.userId!==userId) throw new Error('not found');
+          const current=chatUser(this.db,userId);
+          const visible=await this.writeJobs.visible(current,job);
+          signal.throwIfAborted();
+          this.access(id,userId,true);
+          assertAccess();
+          const events=this.writeJobs.events(jobId);
+          const paths=new Set(job.conflicts);
+          for(const event of events) {
+            if(typeof event.detail?.sourcePath==='string') paths.add(event.detail.sourcePath);
+            if(Array.isArray(event.detail?.sourcePaths)) for(const path of event.detail.sourcePaths) if(typeof path==='string') paths.add(path);
+          }
+          let restricted=visible!==job;
+          if(!restricted) {
+            try {
+              for(const sha of new Set([...job.commits,...(job.mergeSha ? [job.mergeSha] : [])])) {
+                const commit=await this.repo.show(sha);
+                for(let parent=0;parent<Math.max(1,commit.commit.parents.length);parent++) {
+                  const files=parent===0 ? commit.files : await this.repo.diffNames(commit.commit.parents[parent]!,commit.commit.sha);
+                  for(const file of files) {paths.add(file.path);if(file.oldPath) paths.add(file.oldPath);}
+                }
+              }
+            } catch { restricted=true; }
+          }
+          const subagents=new Map<string,ChatWriteSubagent>();
+          for(const event of events) {
+            const value=event.detail?.subagent;
+            if(!value || typeof value!=='object') continue;
+            const subagent=value as Record<string,unknown>;
+            if(typeof subagent.id!=='string' || typeof subagent.name!=='string'
+              || !['running','completed','failed','cancelled'].includes(String(subagent.status))
+              || !Array.isArray(subagent.files) || typeof subagent.toolCalls!=='number') continue;
+            const files=subagent.files.filter((path):path is string=>typeof path==='string');
+            const hidden=restricted || files.some(path=>!this.acl.canRead(current,path));
+            if(!hidden) for(const path of files) paths.add(path);
+            subagents.set(subagent.id,{
+              id:subagent.id,name:subagent.name,status:subagent.status as ChatWriteSubagent['status'],
+              files:files.filter(path=>this.acl.canRead(current,path)),toolCalls:subagent.toolCalls,
+              ...(!hidden && typeof subagent.result==='string' ? {result:subagent.result} : {}),
+              ...(!hidden && typeof subagent.error==='string' ? {error:subagent.error} : {}),
+            });
+          }
+          signal.throwIfAborted();
+          this.access(id,userId,true);
+          assertAccess();
+          const readablePaths=[...paths].filter(path=>this.acl.canRead(current,path));
+          for(const path of readablePaths) sources.add(path);
+          if(readablePaths.length) emit('sources',{paths:readablePaths});
+          return {jobId,status:visible.status,phase:events.at(-1)?.phase,summary:restricted ? null : visible.summary,error:restricted ? null : visible.error,
+            mergeSha:restricted ? null : visible.mergeSha,commits:restricted ? [] : visible.commits,...(subagents.size ? {subagents:[...subagents.values()]} : {})};
+        };
         const answer=await this.agent.answer(inputs,text=>{
           if(signal.aborted)return;
           partial+=text;this.repository.finish(assistant.id,partial,'running');emit('delta',{text});
         },signal,{user:actor,model,effort,context:user.context ?? undefined,summary,assertAccess,
-          ...(actor.role==='editor'||actor.role==='admin' ? {submitKnowledge:async(content:string)=>{
-            signal.throwIfAborted();
-            this.access(id,userId,true);
-            assertAccess();
-            const job=this.writeJobs.submit({userId,input:content,source:'chat',client:id,sourcePaths:[...sources]});
-            return {jobId:job.id,status:'queued' as const};
-          }} : {}),
+          ...(actor.role==='editor'||actor.role==='admin' ? {
+            submitKnowledge:async(content:string)=>{
+              signal.throwIfAborted();
+              this.access(id,userId,true);
+              assertAccess();
+              const job=this.writeJobs.submit({userId,input:content,source:'chat',client:id,sourcePaths:[...sources]});
+              return {jobId:job.id,status:'queued' as const};
+            },
+            getWriteStatus:writeStatus,
+            waitWrite:async(jobId:string,timeoutSeconds:number)=>{
+              await writeStatus(jobId);
+              const {timedOut}=await this.writeJobs.waitForSettled(jobId,timeoutSeconds*1000,signal);
+              return {...await writeStatus(jobId),timedOut};
+            },
+          } : {}),
           onSource:path=>{if(!signal.aborted){sources.add(path);emit('sources',{paths:[path]});}},
           onEvent:(event,data)=>{if(!signal.aborted)emit(event,data);}});
         if(signal.aborted)throw new Error('Cancelled');

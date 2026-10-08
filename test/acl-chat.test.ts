@@ -113,6 +113,7 @@ async function fixture(script: FakeScript = [], gate?: { received: () => void; r
       { provide: ConversationsRepository, useValue: repository }, { provide: CONFIG, useValue: config },
       { provide: DB, useValue: db }, { provide: LOGGER, useValue: log }, { provide: AclService, useValue: acl },
       { provide: AgentService, useValue: agent }, { provide: EventsService, useValue: events },
+      { provide: KnowledgeRepo, useValue: repo },
       { provide: WriteJobsService, useValue: writeJobs },
       { provide: NoteWriterService, useValue: writer }, { provide: AuditService, useValue: audit }],
   }).overrideGuard(SessionGuard).useValue({ canActivate(context: { switchToHttp(): { getRequest(): Request } }) {

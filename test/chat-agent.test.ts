@@ -173,6 +173,8 @@ describe('chat knowledge write authorization and errors', () => {
     const { agent, fake } = await fixture(['기록에는 편집 권한이 필요하다.']);
     await agent.answer([{ role: 'user', content: '이 내용을 위키에 기록해 줘.' }], () => {}, undefined, {
       submitKnowledge: async () => { throw new Error('Unauthorized submission'); },
+      getWriteStatus: async () => { throw new Error('Unauthorized status lookup'); },
+      waitWrite: async () => { throw new Error('Unauthorized wait'); },
       ...options,
     });
     expect((fake.requests[0]!.body.tools as Array<{ name: string }>).map(tool => tool.name)).toEqual(['search', 'read_note']);
@@ -203,6 +205,26 @@ describe('chat knowledge write authorization and errors', () => {
     expect(events.every(event => !('jobId' in event))).toBe(true);
     const outputs = (fake.requests.at(-1)!.body.input as Array<{ type: string; output?: string }>).filter(item => item.type === 'function_call_output');
     expect(JSON.parse(outputs.at(-1)!.output!)).toEqual({ error: 'Write queue unavailable' });
+  });
+
+  it('rejects invalid job IDs and waits exceeding the bounded timeout before accessing jobs', async () => {
+    const { agent, fake } = await fixture([
+      { name: 'get_write_status', arguments: { jobId: ' \n ' } },
+      { name: 'wait_write', arguments: { jobId: 'job-1', timeoutSeconds: 121 } },
+      '작업 요청이 올바르지 않습니다.',
+    ]);
+    let accessed = false;
+    await agent.answer([{ role: 'user', content: '기록 상태를 확인해 주세요.' }], () => {}, undefined, {
+      user: { id: 1, role: 'editor' },
+      submitKnowledge: async () => { throw new Error('Unexpected write'); },
+      getWriteStatus: async () => { accessed = true; throw new Error('Unexpected lookup'); },
+      waitWrite: async () => { accessed = true; throw new Error('Unexpected wait'); },
+    });
+    expect(accessed).toBe(false);
+    const outputs = (fake.requests.at(-1)!.body.input as Array<{ type: string; output?: string }>).filter(item => item.type === 'function_call_output');
+    expect(outputs.map(item => JSON.parse(item.output!).error)).toEqual([
+      expect.stringContaining('Too small'), expect.stringContaining('Too big'),
+    ]);
   });
 });
 

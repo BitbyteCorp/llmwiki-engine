@@ -84,6 +84,31 @@ export class WriteJobsService implements OnApplicationShutdown {
   get(id: string): WriteJob | null {
     return this.repository.get(id);
   }
+
+  async waitForSettled(id: string, timeoutMs: number, signal?: AbortSignal): Promise<{ job: WriteJob; timedOut: boolean }> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      signal?.throwIfAborted();
+      const job = this.repository.get(id);
+      if (!job) throw new Error('not found');
+      if (job.status === 'succeeded' || job.status === 'failed') return { job, timedOut: false };
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return { job, timedOut: true };
+      await new Promise<void>((resolve, reject) => {
+        const onAbort = () => {
+          clearTimeout(timer);
+          signal?.removeEventListener('abort', onAbort);
+          reject(signal?.reason);
+        };
+        const timer = setTimeout(() => {
+          signal?.removeEventListener('abort', onAbort);
+          resolve();
+        }, Math.min(1000, remaining));
+        signal?.addEventListener('abort', onAbort, { once: true });
+      });
+    }
+  }
+
   /** Public job projection: never return source text or metadata for hidden changes. */
   async visible(user: AclUser, job: WriteJob): Promise<WriteJob> {
     if (user.role === 'admin') return job;

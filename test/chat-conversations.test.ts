@@ -98,6 +98,7 @@ async function fixture(script: FakeScript, authorRole: 'viewer' | 'editor' = 'vi
       { provide: DB, useValue: db }, { provide: LOGGER, useValue: log },
       { provide: AclService, useValue: acl },
       { provide: AgentService, useValue: agent }, { provide: EventsService, useValue: events },
+      { provide: KnowledgeRepo, useValue: repo },
       { provide: WriteJobsService, useValue: jobs },
       { provide: UploadsService, useValue: { parts: async () => [], get: async () => { throw new Error('No upload in this fixture'); } } },
       { provide: ApiTokensService, useValue: tokens },
@@ -151,6 +152,146 @@ function done(result: Frame[]): Message {
   return result.at(-1)!.data.message as Message;
 }
 
+describe('chat write job monitoring', () => {
+  it('returns own job status and the latest subagent snapshot with job links in both tool events', async () => {
+    const args = { jobId: '' };
+    const f = await fixture([{ name: 'get_write_status', arguments: args }, 'The write is in progress.'], 'editor');
+    const conversation = await f.create();
+    const job = f.jobs.submit({ userId: 1, input: 'Record a fact.', source: 'chat', client: conversation.id });
+    args.jobId = job.id;
+    f.jobRepository.markRunning(job.id, new Date().toISOString());
+    const subagent = { id: 'sub-1', name: '정리', status: 'running', files: ['wiki/facts.md'], toolCalls: 1 };
+    f.jobs.phase(job.id, 'editing', { subagent });
+    f.jobs.phase(job.id, 'editing', { subagent: { ...subagent, status: 'completed', toolCalls: 3, result: '사실을 정리했다.', task: 'Private task text' } });
+    const result = await f.send(conversation.id, { content: 'Check my write.' });
+    const output = (f.fake.requests[1].body.input as Array<{ type: string; output?: string }>).find(item => item.type === 'function_call_output')!;
+    expect(JSON.parse(output.output!)).toEqual({
+      jobId: job.id, status: 'running', phase: 'editing', summary: null, error: null, mergeSha: null, commits: [],
+      subagents: [{ ...subagent, status: 'completed', toolCalls: 3, result: '사실을 정리했다.' }],
+    });
+    expect(result.filter(frame => frame.event === 'tool').map(frame => frame.data)).toEqual([
+      { name: 'get_write_status', state: 'start', summary: job.id, jobId: job.id },
+      { name: 'get_write_status', state: 'end', summary: job.id, jobId: job.id },
+    ]);
+    expect(JSON.stringify(f.fake.requests[1].body.input)).not.toContain('Private task text');
+  });
+
+  it('tracks commit paths so job-derived answers remain private to authorized conversation members', async () => {
+    const args = { jobId: '' };
+    const f = await fixture([{ name: 'get_write_status', arguments: args }, 'PRIVATE_JOB_RESULT'], 'editor');
+    const conversation = await f.create();
+    await f.request(`/conversations/${conversation.id}/members`, 'POST', { email: 'user2@example.test', role: 'viewer' });
+    const wt = await f.repo.createWorktree('job-status-private-result');
+    let sha: string;
+    try {
+      await wt.write('wiki/job-result.md', '# Job result\nPRIVATE_JOB_RESULT');
+      await wt.commit('Add private job result', { name: 'Fixture', email: 'fixture@example.test' });
+      await wt.fastForwardMain();
+      sha = await f.repo.headSha();
+    } finally { await wt.dispose(); }
+    f.acl.create({ prefix: 'wiki/job-result.md', subjectType: 'user', subject: '2', access: 'none' }, f.users.get(4)!);
+    const job = f.jobs.submit({ userId: 1, input: 'Record a fact.', source: 'chat', client: conversation.id });
+    args.jobId = job.id;
+    f.jobRepository.markMerging(job.id, 'PRIVATE_JOB_RESULT', [sha]);
+    f.jobRepository.markSucceeded(job.id, new Date().toISOString());
+    f.jobs.phase(job.id, 'done');
+    await f.send(conversation.id, { content: 'Check my write.' });
+    expect(JSON.stringify((await f.detail(conversation.id)).messages)).toContain('PRIVATE_JOB_RESULT');
+    expect(JSON.stringify((await f.detail(conversation.id, 2)).messages)).not.toContain('PRIVATE_JOB_RESULT');
+  });
+
+  it('omits summaries and subagent result text when current folder permissions hide the job input', async () => {
+    const args = { jobId: '' };
+    const f = await fixture([{ name: 'get_write_status', arguments: args }, 'Details are restricted.'], 'editor');
+    const conversation = await f.create();
+    f.acl.create({ prefix: 'wiki/updates.md', subjectType: 'user', subject: '1', access: 'none' }, f.users.get(4)!);
+    const job = f.jobs.submit({ userId: 1, input: 'PRIVATE_INPUT', source: 'chat', client: conversation.id, sourcePaths: ['wiki/updates.md'] });
+    args.jobId = job.id;
+    f.jobRepository.markMerging(job.id, 'PRIVATE_SUMMARY', []);
+    f.jobs.phase(job.id, 'editing', { subagent: {
+      id: 'sub-1', name: '정리', status: 'completed', files: ['wiki/updates.md'], toolCalls: 2, result: 'PRIVATE_RESULT', error: 'PRIVATE_ERROR',
+    } });
+    await f.send(conversation.id, { content: 'Check my write.' });
+    const output = (f.fake.requests[1].body.input as Array<{ type: string; output?: string }>).find(item => item.type === 'function_call_output')!;
+    expect(JSON.parse(output.output!)).toMatchObject({
+      jobId: job.id, status: 'merging', summary: null, subagents: [{ id: 'sub-1', name: '정리', status: 'completed', files: [], toolCalls: 2 }],
+    });
+    expect(output.output).not.toContain('PRIVATE_');
+  });
+
+  it.each(['get_write_status', 'wait_write'])('hides another requester job from %s', async name => {
+    const args = { jobId: '' };
+    const f = await fixture([{ name, arguments: args }, 'The job was not found.'], 'editor');
+    const conversation = await f.create();
+    const job = f.jobs.submit({ userId: 4, input: 'Other user private request.', source: 'chat' });
+    args.jobId = job.id;
+    await f.send(conversation.id, { content: 'Check a job.' });
+    const output = (f.fake.requests[1].body.input as Array<{ type: string; output?: string }>).find(item => item.type === 'function_call_output')!;
+    expect(JSON.parse(output.output!)).toEqual({ error: 'not found' });
+    expect(JSON.stringify(f.fake.requests[1].body.input)).not.toContain('Other user private request.');
+  });
+
+  it('waits for persisted success and reports the final outcome without timing out', async () => {
+    const args = { jobId: '', timeoutSeconds: 2 };
+    const f = await fixture([{ name: 'wait_write', arguments: args }, 'The write succeeded.'], 'editor');
+    const conversation = await f.create();
+    const job = f.jobs.submit({ userId: 1, input: 'Record a fact.', source: 'chat', client: conversation.id });
+    args.jobId = job.id;
+    f.jobRepository.markMerging(job.id, '사실을 기록했다.', []);
+    f.jobRepository.markSucceeded(job.id, new Date().toISOString());
+    f.jobs.phase(job.id, 'done');
+    const result = await f.send(conversation.id, { content: 'Wait for my write.' });
+    const output = (f.fake.requests[1].body.input as Array<{ type: string; output?: string }>).find(item => item.type === 'function_call_output')!;
+    expect(JSON.parse(output.output!)).toEqual({
+      jobId: job.id, status: 'succeeded', phase: 'done', summary: '사실을 기록했다.', error: null, mergeSha: null, commits: [], timedOut: false,
+    });
+    expect(result.filter(frame => frame.event === 'tool').map(frame => frame.data)).toEqual([
+      { name: 'wait_write', state: 'start', summary: job.id, jobId: job.id },
+      { name: 'wait_write', state: 'end', summary: job.id, jobId: job.id },
+    ]);
+  });
+
+  it('reports a timeout without settling or cancelling the write job', async () => {
+    const args = { jobId: '', timeoutSeconds: 0 };
+    const f = await fixture([{ name: 'wait_write', arguments: args }, 'The write is still running.'], 'editor');
+    const conversation = await f.create();
+    const job = f.jobs.submit({ userId: 1, input: 'Record a fact.', source: 'chat', client: conversation.id });
+    args.jobId = job.id;
+    await f.send(conversation.id, { content: 'Wait briefly.' });
+    const output = (f.fake.requests[1].body.input as Array<{ type: string; output?: string }>).find(item => item.type === 'function_call_output')!;
+    expect(JSON.parse(output.output!)).toMatchObject({ jobId: job.id, status: 'queued', phase: 'queued', timedOut: true });
+    expect(f.jobs.get(job.id)?.status).toBe('queued');
+  });
+
+  it('observes queued-to-success transitions and a bounded deadline while polling', async () => {
+    const f = await fixture([]);
+    const job = f.jobs.submit({ userId: 1, input: 'Record a fact.', source: 'chat' });
+    vi.useFakeTimers();
+    const waiting = f.jobs.waitForSettled(job.id, 2_000);
+    await vi.advanceTimersByTimeAsync(999);
+    f.jobRepository.markSucceeded(job.id, new Date().toISOString());
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(waiting).resolves.toMatchObject({ job: { id: job.id, status: 'succeeded' }, timedOut: false });
+    const pending = f.jobs.submit({ userId: 1, input: 'Pending fact.', source: 'chat' });
+    const deadline = f.jobs.waitForSettled(pending.id, 1_500);
+    await vi.advanceTimersByTimeAsync(1_500);
+    await expect(deadline).resolves.toMatchObject({ job: { id: pending.id, status: 'queued' }, timedOut: true });
+    expect(vi.getTimerCount()).toBe(0);
+    vi.useRealTimers();
+  });
+
+  it('cancels a pending wait promptly without cancelling the write job', async () => {
+    const f = await fixture([]);
+    const job = f.jobs.submit({ userId: 1, input: 'Record a fact.', source: 'chat' });
+    const controller = new AbortController();
+    const waiting = f.jobs.waitForSettled(job.id, 60_000, controller.signal);
+    controller.abort(new Error('Answer cancelled'));
+    await expect(waiting).rejects.toThrow('Answer cancelled');
+    expect(f.jobs.get(job.id)?.status).toBe('queued');
+    await expect(f.jobs.waitForSettled(job.id, 60_000, controller.signal)).rejects.toThrow('Answer cancelled');
+  });
+});
+
 describe('conversation consumer contract', () => {
   it('queues an explicit editor write with complete chat provenance and persists its job ID for replay', async () => {
     const content = 'Citrine is yellow quartz. Store it away from heat.';
@@ -158,8 +299,18 @@ describe('conversation consumer contract', () => {
       { name: 'read_note', arguments: { path: 'wiki/facts.md' } }, '[Citrine](wiki/facts.md#facts) is yellow quartz.',
       { name: 'write_knowledge', arguments: { content } }, 'The knowledge update is queued.',
     ], 'editor');
+    // Source membership must survive either completion order of parallel context reads.
+    const readFile = f.repo.readFile.bind(f.repo);
+    let releaseRules!: () => void;
+    const memoryLoaded = new Promise<void>(resolve => { releaseRules = resolve; });
+    const contextRead = vi.spyOn(f.repo, 'readFile').mockImplementation(async (path, ref) => {
+      if (path === 'AGENTS.md') await memoryLoaded;
+      try { return await readFile(path, ref); }
+      finally { if (path === 'MEMORY.md') releaseRules(); }
+    });
     const conversation = await f.create();
     await f.send(conversation.id, { content: 'What is citrine?' });
+    contextRead.mockRestore();
     const result = await f.send(conversation.id, {
       content: 'Save this fact and its storage advice in the wiki.', clientId: 'save-citrine',
       context: { notePath: 'wiki/updates.md' },
@@ -169,9 +320,11 @@ describe('conversation consumer contract', () => {
     expect(toolEnd.data).toMatchObject({ name: 'write_knowledge', state: 'end', summary: content, jobId: expect.any(String) });
     const jobId = toolEnd.data.jobId as string;
     expect(f.jobs.get(jobId)).toMatchObject({ userId: 1, kind: 'agent', status: 'queued', input: content, source: 'chat', client: conversation.id });
-    expect(f.jobs.events(jobId)).toMatchObject([{ phase: 'queued', detail: {
-      sourceProvenanceComplete: true, sourcePaths: ['wiki/facts.md', 'AGENTS.md', 'MEMORY.md', 'wiki/updates.md'],
-    } }]);
+    const jobEvents = f.jobs.events(jobId);
+    expect(jobEvents).toMatchObject([{ phase: 'queued', detail: { sourceProvenanceComplete: true } }]);
+    expect(new Set(jobEvents[0]!.detail!.sourcePaths as string[])).toEqual(new Set([
+      'wiki/facts.md', 'AGENTS.md', 'MEMORY.md', 'wiki/updates.md',
+    ]));
     const persisted = f.db.prepare("SELECT data FROM generation_frames WHERE generation_id = ? AND event = 'tool' ORDER BY seq")
       .all(generationId) as Array<{ data: string }>;
     expect(persisted.map(frame => JSON.parse(frame.data))).toContainEqual(toolEnd.data);

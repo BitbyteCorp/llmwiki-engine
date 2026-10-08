@@ -4,7 +4,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import Link from 'next/link'
 import { useParams, useRouter, useSearchParams } from 'next/navigation'
-import { api, jobsApi, type WriteJob } from '@/lib/api'
+import { api, jobsApi, type JobEvent, type JobSubagent, type WriteJob } from '@/lib/api'
 import { EmptyState, ErrorNotice, Loading, PageHeader, formatDate, noteHref } from '@/components/common'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -14,6 +14,7 @@ import { JobProgress } from '@/components/history/job-progress'
 const statusLabels: Record<WriteJob['status'], string> = { queued: '대기 중', running: '처리 중', merging: '병합 중', succeeded: '완료', failed: '실패' }
 const kindLabels: Record<WriteJob['kind'], string> = { agent: '도니 작업', direct: '직접 편집', revert: '변경 되돌리기' }
 const sourceLabels: Record<WriteJob['source'], string> = { mcp: 'MCP', web: '웹', chat: '대화', dreaming: '꿈꾸기', import: '가져오기', revert: '되돌리기' }
+const subagentStatusLabels: Record<JobSubagent['status'], string> = { running: '진행 중', completed: '완료', failed: '실패', cancelled: '취소' }
 
 function JobStatus({ job }: { job: WriteJob }) {
   return <Badge variant="outline" className={job.status === 'failed' ? 'border-destructive/30 bg-destructive/5 text-destructive' : job.status === 'succeeded' ? 'border-success/30 bg-success/10 text-success' : 'text-muted-foreground'}>{job.error === 'canceled' ? '취소됨' : statusLabels[job.status]}</Badge>
@@ -57,6 +58,33 @@ export function JobsPage() {
       {jobs.data?.nextCursor && <Button variant="outline" nativeButton={false} render={<Link href={jobsHref(status, jobs.data.nextCursor)} />}>이전 작업 보기</Button>}
     </nav>
   </div>
+}
+
+function JobSubagents({ events }: { events: JobEvent[] }) {
+  const latest = new Map<string, JobSubagent>()
+  for (const event of events) {
+    const subagent = event.detail?.subagent
+    if (subagent) latest.set(subagent.id, subagent)
+  }
+  if (latest.size === 0) return null
+  return <section className="space-y-3" aria-labelledby="job-subagents-title">
+    <h2 id="job-subagents-title" className="text-sm font-semibold">서브에이전트</h2>
+    <ul className="divide-y rounded-lg border bg-card" aria-label="서브에이전트 목록">
+      {Array.from(latest.values(), subagent => <li key={subagent.id} className="min-w-0 space-y-3 p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="break-words text-sm font-medium">{subagent.name}</span>
+          <Badge variant="outline" className={subagent.status === 'failed' ? 'border-destructive/30 bg-destructive/5 text-destructive' : subagent.status === 'completed' ? 'border-success/30 bg-success/10 text-success' : 'text-muted-foreground'}>{subagentStatusLabels[subagent.status]}</Badge>
+          <span className="text-xs tabular-nums text-muted-foreground">도구 호출 {subagent.toolCalls.toLocaleString('ko-KR')}회</span>
+        </div>
+        <div className="space-y-1">
+          <p className="text-xs text-muted-foreground">담당 파일</p>
+          <ul className="space-y-1">{subagent.files.map(path => <li key={path} className="break-all font-mono text-xs">{path}</li>)}</ul>
+        </div>
+        {subagent.result && <p className="whitespace-pre-wrap break-words text-sm leading-6">{subagent.result}</p>}
+        {subagent.error && <ErrorNotice error={subagent.error} />}
+      </li>)}
+    </ul>
+  </section>
 }
 
 export function JobPage() {
@@ -104,6 +132,7 @@ function JobDetailPage({ id }: { id: string }) {
       <div className="min-w-0"><dt className="text-muted-foreground">완료 시각</dt><dd className="mt-1 whitespace-nowrap text-right tabular-nums">{formatDate(job.finishedAt)}{duration !== null && <span className="block text-xs text-muted-foreground">실행 시간 {duration.toLocaleString('ko-KR')}초</span>}</dd></div>
     </dl>
     <JobProgress job={job} events={events} />
+    <JobSubagents events={events} />
     {job.conflicts.length > 0 && <section className="space-y-3" aria-labelledby="job-conflicts-title"><h2 id="job-conflicts-title" className="text-sm font-semibold">충돌 경로</h2><p className="text-sm text-muted-foreground">충돌 해결의 경로와 시각은 단계 이벤트에 기록됩니다. 작업 완료 여부는 최종 상태를 확인하세요.</p><ul className="space-y-2 rounded-lg border bg-card p-4">{job.conflicts.map(path => <li key={path}><Link className="break-all font-mono text-sm underline underline-offset-2" href={noteHref(path)}>{path}</Link></li>)}</ul></section>}
     {job.summary && <section className="space-y-3" aria-labelledby="job-summary-title"><h2 id="job-summary-title" className="text-sm font-semibold">결과 요약</h2><p className="whitespace-pre-wrap break-words rounded-lg border bg-card p-4 text-sm leading-6">{job.summary}</p></section>}
     {job.error && <section className="space-y-3" aria-labelledby="job-error-title"><h2 id="job-error-title" className="text-sm font-semibold">{job.error === 'canceled' ? '취소 사유' : '작업 오류'}</h2><ErrorNotice error={job.error === 'canceled' ? '실행 전 대기 중인 작업을 취소했습니다.' : job.error} /></section>}

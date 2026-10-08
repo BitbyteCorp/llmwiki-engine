@@ -2,6 +2,7 @@
 
 import { Check, ChevronRight, Circle, FileText, LoaderCircle } from 'lucide-react'
 import Link from 'next/link'
+import type { ChatStreamEvent } from '@/lib/chat-stream'
 
 export type WorkStep = {
   kind: 'status' | 'tool' | 'citation'
@@ -9,6 +10,20 @@ export type WorkStep = {
   path?: string
   jobId?: string
   status: 'active' | 'done'
+}
+
+export function toolWorkStep(data: Extract<ChatStreamEvent, { event: 'tool' }>['data']): WorkStep {
+  const trackingLabel = data.name === 'get_write_status' ? '기록 상태 확인' : data.name === 'wait_write' ? '기록 완료 대기' : undefined
+  const label = data.name === 'write_knowledge' || trackingLabel
+    ? `${trackingLabel ?? '지식 기록 요청'}${data.summary ? `: ${data.summary}` : ''}`
+    : `${data.name === 'search' ? '위키 검색' : data.name === 'read_note' ? '노트 읽음' : '근거 확인'} ${data.path || data.summary || ''}`.trim()
+  return {
+    kind: 'tool',
+    label,
+    path: data.path,
+    status: data.state === 'start' ? 'active' : 'done',
+    ...(data.jobId && (trackingLabel || (data.name === 'write_knowledge' && data.state === 'end')) ? { jobId: data.jobId } : {}),
+  }
 }
 
 export function WorkSteps({ steps, running, noteCount }: { steps: WorkStep[]; running: boolean; noteCount: number }) {
