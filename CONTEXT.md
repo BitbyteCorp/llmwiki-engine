@@ -38,7 +38,7 @@ Node.js 기반으로 LLM Wiki를 관리하는 도구다.
 
 - [쓰기 흐름](docs/write-flow.md) — 작업 워크트리에서 도니가 수정·커밋하고 `main`에 직렬로 머지하며, 충돌은 도니가 푼다.
 - [꿈꾸기](docs/dreaming.md) — 매일 03:00 KST에 충돌·중복을 정리하고 일기를 쓴 뒤 GitHub에 push한다.
-- [작성 규칙](docs/writing-rules.md) — 도니가 지식 저장소에 쓸 때 따르는 Obsidian 기반 규칙이다.
+- [작성 규칙](docs/writing-rules.md) — 도니가 지식 저장소에 쓸 때 따르는 Obsidian 기반 규칙이다. 입력을 지식 단위로 나누고 미래의 조회 경로에 따라 정본 노트·개념 노트·메모리·색인에 나누어 배치한다.
 - [RAG](docs/rag.md) — SQLite에 키워드·벡터·링크 색인을 두고 하이브리드 검색을 한다. 링크·그래프 catalog 스냅샷과 요청별 접근 권한 투영의 경계를 설명한다.
 - [원문 수집](docs/ingestion.md) — URL·PDF·텍스트·Obsidian·Notion 원문을 불변 raw 소스로 보관하고 도니 통합 작업으로 연결한다.
 
