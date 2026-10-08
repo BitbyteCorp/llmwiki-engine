@@ -164,6 +164,48 @@ describe('chat model requests and progress', () => {
   });
 });
 
+describe('chat knowledge write authorization and errors', () => {
+  it.each([
+    { user: { id: 1, role: 'viewer' as const } },
+    { user: { id: 1, role: 'editor' as const }, submitKnowledge: undefined },
+    { user: undefined },
+  ])('does not expose a write tool without both an authorized user and submission capability: %j', async (options) => {
+    const { agent, fake } = await fixture(['기록에는 편집 권한이 필요하다.']);
+    await agent.answer([{ role: 'user', content: '이 내용을 위키에 기록해 줘.' }], () => {}, undefined, {
+      submitKnowledge: async () => { throw new Error('Unauthorized submission'); },
+      ...options,
+    });
+    expect((fake.requests[0]!.body.tools as Array<{ name: string }>).map(tool => tool.name)).toEqual(['search', 'read_note']);
+  });
+
+  it('rejects blank submissions and reports failed writes without a success job link', async () => {
+    const content = '사용자가 위키에 기록을 요청한 사실과 근거다. '.repeat(10);
+    const { agent, fake } = await fixture([
+      { name: 'write_knowledge', arguments: { content: ' \n\t ' } },
+      { name: 'write_knowledge', arguments: { content } },
+      '기록 요청이 실패했다.',
+    ]);
+    const events: Array<Record<string, unknown>> = [];
+    const submitted: string[] = [];
+    await agent.answer([{ role: 'user', content: '이 사실을 위키에 기록해 줘.' }], () => {}, undefined, {
+      user: { id: 1, role: 'editor' },
+      submitKnowledge: async (input) => {
+        submitted.push(input);
+        throw new Error('Write queue unavailable');
+      },
+      onEvent: (event, data) => { if (event === 'tool') events.push(data as Record<string, unknown>); },
+    });
+    expect(submitted).toEqual([content.trim()]);
+    expect(events.slice(-2)).toEqual([
+      { name: 'write_knowledge', state: 'start', summary: content.trim().slice(0, 80) },
+      { name: 'write_knowledge', state: 'end', summary: content.trim().slice(0, 80) },
+    ]);
+    expect(events.every(event => !('jobId' in event))).toBe(true);
+    const outputs = (fake.requests.at(-1)!.body.input as Array<{ type: string; output?: string }>).filter(item => item.type === 'function_call_output');
+    expect(JSON.parse(outputs.at(-1)!.output!)).toEqual({ error: 'Write queue unavailable' });
+  });
+});
+
 describe('read-only conversation transformations', () => {
   it('proposes a complete edited note at a pinned base without changing files or git history', async () => {
     const original = '---\ntags: [cache]\n---\n# Cache\nExisting fact.';

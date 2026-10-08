@@ -28,6 +28,7 @@ import { openDb, runMigrations } from '../src/db/index.js';
 import { EventsService } from '../src/events/events.service.js';
 import { NoteWriterService } from '../src/jobs/note-writer.service.js';
 import { WriteJobsRepository } from '../src/jobs/write-jobs.repository.js';
+import { WriteJobsService } from '../src/jobs/write-jobs.service.js';
 import { KnowledgeRepo } from '../src/knowledge/repo.js';
 import { AgentService } from '../src/agent/agent.service.js';
 import { IndexerService } from '../src/rag/indexer.service.js';
@@ -104,6 +105,7 @@ async function fixture(script: FakeScript = [], gate?: { received: () => void; r
   const agent = new AgentService(config, log, repo, search, acl);
   const jobs = new WriteJobsRepository(db);
   const writer = new NoteWriterService(jobs, repo, users, indexer, events, log, acl, audit);
+  const writeJobs = new WriteJobsService(jobs, agent, indexer, repo, users, log, events, acl, writer);
   const repository = new ConversationsRepository(db);
   const module = await Test.createTestingModule({
     controllers: [ConversationsController, GenerationsController, UploadsController],
@@ -111,6 +113,7 @@ async function fixture(script: FakeScript = [], gate?: { received: () => void; r
       { provide: ConversationsRepository, useValue: repository }, { provide: CONFIG, useValue: config },
       { provide: DB, useValue: db }, { provide: LOGGER, useValue: log }, { provide: AclService, useValue: acl },
       { provide: AgentService, useValue: agent }, { provide: EventsService, useValue: events },
+      { provide: WriteJobsService, useValue: writeJobs },
       { provide: NoteWriterService, useValue: writer }, { provide: AuditService, useValue: audit }],
   }).overrideGuard(SessionGuard).useValue({ canActivate(context: { switchToHttp(): { getRequest(): Request } }) {
     const req = context.switchToHttp().getRequest();

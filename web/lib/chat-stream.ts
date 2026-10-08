@@ -15,7 +15,7 @@ export interface ChatUsage { inputTokens: number; outputTokens: number; reasonin
 export type ChatStreamEvent =
   | { id: number; event: 'generation'; data: { generationId: string; userMessageId: string | null } }
   | { id: number; event: 'status'; data: { phase: string } }
-  | { id: number; event: 'tool'; data: { name: string; state: 'start' | 'end'; summary: string; path?: string } }
+  | { id: number; event: 'tool'; data: { name: string; state: 'start' | 'end'; summary: string; path?: string; jobId?: string } }
   | { id: number; event: 'citation'; data: ChatCitation }
   | { id: number; event: 'delta'; data: { text: string } }
   | { id: number; event: 'usage'; data: ChatUsage }
@@ -39,7 +39,7 @@ const messageSchema = z.object({
 const streamEventSchema = z.discriminatedUnion('event', [
   z.object({ id: z.number(), event: z.literal('generation'), data: z.object({ generationId: z.string(), userMessageId: z.string().nullable() }) }),
   z.object({ id: z.number(), event: z.literal('status'), data: z.object({ phase: z.string() }) }),
-  z.object({ id: z.number(), event: z.literal('tool'), data: z.object({ name: z.string(), state: z.enum(['start', 'end']), summary: z.string(), path: z.string().optional() }) }),
+  z.object({ id: z.number(), event: z.literal('tool'), data: z.object({ name: z.string(), state: z.enum(['start', 'end']), summary: z.string(), path: z.string().optional(), jobId: z.string().optional() }) }),
   z.object({ id: z.number(), event: z.literal('citation'), data: citationSchema }),
   z.object({ id: z.number(), event: z.literal('delta'), data: z.object({ text: z.string() }) }),
   z.object({ id: z.number(), event: z.literal('usage'), data: usageSchema }),

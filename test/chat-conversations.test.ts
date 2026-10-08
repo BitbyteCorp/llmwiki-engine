@@ -36,6 +36,10 @@ import { AclService } from '../src/acl/acl.service.js';
 import { AuditService } from '../src/audit/audit.service.js';
 import { UsersService } from '../src/auth/users.service.js';
 import { UsersRepository } from '../src/auth/users.repository.js';
+import { ApiTokensRepository } from '../src/auth/api-tokens.repository.js';
+import { WriteJobsRepository } from '../src/jobs/write-jobs.repository.js';
+import { WriteJobsService } from '../src/jobs/write-jobs.service.js';
+import { IndexerService } from '../src/rag/indexer.service.js';
 
 interface Frame { id: number; event: string; data: Record<string, unknown> }
 function frames(text: string): Frame[] {
@@ -65,13 +69,16 @@ async function fixture(script: FakeScript, authorRole: 'viewer' | 'editor' = 'vi
   const wt = await repo.createWorktree('conversation-fixture');
   try {
     await wt.write('wiki/facts.md', '# Facts\nCitrine is a yellow quartz.');
+    await wt.write('wiki/updates.md', '# Updates\nCitrine should be stored away from heat.');
     await wt.commit('Seed conversation source', { name: 'Fixture', email: 'fixture@example.test' });
     await wt.fastForwardMain();
   } finally { await wt.dispose(); }
   const db = openDb(join(directory, 'chat.db'));
   disposals.push(async () => db.close());
   runMigrations(db);
-  const acl = new AclService(db, new UsersService(new UsersRepository(db)), new AuditService(db));
+  const userService = new UsersService(new UsersRepository(db));
+  const audit = new AuditService(db);
+  const acl = new AclService(db, userService, audit);
   const agent = new AgentService(config, log, repo, { search: async () => [] } as unknown as SearchService, acl);
   const users = new Map<number, User>([1, 2, 3, 4].map(id => [id, {
     id, email: `user${id}@example.test`, name: `User ${id}`, role: id === 4 ? 'admin' : id === 1 ? authorRole : 'viewer',
@@ -81,6 +88,9 @@ async function fixture(script: FakeScript, authorRole: 'viewer' | 'editor' = 'vi
   const published: Array<{ event: WikiEvent; audience: EventAudience }> = [];
   const events = new EventsService();
   events.subscribe((event, audience) => published.push({ event, audience }));
+  const jobRepository = new WriteJobsRepository(db);
+  const jobs = new WriteJobsService(jobRepository, agent, new IndexerService(config, db, log, repo, events), repo, userService, log, events, acl);
+  const tokens = new ApiTokensService(new ApiTokensRepository(db), userService, audit);
   let origin = '';
   const module = await Test.createTestingModule({
     controllers: [ConversationsController, GenerationsController],
@@ -88,8 +98,9 @@ async function fixture(script: FakeScript, authorRole: 'viewer' | 'editor' = 'vi
       { provide: DB, useValue: db }, { provide: LOGGER, useValue: log },
       { provide: AclService, useValue: acl },
       { provide: AgentService, useValue: agent }, { provide: EventsService, useValue: events },
+      { provide: WriteJobsService, useValue: jobs },
       { provide: UploadsService, useValue: { parts: async () => [], get: async () => { throw new Error('No upload in this fixture'); } } },
-      { provide: ApiTokensService, useValue: { authenticate: () => null } },
+      { provide: ApiTokensService, useValue: tokens },
       { provide: SessionsService, useValue: {
         sessionUser: (req: Request) => users.get(Number(req.get('x-user-id'))) ?? null,
         assertSameOrigin: (req: Request) => assertSameOrigin(req, origin),
@@ -105,9 +116,10 @@ async function fixture(script: FakeScript, authorRole: 'viewer' | 'editor' = 'vi
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('Expected ephemeral TCP listener');
   origin = `http://127.0.0.1:${address.port}`;
-  async function request(path: string, method = 'GET', body?: unknown, userId = 1) {
+  async function request(path: string, method = 'GET', body?: unknown, userId = 1, token?: string) {
     return fetch(`${origin}/api${path}`, { method, headers: {
-      'x-user-id': String(userId), origin, ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+      'x-user-id': String(userId), origin, ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
     }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   }
   async function create(title = 'Discussion') {
@@ -120,15 +132,15 @@ async function fixture(script: FakeScript, authorRole: 'viewer' | 'editor' = 'vi
     expect(response.status).toBe(200);
     return await response.json() as { conversation: Conversation; messages: Message[] };
   }
-  async function stream(path: string, method = 'POST', body?: unknown, userId = 1) {
-    const response = await request(path, method, body, userId);
+  async function stream(path: string, method = 'POST', body?: unknown, userId = 1, token?: string) {
+    const response = await request(path, method, body, userId, token);
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toMatch(/^text\/event-stream/);
     const result = frames(await response.text());
     return result;
   }
   async function send(id: string, input: SubmitMessage) { return stream(`/conversations/${id}/messages`, 'POST', input); }
-  return { request, create, detail, stream, send, agent, fake, repo, published };
+  return { request, create, detail, stream, send, agent, fake, repo, published, db, acl, users, jobs, jobRepository, tokens };
 }
 async function expectError(response: Response, status: number, code: string) {
   expect(response.status).toBe(status);
@@ -140,6 +152,97 @@ function done(result: Frame[]): Message {
 }
 
 describe('conversation consumer contract', () => {
+  it('queues an explicit editor write with complete chat provenance and persists its job ID for replay', async () => {
+    const content = 'Citrine is yellow quartz. Store it away from heat.';
+    const f = await fixture([
+      { name: 'read_note', arguments: { path: 'wiki/facts.md' } }, '[Citrine](wiki/facts.md#facts) is yellow quartz.',
+      { name: 'write_knowledge', arguments: { content } }, 'The knowledge update is queued.',
+    ], 'editor');
+    const conversation = await f.create();
+    await f.send(conversation.id, { content: 'What is citrine?' });
+    const result = await f.send(conversation.id, {
+      content: 'Save this fact and its storage advice in the wiki.', clientId: 'save-citrine',
+      context: { notePath: 'wiki/updates.md' },
+    });
+    const generationId = result[0].data.generationId as string;
+    const toolEnd = result.find(frame => frame.event === 'tool' && frame.data.name === 'write_knowledge' && frame.data.state === 'end')!;
+    expect(toolEnd.data).toMatchObject({ name: 'write_knowledge', state: 'end', summary: content, jobId: expect.any(String) });
+    const jobId = toolEnd.data.jobId as string;
+    expect(f.jobs.get(jobId)).toMatchObject({ userId: 1, kind: 'agent', status: 'queued', input: content, source: 'chat', client: conversation.id });
+    expect(f.jobs.events(jobId)).toMatchObject([{ phase: 'queued', detail: {
+      sourceProvenanceComplete: true, sourcePaths: ['wiki/facts.md', 'AGENTS.md', 'MEMORY.md', 'wiki/updates.md'],
+    } }]);
+    const persisted = f.db.prepare("SELECT data FROM generation_frames WHERE generation_id = ? AND event = 'tool' ORDER BY seq")
+      .all(generationId) as Array<{ data: string }>;
+    expect(persisted.map(frame => JSON.parse(frame.data))).toContainEqual(toolEnd.data);
+    expect(await f.stream(`/generations/${generationId}/events`, 'GET')).toEqual(result);
+    expect(await f.send(conversation.id, { content: 'Save this fact and its storage advice in the wiki.', clientId: 'save-citrine' })).toEqual(result);
+    expect(f.jobRepository.list()).toHaveLength(1);
+    expect(done(result)).toMatchObject({ status: 'completed', content: 'The knowledge update is queued.' });
+  });
+
+  it('does not grant a global viewer knowledge writes even when they own the conversation', async () => {
+    const f = await fixture([{ name: 'write_knowledge', arguments: { content: 'Save this in the wiki.' } }, 'I cannot save knowledge.']);
+    const conversation = await f.create();
+    const result = await f.send(conversation.id, { content: 'Save this in the wiki.' });
+    const requestTools = f.fake.requests[0].body.tools as Array<{ name: string }>;
+    expect(requestTools.map(tool => tool.name)).not.toContain('write_knowledge');
+    expect(f.jobRepository.list()).toEqual([]);
+    expect(result.filter(frame => frame.event === 'tool').every(frame => frame.data.jobId === undefined)).toBe(true);
+    expect(done(result).content).toBe('I cannot save knowledge.');
+  });
+
+  it('rejects read-scope Bearer mutations before the model and permits a write-scope editor token', async () => {
+    const f = await fixture([{ name: 'write_knowledge', arguments: { content: 'Save the approved fact.' } }, 'Queued.'], 'editor');
+    const conversation = await f.create();
+    const read = f.tokens.create(f.users.get(1)!, { name: 'Read only', scopes: ['read'] });
+    const write = f.tokens.create(f.users.get(1)!, { name: 'Write', scopes: ['write'] });
+    const path = `/conversations/${conversation.id}/messages`;
+    await expectError(await f.request(path, 'POST', { content: 'Save the approved fact.' }, 1, read.token), 403, 'insufficient_scope');
+    expect(f.fake.requests).toEqual([]);
+    expect(f.jobRepository.list()).toEqual([]);
+    expect((await f.detail(conversation.id)).messages).toEqual([]);
+    const result = await f.stream(path, 'POST', { content: 'Save the approved fact.' }, 1, write.token);
+    const toolEnd = result.find(frame => frame.event === 'tool' && frame.data.state === 'end')!;
+    expect(f.jobs.get(toolEnd.data.jobId as string)).toMatchObject({ userId: 1, source: 'chat', client: conversation.id, status: 'queued' });
+    expect(done(result).content).toBe('Queued.');
+  });
+
+  it.each(['edit', 'regenerate', 'retry'] as const)('binds knowledge submitted by %s to the current requester, not the original author', async action => {
+    const f = await fixture(['Initial answer.', { name: 'write_knowledge', arguments: { content: 'A requested correction.' } }, 'Correction queued.']);
+    const conversation = await f.create();
+    await f.request(`/conversations/${conversation.id}/members`, 'POST', { email: 'user4@example.test', role: 'editor' });
+    const first = await f.send(conversation.id, { content: 'Original question.' });
+    const userMessageId = first[0].data.userMessageId as string;
+    const assistantMessageId = done(first).id;
+    const path = `/conversations/${conversation.id}/messages/${action === 'regenerate' ? assistantMessageId : userMessageId}`;
+    const result = action === 'edit'
+      ? await f.stream(path, 'PATCH', { content: 'Save a requested correction.' }, 4)
+      : await f.stream(`${path}/${action}`, 'POST', undefined, 4);
+    const toolEnd = result.find(frame => frame.event === 'tool' && frame.data.name === 'write_knowledge' && frame.data.state === 'end')!;
+    expect(f.jobs.get(toolEnd.data.jobId as string)).toMatchObject({
+      userId: 4, source: 'chat', client: conversation.id, input: 'A requested correction.', status: 'queued',
+    });
+    expect(done(result).content).toBe('Correction queued.');
+  });
+
+  it.each(['membership', 'role', 'policy'] as const)('rechecks current %s immediately before enqueueing a model-requested write', async revocation => {
+    const f = await fixture([{ name: 'write_knowledge', arguments: { content: 'Do not queue after revocation.' } }, 'Finished.'], 'editor');
+    const conversation = await f.create();
+    const answer = f.agent.answer.bind(f.agent);
+    vi.spyOn(f.agent, 'answer').mockImplementationOnce((messages, delta, signal, options) => answer(messages, delta, signal, {
+      ...options, submitKnowledge: async content => {
+        if (revocation === 'membership') f.db.prepare('DELETE FROM conversation_members WHERE conversation_id = ? AND user_id = 1').run(conversation.id);
+        if (revocation === 'role') f.db.prepare("UPDATE users SET role = 'viewer' WHERE id = 1").run();
+        if (revocation === 'policy') f.acl.create({ prefix: 'wiki/', subjectType: 'everyone', subject: '', access: 'none' }, f.users.get(4)!);
+        return options!.submitKnowledge!(content);
+      },
+    }));
+    const result = await f.send(conversation.id, { content: 'Save a fact.' });
+    expect(f.jobRepository.list()).toEqual([]);
+    expect(result.filter(frame => frame.event === 'tool').every(frame => frame.data.jobId === undefined)).toBe(true);
+  });
+
   it('replays an idempotent clientId without another turn and persists grounded citation and usage frames', async () => {
     const f = await fixture([{ name: 'read_note', arguments: { path: 'wiki/facts.md' } }, {
       text: '[Citrine](wiki/facts.md#facts) is yellow.', usage: { inputTokens: 12, outputTokens: 8, reasoningTokens: 3 },

@@ -128,8 +128,10 @@ export function ChatPane({ variant, conversationId, onClose }: { variant: 'panel
             setSteps(previous => {
               const list = [...(previous[stream.answerId] ?? [])];
               const match = event.data.state === 'end' ? list.findLastIndex(step => step.kind === 'tool' && step.status === 'active') : -1;
-              const label = `${event.data.name === 'search' ? '위키 검색' : event.data.name === 'read_note' ? '노트 읽음' : '근거 확인'} ${event.data.path || event.data.summary || ''}`.trim();
-              const item: WorkStep = {kind:'tool',label,path:event.data.path,status:event.data.state === 'start' ? 'active' : 'done'};
+              const label = event.data.name === 'write_knowledge'
+                ? `지식 기록 요청${event.data.summary ? `: ${event.data.summary}` : ''}`
+                : `${event.data.name === 'search' ? '위키 검색' : event.data.name === 'read_note' ? '노트 읽음' : '근거 확인'} ${event.data.path || event.data.summary || ''}`.trim();
+              const item: WorkStep = {kind:'tool',label,path:event.data.path,status:event.data.state === 'start' ? 'active' : 'done',...(event.data.name === 'write_knowledge' && event.data.state === 'end' && event.data.jobId ? {jobId:event.data.jobId} : {})};
               if (match >= 0) list[match] = item;
               else { for (let index=0;index<list.length;index++) if(list[index].status==='active') list[index]={...list[index],status:'done'}; list.push(item); }
               return {...previous,[stream.answerId]:list};

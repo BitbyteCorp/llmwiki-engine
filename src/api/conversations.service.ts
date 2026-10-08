@@ -13,6 +13,7 @@ import { GenerationsService } from './generations.service.js';
 import { AclService } from '../acl/acl.service.js';
 import type { Db } from '../db/index.js';
 import { chatUser, messageSources, readableTurns, redactMessage } from './acl-chat.js';
+import { WriteJobsService } from '../jobs/write-jobs.service.js';
 
 @Injectable()
 export class ConversationsService implements OnModuleDestroy {
@@ -27,6 +28,7 @@ export class ConversationsService implements OnModuleDestroy {
     private readonly events: EventsService,
     private readonly acl: AclService,
     @Inject(DB) private readonly db: Db,
+    private readonly writeJobs: WriteJobsService,
     @Optional() private readonly audit?: AuditService,
   ) { this.presenceTimer.unref(); }
   onModuleDestroy(): void { clearInterval(this.presenceTimer); }
@@ -151,7 +153,14 @@ export class ConversationsService implements OnModuleDestroy {
           if(signal.aborted)return;
           partial+=text;this.repository.finish(assistant.id,partial,'running');emit('delta',{text});
         },signal,{user:actor,model,effort,context:user.context ?? undefined,summary,assertAccess,
-          onSource:path=>{if(!signal.aborted)emit('sources',{paths:[path]});},
+          ...(actor.role==='editor'||actor.role==='admin' ? {submitKnowledge:async(content:string)=>{
+            signal.throwIfAborted();
+            this.access(id,userId,true);
+            assertAccess();
+            const job=this.writeJobs.submit({userId,input:content,source:'chat',client:id,sourcePaths:[...sources]});
+            return {jobId:job.id,status:'queued' as const};
+          }} : {}),
+          onSource:path=>{if(!signal.aborted){sources.add(path);emit('sources',{paths:[path]});}},
           onEvent:(event,data)=>{if(!signal.aborted)emit(event,data);}});
         if(signal.aborted)throw new Error('Cancelled');
         assertAccess();

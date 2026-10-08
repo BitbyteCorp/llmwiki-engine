@@ -1,11 +1,13 @@
 'use client'
 
 import { Check, ChevronRight, Circle, FileText, LoaderCircle } from 'lucide-react'
+import Link from 'next/link'
 
 export type WorkStep = {
   kind: 'status' | 'tool' | 'citation'
   label: string
   path?: string
+  jobId?: string
   status: 'active' | 'done'
 }
 
@@ -25,7 +27,7 @@ export function WorkSteps({ steps, running, noteCount }: { steps: WorkStep[]; ru
         <span className="mt-0.5 shrink-0" title={step.status === 'done' ? '완료' : running ? '진행 중' : '미완료'}>
           {step.status === 'done' ? <Check aria-hidden="true" className="size-3 text-success"/> : running ? <LoaderCircle aria-hidden="true" className="size-3 text-primary motion-safe:animate-spin"/> : <Circle aria-hidden="true" className="size-3 text-muted-foreground"/>}
         </span>
-        <span className="min-w-0 break-words leading-relaxed"><span className={step.status === 'active' && running ? 'text-foreground' : 'text-muted-foreground'}>{step.label}</span>{step.path && <span className="block break-all text-[11px] text-muted-foreground">{step.path}</span>}</span>
+        <span className="min-w-0 break-words leading-relaxed"><span className={step.status === 'active' && running ? 'text-foreground' : 'text-muted-foreground'}>{step.label}</span>{step.jobId && <Link href={`/jobs/${encodeURIComponent(step.jobId)}`} className="ml-2 text-[11px] underline underline-offset-4">작업 보기</Link>}{step.path && <span className="block break-all text-[11px] text-muted-foreground">{step.path}</span>}</span>
       </li>)}
       {steps.length === 0 && <li className="text-muted-foreground">답변을 준비하고 있습니다.</li>}
     </ol>

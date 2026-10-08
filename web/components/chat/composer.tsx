@@ -29,7 +29,7 @@ interface ModelOptions { models: string[]; defaultModel: string; efforts: Array<
 const commands = [
   { name: '/search', description: '대화 안에서 검색 · /search 검색어' },
   { name: '/note', description: '노트 문맥 고정 · /note wiki/노트.md' },
-  { name: '/save', description: '마지막 답변을 위키 초안으로 저장' },
+  { name: '/save', description: '마지막 답변의 위키 초안 검토' },
   { name: '/help', description: '입력 도움말 표시' },
 ]
 const contextKey = 'llmwiki.chat.pinned.'
@@ -285,6 +285,6 @@ export function ChatComposer({ conversationId, disabled, streaming, onSubmit, on
       {streaming ? <Button type="button" variant="outline" size="icon-sm" aria-label="생성 중지" title="생성 중지 · Esc" onClick={onStop}><Square className="size-3.5 fill-current" /></Button> : <Button type="button" size="icon-sm" aria-label={edit ? '수정 후 다시 생성' : '메시지 보내기'} title={edit ? '수정 후 다시 생성' : '메시지 보내기 · Enter'} disabled={blocked} onClick={() => void submit()}><Send /></Button>}
     </div>
     <p className="flex flex-wrap gap-x-2 text-[10px] leading-relaxed text-muted-foreground"><span>Enter 전송 · Shift+Enter 줄바꿈</span><span>↑ 질문 수정 · Esc 중지</span></p>
-    {help && <div className="space-y-1 rounded-md bg-muted p-3 text-xs"><p>@노트와 /note 경로로 문맥을 고정하며 후속 질문에도 유지합니다. 칩의 ×로 제거하세요.</p><p>/search 검색어: 대화 안에서 검색 · /save: 마지막 답변의 위키 초안 · /help: 이 도움말</p><p>제안에서 ↑↓ 선택, Enter 적용, Esc 닫기. 파일 드롭·이미지 붙여넣기를 지원합니다. 업로드 오류 파일은 제거 후 다시 첨부하세요.</p></div>}
+    {help && <div className="space-y-1 rounded-md bg-muted p-3 text-xs"><p>@노트와 /note 경로로 문맥을 고정하며 후속 질문에도 유지합니다. 칩의 ×로 제거하세요.</p><p>/search 검색어: 대화 안에서 검색 · /save: 마지막 답변의 위키 초안 검토 · /help: 이 도움말</p><p>편집자 이상은 대화에서 지식 기록이나 정정을 요청할 수 있습니다. 기록 요청은 비동기로 처리되며 작업 링크에서 결과를 확인합니다. /save 초안은 검토 후 직접 적용합니다.</p><p>제안에서 ↑↓ 선택, Enter 적용, Esc 닫기. 파일 드롭·이미지 붙여넣기를 지원합니다. 업로드 오류 파일은 제거 후 다시 첨부하세요.</p></div>}
   </section>
 }

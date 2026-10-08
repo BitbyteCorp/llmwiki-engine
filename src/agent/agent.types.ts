@@ -21,6 +21,8 @@ export type AgentEventHandler = (event: 'tool' | 'citation' | 'usage' | 'status'
 export interface AnswerOptions {
   /** Omitted only for trusted internal system callers. */
   user?: Pick<User, 'id' | 'role'>;
+  /** Capability supplied by the chat caller after request authorization; absent for read-only requests. */
+  submitKnowledge?: (content: string) => Promise<{ jobId: string; status: 'queued' }>;
   onSource?: (path: string) => void;
   assertAccess?: () => void;
   model?: string;
@@ -30,11 +32,11 @@ export interface AnswerOptions {
   onEvent?: AgentEventHandler;
 }
 
-export interface AgentTool {
+export interface AgentTool<Result = string> {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
-  run(args: unknown): Promise<string>;
+  run(args: unknown): Promise<Result>;
   /** Public progress must describe the operation, never expose tool output. */
   summary?(args: unknown): { summary: string; path?: string };
 }
@@ -42,7 +44,7 @@ export interface AgentTool {
 export interface RunAgentOptions {
   instructions: string;
   input: string | ChatMessage[];
-  tools: AgentTool[];
+  tools: AgentTool<string | { output: string; jobId: string }>[];
   effort?: string;
   model?: string;
   onEvent?: AgentEventHandler;
