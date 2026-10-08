@@ -6,6 +6,7 @@ import type { Logger } from 'pino';
 import { repoPath, type Worktree } from '../knowledge/repo.js';
 import type { AgentService } from './agent.service.js';
 import type { AgentTool } from './agent.types.js';
+import { capOutput, SUBAGENT_MAX_CHARS } from './output.js';
 
 export const MAX_CONCURRENT_SUBAGENTS = 4;
 export const MAX_SUBAGENTS_PER_JOB = 12;
@@ -93,7 +94,7 @@ export class SubagentPool {
     child.active = false;
     child.snapshot.status = child.controller.signal.aborted ? 'cancelled' : 'failed';
     child.snapshot.finishedAt = new Date().toISOString();
-    child.snapshot.error = error instanceof Error ? error.message : String(error);
+    child.snapshot.error = capOutput(error instanceof Error ? error.message : String(error), SUBAGENT_MAX_CHARS);
     delete child.snapshot.result;
     // Reporting must never turn an already-contained child failure into a rejection.
     try {
@@ -203,11 +204,11 @@ export class SubagentPool {
       });
       child.controller.signal.throwIfAborted();
       child.snapshot.status = 'completed';
-      child.snapshot.result = result.text.trim();
+      child.snapshot.result = capOutput(result.text.trim(), SUBAGENT_MAX_CHARS);
       child.snapshot.toolCalls = result.toolCalls;
     } catch (error) {
       child.snapshot.status = child.controller.signal.aborted ? 'cancelled' : 'failed';
-      if (!child.controller.signal.aborted) child.snapshot.error = error instanceof Error ? error.message : String(error);
+      if (!child.controller.signal.aborted) child.snapshot.error = capOutput(error instanceof Error ? error.message : String(error), SUBAGENT_MAX_CHARS);
     } finally {
       child.active = false;
       child.snapshot.finishedAt = new Date().toISOString();
@@ -254,7 +255,7 @@ export class SubagentPool {
     const id = { type: 'string', minLength: 1 };
     return [
       tool('spawn_subagent', 'Delegate an independent task with exclusive exact paths or directory prefixes ending in /. Returns immediately; children cannot commit or delegate.', { name: { type: 'string', minLength: 1, maxLength: 40 }, task: { type: 'string', minLength: 1 }, files: { type: 'array', items: id, minItems: 1 } }, ['name', 'task', 'files'], (args) => this.spawn(args)),
-      tool('subagent_status', 'Get an immediate snapshot of one or all subagents.', { id }, [], (args) => {
+      tool('subagent_status', 'Get an immediate snapshot of one or all subagents. Each result/error string is capped at 8000 characters; verify changed files rather than relying on a truncated summary.', { id }, [], (args) => {
         const { id } = statusArgs.parse(args);
         return { subagents: (id ? [this.child(id)] : [...this.children.values()]).map((child) => this.snapshot(child)) };
       }),

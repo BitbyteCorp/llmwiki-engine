@@ -17,6 +17,7 @@ import { DreamRunsRepository } from './dream-runs.repository.js';
 
 // Manual callers and the scheduler may use different service instances.
 const activeRuns = new WeakMap<KnowledgeRepo, Promise<DreamRun>>();
+export const SIMILAR_NOTE_EXCERPT_CHARS = 1_500;
 const dateFormat = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit',
 });
@@ -147,8 +148,8 @@ export class DreamingService implements OnApplicationShutdown {
           const content = await repo.readFile(change.path, run.toSha!);
           const previous = content ?? await repo.readFile(change.oldPath ?? change.path, run.fromSha!);
           const hits = await this.search.search(`${change.path}\n${previous ?? ''}`, { limit: 6 });
-          const similarNotes = await Promise.all(hits.filter((hit) => hit.path !== change.path).slice(0, 5)
-            .map(async (hit) => ({ ...hit, content: await repo.readFile(hit.path, run.toSha!) })));
+          const similarNotes = hits.filter((hit) => hit.path !== change.path).slice(0, 5)
+            .map((hit) => ({ path: hit.path, title: hit.title, excerpt: hit.excerpt.slice(0, SIMILAR_NOTE_EXCERPT_CHARS) }));
           return { change, content, similarNotes };
         }));
         worktree = await repo.createWorktree(`dream-${date}`);
@@ -240,8 +241,8 @@ export class DreamingService implements OnApplicationShutdown {
 
 function dreamInstructions(date: string, journalPath: string): string {
   return `오늘은 한국 표준시(Asia/Seoul) ${date}다. dreaming 정리 작업을 수행한다.
-입력 JSON의 커밋과 changedNotes는 직전 성공한 실행 이후 main의 변경이며 similarNotes는 관련 기존 노트다.
-변경과 관련 노트를 읽고 근거에 따라 모순과 중복을 정리한다. 최신 근거가 불명확하면 열린 쟁점으로 남기고 지어내지 않는다.
+입력 JSON의 커밋과 changedNotes는 직전 성공한 실행 이후 main의 변경이며 similarNotes는 관련 기존 노트의 경로·제목과 최대 1500자 발췌다. 발췌를 전체 본문으로 간주하지 않고 더 많은 근거가 필요하면 read_file로 읽는다.
+변경과 관련 노트를 읽고 근거에 따라 모순과 중복을 정리한다. read_file은 페이지 JSON을 반환하므로 truncated이면 nextOffset과 nextCharOffset(있을 때)으로 이어 읽는다. 기존 파일을 write_file로 교체할 때는 모든 필요한 페이지를 읽고 유효한 기존 내용을 포함한 전체 파일을 저장한다. list_files는 같은 prefix와 nextOffset으로 이어 조회하거나 폴더를 좁힌다. 최신 근거가 불명확하면 열린 쟁점으로 남기고 지어내지 않는다.
 깨진 위키링크와 index.md를 고치고 MEMORY.md의 낡은 항목을 정리한다. raw/ 원문은 불변으로 보존한다.
 ACL 경계를 넘어 제한된 노트·사용자 자료의 내용이나 의미를 다른 권한 영역의 노트, 색인, 메모리, 일기에 복사·요약·의역하지 않는다. 이 시스템 작업은 전체 저장소를 읽을 수 있지만 공유 범위를 확대할 권한은 없다. 경계가 불명확하면 내용을 옮기지 않고 기존 영역에 보존한다.
 userMessages에는 아직 학습하지 않은 사용자 발언만 있다. 사용자가 직접 말한 사실과 정정만 추출한다.

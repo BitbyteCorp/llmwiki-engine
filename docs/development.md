@@ -57,6 +57,8 @@ SQLite는 기존 `CHECK` 제약을 `ALTER TABLE`로 변경할 수 없으므로 �
 
 엔진 UUID의 저장 표현과 외부 표현을 바꾸는 데이터 마이그레이션은 [식별자](identifiers.md#기존-데이터-마이그레이션)의 SQL 함수·외래 키 지연·JSON 소유권 규칙을 따른다.
 
+`019_agent_checkpoints.sql`은 에이전트 재개 상태를 저장하는 `agent_checkpoints` 테이블을 추가한다. 실행 경계와 호출자의 저장 책임은 [도니](agent.md)에 기록한다.
+
 ### 루트 스크립트와 빌드 자산
 | 명령 | 동작 |
 | --- | --- |
@@ -105,6 +107,7 @@ fixture의 범위를 검증하는 명령은 `pnpm vitest run test/fake-openai.te
 | `OPENAI_MAX_RETRIES` | `8` | 도니와 임베딩의 최초 요청 이후 최대 재시도 횟수다. 0 이상의 정수만 허용하며 `0`이면 재시도를 끈다. 429 대기 힌트와 선택적 검색 호출의 예외는 [OpenAI 재시도 정책](agent.md#openai-재시도-정책)을 따른다. |
 | `LLM_MODELS` | `gpt-6-luna` | 쉼표로 구분하는 선택 가능 모델 목록이다. 앞뒤 공백과 빈 항목을 제거하고, 첫 항목을 기본 모델로 사용한다. 요청별 모델은 이 목록에 있어야 하며 목록은 비어 있을 수 없다. |
 | `LLM_REASONING_EFFORT` | `medium` | 도니의 기본 추론 강도다. |
+| `LLM_COMPACT_THRESHOLD` | `120000` | 도니의 입력 문맥 압축을 시작하는 토큰 임계값이다. 양의 정수만 허용한다. |
 | `UPLOAD_RETENTION_DAYS` | `7` | 사용하지 않는 임시 업로드의 보관 일수다. 가져온 raw 원문이나 assets git 파일의 보관 기간과 다르다. |
 | `EMBEDDING_MODEL` | `text-embedding-3-small` | 검색 임베딩 모델이다. |
 | `EMBEDDING_DIMENSIONS` | `1536` | 임베딩 벡터 차원이다. |

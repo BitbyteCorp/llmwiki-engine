@@ -19,6 +19,7 @@ import { makeWorktreeTools } from './worktree.js';
 import { runWrite, resolveConflicts } from './writes.js';
 import { AclService } from '../acl/acl.service.js';
 import type { User } from '../auth/users.types.js';
+import { capOutput, pageContent, PAGE_MAX_LINES } from './output.js';
 
 
 function responseText(response: Response): string {
@@ -27,8 +28,13 @@ function responseText(response: Response): string {
     : []).join('');
 }
 
-const searchArgs = z.object({ query: z.string().min(1), limit: z.number().int().min(1).max(100).optional() });
-const readArgs = z.object({ path: z.string().min(1) });
+const searchArgs = z.object({ query: z.string().min(1), limit: z.number().int().min(1).max(30).optional() });
+const readArgs = z.object({
+  path: z.string().min(1),
+  offset: z.number().int().min(0).optional(),
+  limit: z.number().int().min(1).max(PAGE_MAX_LINES).optional(),
+  charOffset: z.number().int().min(0).optional(),
+});
 const writeKnowledgeArgs = z.object({ content: z.string().trim().min(1) });
 const writeStatusArgs = z.object({ jobId: idSchema });
 const waitWriteArgs = writeStatusArgs.extend({ timeoutSeconds: z.number().min(0).max(120).optional().default(60) });
@@ -134,13 +140,15 @@ export class AgentService {
     if (!Number.isInteger(maxTurns) || maxTurns < 1) throw new Error('maxTurns must be a positive integer');
     opts.signal?.throwIfAborted();
     const client = createOpenAI(config);
-    const input: ResponseInput = typeof opts.input === 'string'
-      ? [{ role: 'user', content: opts.input }]
-      : opts.input.map((message) => ({ ...message }));
+    const input: ResponseInput = opts.resume
+      ? structuredClone(opts.resume.input)
+      : typeof opts.input === 'string'
+        ? [{ role: 'user', content: opts.input }]
+        : opts.input.map((message) => ({ ...message }));
     const tools = new Map(opts.tools.map((tool) => [tool.name, tool]));
-    let text = '';
-    let toolCalls = 0;
-    let usage: TokenUsage | undefined;
+    let text = opts.resume?.text ?? '';
+    let toolCalls = opts.resume?.toolCalls ?? 0;
+    let usage: TokenUsage | undefined = opts.resume?.usage ? { ...opts.resume.usage } : undefined;
     for (let turn = 0; turn < maxTurns; turn++) {
       opts.signal?.throwIfAborted();
       opts.assertAccess?.();
@@ -154,6 +162,7 @@ export class AgentService {
         tools: opts.tools.map((tool) => ({ type: 'function', name: tool.name, description: tool.description, parameters: tool.parameters, strict: false })),
         store: false,
         include: ['reasoning.encrypted_content'],
+        context_management: [{ type: 'compaction', compact_threshold: config.llmCompactThreshold }],
       };
       let response: Response;
       if (opts.onTextDelta) {
@@ -190,7 +199,13 @@ export class AgentService {
         return { text, toolCalls };
       }
       for (const item of response.output) {
-        if (item.type === 'message' || item.type === 'function_call' || item.type === 'reasoning') input.push(item);
+        if (item.type === 'message' || item.type === 'function_call' || item.type === 'reasoning' || item.type === 'compaction') input.push(item);
+      }
+      for (let index = input.length - 1; index >= 0; index--) {
+        if (input[index]?.type === 'compaction') {
+          input.splice(0, index);
+          break;
+        }
       }
       for (const call of calls) {
         opts.signal?.throwIfAborted();
@@ -224,8 +239,9 @@ export class AgentService {
           if (started) opts.onEvent?.('tool', { name: call.name, state: 'end', ...summary, ...(jobId ? { jobId } : {}) });
         }
         opts.signal?.throwIfAborted();
-        input.push({ type: 'function_call_output', call_id: call.call_id, output });
+        input.push({ type: 'function_call_output', call_id: call.call_id, output: capOutput(output) });
       }
+      opts.onCheckpoint?.(JSON.parse(JSON.stringify({ input, text, toolCalls, ...(usage ? { usage } : {}) })));
     }
     throw new Error(`Dony exceeded maxTurns (${maxTurns}) before finishing`);
   }
@@ -273,11 +289,11 @@ export class AgentService {
     return selected;
   }
 
-  private readOnlyTools(readNote: (path: string) => Promise<unknown>, user?: Pick<User, 'id' | 'role'>, onSource?: (path: string) => void): AgentTool[] {
+  private readOnlyTools(readNote: (path: string) => Promise<{ path: string; content: string; sha: string }>, user?: Pick<User, 'id' | 'role'>, onSource?: (path: string) => void): AgentTool[] {
     return [
       {
         name: 'search', description: 'main의 지식 색인에서 관련 노트를 검색한다. 검색 결과만으로 답하지 않고 read_note로 근거를 확인한다.',
-        parameters: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer', minimum: 1, maximum: 100 } }, required: ['query'], additionalProperties: false },
+        parameters: { type: 'object', properties: { query: { type: 'string' }, limit: { type: 'integer', minimum: 1, maximum: 30 } }, required: ['query'], additionalProperties: false },
         summary: (args) => ({ summary: searchArgs.parse(args).query }),
         run: async (args) => {
           const { query, limit } = searchArgs.parse(args);
@@ -287,14 +303,18 @@ export class AgentService {
         },
       },
       {
-        name: 'read_note', description: '요청 시작 시점의 Markdown 노트를 읽는다. 문맥에 고정된 노트는 고정 ref를 읽는다. 인용은 읽은 노트 경로만 사용한다.',
-        parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'], additionalProperties: false },
+        name: 'read_note', description: '요청 시작 시점의 Markdown 노트를 페이지로 읽는다. offset은 0부터 시작하는 줄 번호이며 limit은 최대 800줄이다. truncated이면 nextOffset과 nextCharOffset을 offset과 charOffset으로 전달해 이어 읽는다. 문맥에 고정된 노트는 고정 ref를 읽는다. 인용은 읽은 노트 경로만 사용한다.',
+        parameters: { type: 'object', properties: { path: { type: 'string' }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: PAGE_MAX_LINES }, charOffset: { type: 'integer', minimum: 0 } }, required: ['path'], additionalProperties: false },
         summary: (args) => {
           const path = notePath(readArgs.parse(args).path);
           if (user) this.acl.assertRead(user, path);
           return { summary: path, path };
         },
-        run: async (args) => JSON.stringify(await readNote(notePath(readArgs.parse(args).path))),
+        run: async (args) => {
+          const { path, offset, limit, charOffset } = readArgs.parse(args);
+          const note = await readNote(notePath(path));
+          return JSON.stringify({ path: note.path, sha: note.sha, ...pageContent(note.content, offset, limit, charOffset) });
+        },
       },
     ];
   }

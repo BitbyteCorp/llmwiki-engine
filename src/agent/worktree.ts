@@ -3,10 +3,25 @@ import type { Worktree } from '../knowledge/repo.js';
 import type { SearchService } from '../rag/search.service.js';
 import type { AgentTool } from './agent.types.js';
 import type { AclService, AclUser } from '../acl/acl.service.js';
+import { pageContent, PAGE_MAX_CHARS, PAGE_MAX_LINES } from './output.js';
+
+export const LIST_MAX_FILES = 500;
+export const SEARCH_MAX_RESULTS = 30;
+export const readPageArgs = {
+  offset: z.number().int().min(0).optional(),
+  limit: z.number().int().min(1).max(PAGE_MAX_LINES).optional(),
+  charOffset: z.number().int().min(0).optional(),
+};
+export const readPageParameters = {
+  offset: { type: 'integer', minimum: 0, description: '0-based line offset.' },
+  limit: { type: 'integer', minimum: 1, maximum: PAGE_MAX_LINES, default: PAGE_MAX_LINES },
+  charOffset: { type: 'integer', minimum: 0, description: 'Character offset within the offset line; use nextCharOffset to continue a long line.' },
+};
 
 const pathArgs = z.object({ path: z.string().min(1) }).strict();
-const searchArgs = z.object({ query: z.string().trim().min(1), limit: z.number().int().min(1).max(100).optional() }).strict();
-const listArgs = z.object({ prefix: z.string().optional() }).strict();
+const readArgs = z.object({ path: z.string().min(1), ...readPageArgs }).strict();
+const searchArgs = z.object({ query: z.string().trim().min(1), limit: z.number().int().min(1).max(SEARCH_MAX_RESULTS).optional() }).strict();
+const listArgs = z.object({ prefix: z.string().optional(), offset: z.number().int().min(0).default(0) }).strict();
 const writeArgs = z.object({ path: z.string().min(1), content: z.string() }).strict();
 const moveArgs = z.object({ from: z.string().min(1), to: z.string().min(1) }).strict();
 const commitArgs = z.object({ message: z.string().trim().min(1) }).strict();
@@ -23,37 +38,52 @@ export function makeWorktreeTools(
       name: 'search',
       description: 'Search the main knowledge index before creating a note. Results describe main, not unmerged worktree edits; read_file reads this worktree.',
       parameters: {
-        type: 'object', properties: { query: { type: 'string', minLength: 1 }, limit: { type: 'integer', minimum: 1, maximum: 100 } },
+        type: 'object', properties: { query: { type: 'string', minLength: 1 }, limit: { type: 'integer', minimum: 1, maximum: SEARCH_MAX_RESULTS } },
         required: ['query'], additionalProperties: false,
       },
       async run(args: unknown, signal?: AbortSignal) {
         const { query, limit } = searchArgs.parse(args);
-        const hits = await search.search(query, { limit, user }, signal);
+        const hits = await search.search(query, { limit: limit ?? SEARCH_MAX_RESULTS, user }, signal);
         if (user) wt.onPhase?.('editing', { sourcePaths: hits.map(hit => hit.path) });
         return JSON.stringify(hits);
       },
     },
     {
       name: 'list_files',
-      description: 'List Markdown files in the confined worktree, optionally beneath a repository-relative prefix.',
-      parameters: { type: 'object', properties: { prefix: { type: 'string' } }, required: [], additionalProperties: false },
+      description: 'List up to 500 Markdown files in the confined worktree, within a 30000-character path budget. Continue at nextOffset with the same prefix, or narrow prefix to a folder.',
+      parameters: { type: 'object', properties: { prefix: { type: 'string' }, offset: { type: 'integer', minimum: 0, default: 0 } }, required: [], additionalProperties: false },
       async run(args: unknown) {
-        const { prefix } = listArgs.parse(args);
+        const { prefix, offset } = listArgs.parse(args);
         const files = await wt.list(prefix);
         const visible = user ? acl.filterPaths(user, files) : files;
-        if (user) wt.onPhase?.('editing', { sourcePaths: visible });
-        return JSON.stringify(visible);
+        const page: string[] = [];
+        let serializedChars = 2;
+        for (let index = offset; index < visible.length && page.length < LIST_MAX_FILES; index++) {
+          const cost = JSON.stringify(visible[index]).length + (page.length ? 1 : 0);
+          if (page.length && serializedChars + cost > PAGE_MAX_CHARS) break;
+          page.push(visible[index]);
+          serializedChars += cost;
+        }
+        if (user) wt.onPhase?.('editing', { sourcePaths: page });
+        const nextOffset = offset + page.length < visible.length ? offset + page.length : null;
+        return JSON.stringify({
+          files: page, totalFiles: visible.length, nextOffset, truncated: nextOffset !== null,
+          ...(nextOffset !== null ? { continuation: `Continue list_files with offset=${nextOffset} and the same prefix, or narrow prefix to a folder.` } : {}),
+        });
       },
     },
     {
       name: 'read_file',
-      description: 'Read a repository-relative file from this worktree. JSON content is null when absent and an empty string when empty.',
-      parameters: { type: 'object', properties: { path: { type: 'string', minLength: 1 } }, required: ['path'], additionalProperties: false },
+      description: 'Read a page of a worktree file: content,totalLines,nextOffset,truncated. Offset is 0-based; default/max 800 lines and max 30000 characters. Continue with nextOffset and nextCharOffset (if present). Pages preserve line endings. Assemble all needed pages before replacing via write_file. Missing content is null; empty content is an empty string.',
+      parameters: { type: 'object', properties: { path: { type: 'string', minLength: 1 }, ...readPageParameters }, required: ['path'], additionalProperties: false },
       async run(args: unknown) {
-        const { path } = pathArgs.parse(args);
+        const { path, offset, limit, charOffset } = readArgs.parse(args);
         if (user) acl.assertRead(user, path);
         if (user) wt.onPhase?.('editing', { sourcePath: path });
-        return JSON.stringify({ path, content: await wt.read(path) });
+        const content = await wt.read(path);
+        return JSON.stringify({ path, ...(content === null
+          ? { content: null, totalLines: 0, nextOffset: null, truncated: false }
+          : pageContent(content, offset, limit, charOffset)) });
       },
     },
     {

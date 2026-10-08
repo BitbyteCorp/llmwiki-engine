@@ -110,7 +110,7 @@ describe('core database', () => {
       })));
       expect(db.prepare('SELECT * FROM write_job_events').all()).toEqual(events);
       expect(db.prepare('SELECT * FROM imports').all()).toEqual(imports);
-      expect(schemaSql.all()).toEqual(expectedSchema);
+      expect(schemaSql.all()).toEqual(expect.arrayContaining(expectedSchema));
       expect(db.prepare("SELECT * FROM pragma_foreign_key_list('imports') UNION ALL SELECT * FROM pragma_foreign_key_list('write_job_events')").all()).toEqual(foreignKeys);
       expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
       expect(db.pragma('foreign_key_check')).toEqual([]);

@@ -1,4 +1,4 @@
-import type { ResponseInputContent } from 'openai/resources/responses/responses';
+import type { ResponseInputContent, ResponseInputItem } from 'openai/resources/responses/responses';
 import type { User } from '../auth/users.types.js';
 import type { JobPhase, WriteJob } from '../jobs/write-job.types.js';
 
@@ -14,6 +14,13 @@ export interface TokenUsage {
   inputTokens: number;
   outputTokens: number;
   reasoningTokens: number;
+}
+
+export interface AgentCheckpoint {
+  input: ResponseInputItem[];
+  text: string;
+  toolCalls: number;
+  usage?: TokenUsage;
 }
 
 export type ChatMessage = { role: 'user' | 'assistant'; content: string | ResponseInputContent[] };
@@ -77,6 +84,10 @@ export interface RunAgentOptions {
   onTextDelta?: (text: string) => void;
   maxTurns?: number;
   assertAccess?: () => void;
+  /** Resume at a completed tool-turn boundary; input is ignored and maxTurns restarts. */
+  resume?: AgentCheckpoint;
+  /** Receives an independent JSON-serializable snapshot after each tool turn. */
+  onCheckpoint?: (checkpoint: AgentCheckpoint) => void;
   /** Drain queued messages before each model turn. */
   beforeTurn?: () => ChatMessage[];
   onToolCall?: (count: number) => void;

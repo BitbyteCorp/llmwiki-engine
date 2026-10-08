@@ -16,6 +16,7 @@ const envSchema = z.object({
     .transform(value => value.split(',').map(model => model.trim()).filter(Boolean))
     .pipe(z.array(z.string()).nonempty()),
   LLM_REASONING_EFFORT: z.string().min(1).default('medium'),
+  LLM_COMPACT_THRESHOLD: z.coerce.number().int().positive().default(120000),
   EMBEDDING_MODEL: z.string().min(1).default('text-embedding-3-small'),
   EMBEDDING_DIMENSIONS: z.coerce.number().int().positive().default(1536),
   SEARCH_RERANK: z.enum(['off', 'llm']).default('off'),
@@ -49,6 +50,7 @@ export interface Config {
   port: number; publicUrl: string; dataDir: string; sessionSecret: string;
   openaiApiKey?: string; openaiBaseUrl?: string; openaiMaxRetries?: number;
   llmModels: string[]; llmModel: string; llmReasoningEffort: string;
+  llmCompactThreshold: number;
   embeddingModel: string; embeddingDimensions: number;
   searchRerank?: 'off' | 'llm'; searchExpand?: 'off' | 'llm'; indexPollSeconds?: number;
   googleClientId?: string; googleClientSecret?: string;
@@ -70,6 +72,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     openaiApiKey: parsed.OPENAI_API_KEY, openaiBaseUrl: parsed.OPENAI_BASE_URL,
     openaiMaxRetries: parsed.OPENAI_MAX_RETRIES,
     llmModels: parsed.LLM_MODELS, llmModel: parsed.LLM_MODELS[0], llmReasoningEffort: parsed.LLM_REASONING_EFFORT,
+    llmCompactThreshold: parsed.LLM_COMPACT_THRESHOLD,
     embeddingModel: parsed.EMBEDDING_MODEL, embeddingDimensions: parsed.EMBEDDING_DIMENSIONS,
     searchRerank: parsed.SEARCH_RERANK, searchExpand: parsed.SEARCH_EXPAND, indexPollSeconds: parsed.INDEX_POLL_SECONDS,
     googleClientId: parsed.GOOGLE_CLIENT_ID, googleClientSecret: parsed.GOOGLE_CLIENT_SECRET,

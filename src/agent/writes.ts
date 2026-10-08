@@ -7,6 +7,7 @@ import type { AgentTool } from './agent.types.js';
 import type { AclService, AclUser } from '../acl/acl.service.js';
 import { visibleLog } from '../api/acl-history.js';
 import { SubagentPool } from './subagents.js';
+import { readPageArgs, readPageParameters } from './worktree.js';
 
 const writeInstructions = `
 지식 쓰기 작업을 작업 워크트리에서 완수한다. 기본 작성 규칙과 다음 절차를 모두 따른다.
@@ -21,6 +22,8 @@ const writeInstructions = `
 8. 태그는 영어 소문자이며 여러 노트에 재사용되는 넓은 주제로 선택한다. 기존의 더 넓은 태그가 적합한지 먼저 확인한다. 버전(v2, arxiv-v2), 일회성 실험·구현 세부 사항(guardrail), 임시 단계·프로젝트 상태는 태그로 만들지 않는다. 버전, 주장 범위, 실험 단계, 프로젝트 결정 맥락은 제목이나 본문에 적는다. 폴더는 큰 구조, 태그는 주제 분류, 위키링크와 색인은 큐레이션된 탐색이라는 역할을 중복하지 않는다.
 9. 변경 파일을 read_file로 다시 읽어 각 지식 단위의 정본 위치와 필요한 탐색 링크, 사실성, 금지된 섹션 제목, 지나치게 좁은 태그, 중복 속성, 읽기 상태 섹션, 비밀값·개인정보, 깨진 색인 링크, placeholder를 검토하고 고친다. 의미 단위마다 검토한 변경을 commit으로 커밋한다. 한 작업에 여러 커밋이 가능하며 메시지는 무엇을 왜 바꿨는지 한국어로 설명한다. author는 요청자, committer는 엔진의 도니 봇으로 도구가 기록한다.
 10. 직접 main 머지나 push를 하지 않는다. 엔진이 이후 직렬 머지, 충돌 해결, 재인덱싱, 워크트리 정리를 수행한다. 마지막 응답은 실제 반영한 각 지식 단위가 어느 파일에 정리되었는지와 주요 수정·거부·열린 쟁점을 간결한 한국어 요약으로만 설명한다. 아직 main에 머지되었다고 주장하지 않는다.
+
+read_file은 전체 파일이 아니라 페이지 JSON을 반환한다. offset은 0부터 시작하는 줄 위치이며 truncated이면 nextOffset과 nextCharOffset(있을 때)을 그대로 사용해 이어 읽는다. 페이지의 content를 순서대로 연결하면 줄바꿈까지 원문을 보존한다. 기존 파일을 교체하기 전에 필요한 모든 페이지를 읽고 유지할 내용을 포함한 전체 결과를 write_file로 저장한다. 첫 페이지만으로 나머지 내용을 지우지 않는다. list_files도 최대 500개이므로 같은 prefix와 nextOffset으로 이어 조회하거나 폴더를 좁힌다.
 
 ## 위임
 독립적으로 수정할 대상 파일이 3개 이상이거나 작업이 크면 지식 단위와 의존성을 먼저 계획한 뒤 파일 소유권을 나누어 spawn_subagent로 병렬 위임한다. 단순한 단일 노트 쓰기는 직접 처리한다. files에는 정확한 저장소 상대 경로나 /로 끝나는 폴더 접두사를 주며 실행 중인 서브에이전트의 소유권을 겹치지 않는다. index.md, MEMORY.md, AGENTS.md, raw/는 위임할 수 없다. 공용 허브·색인 링크와 메모리, 전체 결과 검증 및 모든 커밋은 부모가 맡는다.
@@ -63,7 +66,7 @@ const conflictInstructions = `
 
 작업 브랜치와 main의 유효한 지식을 모두 보존하여 통합한다. 충돌 표시 한쪽을 무조건 선택하거나 다른 쪽의 추가 지식을 버리지 않는다. 모순되는 사실은 근거를 확인하고, 판별 불가능하면 열린 쟁점으로 명시하며 임의의 사실이나 새로운 동작을 만들지 않는다. 실제 비밀값은 저장하지 않고 개인정보는 마스킹한다. 기본 작성 규칙, 한국어 본문, 최소 frontmatter, 일반적인 영어 소문자 태그와 유효한 위키링크를 유지한다.
 
-수정 범위는 이번 시도에 제공된 충돌 파일뿐이다. search는 main 지식 검색에만 사용하고 read_file/write_file은 허용된 파일만 읽고 쓴다. 각 파일의 전체 해결 결과를 write_file로 저장한다. 빈 파일이 올바른 결과면 content를 빈 문자열로 저장한다. 파일을 삭제하거나 이동하지 않는다. <<<<<<<, =======, >>>>>>> 및 diff3의 ||||||| 충돌 표시 줄을 모두 제거하고 read_file로 결과를 검토한다. 커밋, 머지 완료, main 수정, push는 하지 않는다. 엔진이 검증 후 머지를 완료한다.
+수정 범위는 이번 시도에 제공된 충돌 파일뿐이다. search는 main 지식 검색에만 사용하고 read_file/write_file은 허용된 파일만 읽고 쓴다. read_file은 페이지를 반환하므로 truncated이면 nextOffset과 nextCharOffset(있을 때)으로 끝까지 이어 읽고 원문을 보존한다. 각 파일의 전체 해결 결과를 write_file로 저장한다. 빈 파일이 올바른 결과면 content를 빈 문자열로 저장한다. 파일을 삭제하거나 이동하지 않는다. <<<<<<<, =======, >>>>>>> 및 diff3의 ||||||| 충돌 표시 줄을 모두 제거하고 read_file의 모든 페이지로 결과를 검토한다. 커밋, 머지 완료, main 수정, push는 하지 않는다. 엔진이 검증 후 머지를 완료한다.
 `;
 
 // Git emits seven or more marker characters (including diff3 base markers) at line start.
@@ -72,7 +75,7 @@ const conflictMarker = /^(?:<{7,}|={7,}|>{7,}|\|{7,})/m;
 function conflictTools(agent: AgentService, wt: Worktree, files: string[], user?: AclUser): AgentTool[] {
   const allowed = new Set(files);
   const path = z.string().min(1).refine((value) => allowed.has(value), { message: 'Only the listed conflict files may be accessed' });
-  const readArgs = z.object({ path }).strict();
+  const readArgs = z.object({ path, ...readPageArgs }).strict();
   const writeArgs = z.object({ path, content: z.string() }).strict();
   // The author is unused: the commit tool is never exposed during conflict resolution.
   return agent.worktreeTools(wt, { name: '도니', email: 'dony@llmwiki.local' }, user)
@@ -84,7 +87,7 @@ function conflictTools(agent: AgentService, wt: Worktree, files: string[], user?
         ...tool,
         parameters: {
           type: 'object',
-          properties: { path: { type: 'string', enum: files }, ...(writing ? { content: { type: 'string' } } : {}) },
+          properties: { path: { type: 'string', enum: files }, ...(writing ? { content: { type: 'string' } } : readPageParameters) },
           required: writing ? ['path', 'content'] : ['path'],
           additionalProperties: false,
         },

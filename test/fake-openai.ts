@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { createServer, type ServerResponse } from 'node:http';
 import type {
   Response,
+  ResponseCompactionItem,
   ResponseFunctionToolCall,
   ResponseOutputMessage,
   ResponseStreamEvent,
@@ -15,7 +16,7 @@ export interface FakeFunctionCall {
   call_id?: string;
 }
 
-export type FakeOutputItem = string | FakeFunctionCall;
+export type FakeOutputItem = string | FakeFunctionCall | ResponseCompactionItem;
 export type FakeTurn =
   | FakeOutputItem
   | ({ text: string }
@@ -40,7 +41,7 @@ export interface FakeOpenAI {
   requests: FakeOpenAIRequest[];
 }
 
-type FakeWireItem = ResponseOutputMessage | (ResponseFunctionToolCall & { id: string });
+type FakeWireItem = ResponseOutputMessage | (ResponseFunctionToolCall & { id: string }) | ResponseCompactionItem;
 
 const responseParameters = z.object({
   model: z.string().default('gpt-6-luna'),
@@ -98,6 +99,7 @@ function makeResponse(turn: FakeTurn, number: number, params: z.infer<typeof res
         content: [{ type: 'output_text', text: item, annotations: [], logprobs: [] }],
       };
     }
+    if (item.type === 'compaction') return item;
     return {
       id: `fc_fake_${number}_${index}`, type: 'function_call', status: 'completed',
       name: item.name, arguments: typeof item.arguments === 'string' ? item.arguments : JSON.stringify(item.arguments),

@@ -160,6 +160,35 @@ describe('subagent lifecycle failure containment', () => {
     });
     expect(errors).toHaveLength(1);
   });
+
+  it.each(['result', 'error', 'callback'] as const)('bounds oversized child %s in persisted events and status responses', async (outcome) => {
+    const oversized = 'A grounded finding. '.repeat(1000);
+    const changes: SubagentSnapshot[] = [];
+    const pool = new SubagentPool({
+      agent: {
+        runAgent: async () => {
+          if (outcome === 'error') throw new Error(oversized);
+          return { text: oversized, toolCalls: 0 };
+        },
+      } as unknown as AgentService,
+      instructions: '', tools: [], wt: { path: tmpdir() },
+      log: { error: () => {} } as unknown as pino.Logger,
+      onChange: (snapshot) => {
+        if (outcome === 'callback' && snapshot.status !== 'running') throw new Error(oversized);
+        changes.push(snapshot);
+      },
+    });
+    cleanup.push(() => pool.close());
+    const child = await spawn(pool, `large-${outcome}`);
+    const settled = (await waitFor(pool, [child.id])).settled[0];
+    const field = outcome === 'result' ? 'result' : 'error';
+    expect(settled[field]?.length).toBe(8000);
+    expect(settled[field]).toContain('truncated');
+    expect(settled[field]).toContain('paging or narrower queries');
+    const status = await invoke<{ subagents: SubagentSnapshot[] }>(pool.tools(), 'subagent_status', { id: child.id });
+    expect(status.subagents[0][field]).toBe(settled[field]);
+    if (outcome !== 'callback') expect(changes.at(-1)?.[field]).toBe(settled[field]);
+  });
 });
 
 describe('write subagent pool', () => {

@@ -6,7 +6,7 @@
 
 ## 내용
 ### Nest 모듈과 의존성
-`src/agent/`의 `AgentModule`은 `KnowledgeModule`과 `RagModule`을 가져오고, `agent.service.ts`의 `AgentService`를 제공하며 다른 모듈에 내보낸다. 서비스는 설정·로그를 공용 `CONFIG`, `LOGGER` 토큰으로 주입받고, `KnowledgeRepo`와 `SearchService`를 클래스 타입으로 주입받는다.
+`src/agent/`의 `AgentModule`은 `KnowledgeModule`과 `RagModule`을 가져오고, `agent.service.ts`의 `AgentService`와 `checkpoints.repository.ts`의 `AgentCheckpointsRepository`를 제공하며 다른 모듈에 내보낸다. 서비스는 설정·로그를 공용 `CONFIG`, `LOGGER` 토큰으로 주입받고, `KnowledgeRepo`와 `SearchService`를 클래스 타입으로 주입받는다. 체크포인트 저장소는 공용 `DB` 토큰으로 SQLite 연결을 주입받는다.
 
 에이전트 도구와 실행 옵션의 형식은 `agent.types.ts`에 두며, 작업 워크트리 도구는 `worktree.ts`, 쓰기와 충돌 해결의 절차는 `writes.ts`에 둔다. 서비스는 에이전트 실행·문맥 로딩·쓰기·충돌 해결·질의응답의 인터페이스를 유지한다. 대화 중 쓰기 작업 제출은 대화 서비스가 `answer()`에 전달하는 콜백으로 연결하므로 `AgentModule`이 `JobsModule`을 가져오는 순환 의존성을 만들지 않는다.
 
@@ -18,6 +18,22 @@
 함수 호출 결과를 다음 Responses 입력으로 돌려주는 루프를 사용한다. 도구 실행이나 인자 해석 실패는 오류를 담은 도구 출력으로 모델에 전달하므로 도니가 수정하거나 설명할 수 있다. 기본 호출 상한은 32턴이며 상한 안에 작업을 끝내지 못하면 실패한다. 웹 답변은 텍스트 델타를 즉시 전달하고, 취소 신호가 오면 추가 모델·도구 호출을 중단한다.
 
 `answer()`는 텍스트 또는 Responses의 `input_text`·`input_image`·`input_file` 콘텐츠 배열을 사용자·답변 메시지의 입력으로 받는다. 진행 이벤트는 `status` 단계, 도구의 `start`·`end`, 최종 인용, 모든 모델 턴을 합산한 `usage`다. 사용량은 입력·출력·추론 토큰으로 나누고 추론 토큰은 출력 토큰의 부분집합이다. 읽기 도구의 공개 요약은 검색 질의나 노트 경로만 담으며 도구 결과나 노트 본문을 넣지 않는다. `write_knowledge`는 예외로 시작·종료 요약에 제출할 `content`의 앞 80자까지 표시하므로 기록할 내용 자체가 대화 구성원에게 보일 수 있다. 생성의 근거 경로와 ACL 투영은 [공유 대화](access-control.md#공유-대화)의 규칙을 따르며, 기록 요청의 성공한 도구 종료 이벤트에는 작업 링크용 `jobId`를 별도로 담는다.
+
+#### 문맥 크기와 도구 페이지
+한 도니 요청의 입력이 358,989토큰까지 커져 조직의 분당 토큰 제한(TPM)에 걸린 사례가 있었다. `store: false` 실행에서 매 턴 이전 입력·추론·도구 결과를 모두 다시 보내던 방식은 큰 파일과 반복 읽기가 누적될수록 문맥을 키웠다. 각 Responses 요청은 `context_management: [{ type: 'compaction', compact_threshold: N }]`를 보내 서버 측 문맥 압축을 사용한다. `N`은 [환경 변수](development.md#환경-변수)의 `LLM_COMPACT_THRESHOLD`이며 기본값은 120,000토큰이다. 이 임계값은 압축을 시작하는 기준이지 TPM 제한 자체를 보장하는 예산은 아니다.
+
+서버가 반환한 암호화 `compaction` 항목은 메시지·함수 호출·암호화 추론과 함께 다음 입력에 보존한다. 가장 최근 압축 항목보다 앞선 입력은 모두 버리고 그 항목 이후의 입력과 이번 턴 도구 출력을 연결한다. 스트리밍에서도 `response.completed`의 최종 출력에 같은 규칙을 적용한다. 마지막 도구 없는 응답은 다음 호출이 없으므로 입력에 추가하지 않는다.
+
+모든 함수 도구의 결과와 오류 출력은 잘림 안내를 포함해 최대 40,000자로 제한한다. 안내는 모델에 페이지를 이어 읽거나 검색 범위를 좁히도록 요구한다. `read_note`와 `read_file`은 기본·최대 800줄, 본문과 직렬화된 본문 각각 최대 30,000자 안의 페이지를 반환한다. 결과에는 `content`, `totalLines`, `nextOffset`, `truncated`가 있으며 `offset`은 0부터 시작하는 줄 번호다. 긴 한 줄을 나누면 `nextCharOffset`도 반환하므로 다음 호출에 `offset: nextOffset`, `charOffset: nextCharOffset`을 전달한다. 줄 경계에서 이어 읽을 때 `charOffset`은 생략하거나 0으로 둔다. 마지막 페이지의 `nextOffset`은 `null`이다. 페이지는 줄바꿈을 보존하므로 순서대로 본문을 연결하면 원문을 얻는다. 전체 파일을 덮어쓰는 `write_file`은 원래 계약을 유지하므로 수정 전 필요한 모든 페이지를 읽고 원문 전체를 재구성해야 한다.
+
+`list_files`는 한 페이지에 최대 500개 경로를 반환하며 디렉터리로 범위를 좁히거나 반환된 offset으로 이어 읽는다. 도니의 검색 `limit`은 최대 30건이다. 서브에이전트의 결과와 오류 문자열은 각각 최대 8,000자로 제한한다. 꿈꾸기에서 관련 노트의 본문을 미리 넣는 대신 짧은 발췌와 경로를 제공하는 규칙은 [꿈꾸기](dreaming.md)에 기록한다.
+
+#### 실행 체크포인트
+`src/agent/agent.types.ts`의 `AgentCheckpoint`는 다음 요청에 보낼 `input`, 누적 답변 `text`, 누적 도구 호출 수 `toolCalls`, 선택적인 누적 토큰 `usage`를 담는다. `RunAgentOptions.onCheckpoint`는 한 턴의 도구 출력이 모두 추가된 뒤 압축 이전 문맥이 제거된 상태의 독립적인 JSON 직렬화 가능 스냅샷을 동기적으로 받는다. 마지막 도구 없는 응답에는 호출하지 않는다. 따라서 이전 턴에 실행한 도구를 다시 실행하지 않고 다음 모델 호출부터 이어갈 수 있다.
+
+`RunAgentOptions.resume`을 지정하면 `input` 옵션은 무시하고 저장된 입력·답변·호출 수·사용량에서 실행을 이어간다. `maxTurns`는 재개 실행에서 새로 계산한다. 실행 루프는 SQLite를 직접 읽거나 쓰지 않으며 호출자가 권한과 수명에 맞게 저장·조회·삭제 시점을 결정한다.
+
+`AgentCheckpointsRepository`는 `save(owner, checkpoint)`, `get(owner)`, `delete(owner)`, `copy(from, to)`를 제공한다. 없는 owner의 `get`은 `undefined`, 없는 원본의 `copy`는 `false`다. `019_agent_checkpoints.sql`의 `agent_checkpoints` 테이블에 owner별 JSON 문서와 갱신 시각을 저장한다. owner는 `message:<메시지 ID>` 또는 `job:<작업 ID>` 같은 불투명 문자열이며 서비스에서 이미 사용하는 base62 ID 표현을 그대로 붙인다. 접두사를 포함한 owner나 체크포인트의 재생 문서는 SQLite의 UUID 열처럼 다시 인코딩하지 않는다. 식별자 표현 경계는 [식별자](identifiers.md)를 따른다.
 
 #### OpenAI 재시도 정책
 도니의 Responses 호출과 문서·질의 임베딩은 `src/common/openai.ts`의 공용 클라이언트 팩터리와 fetch 어댑터를 사용한다. 최대 재시도 횟수는 [환경 변수](development.md#환경-변수)의 `OPENAI_MAX_RETRIES`로 정하며, 실제 재시도·백오프·취소는 OpenAI SDK가 담당한다. 어댑터는 SDK가 전달한 요청 인자와 취소 신호를 그대로 fetch에 전달한다.

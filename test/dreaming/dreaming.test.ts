@@ -42,7 +42,7 @@ type Author = { name: string; email: string };
 type MessageInput = { id: string; conversation_id: string; content: string; created_at: string };
 type DreamInput = {
   date: string; fromSha: string; toSha: string; commits: CommitInfo[];
-  changedNotes: Array<{ change: FileChange; content: string | null; similarNotes: Array<SearchHit & { content: string | null }> }>;
+  changedNotes: Array<{ change: FileChange; content: string | null; similarNotes: Array<{ path: string; title: string; excerpt: string }> }>;
   userMessages: MessageInput[];
 };
 
@@ -330,7 +330,7 @@ describe('DreamingService.runOnce', () => {
     expect(input.changedNotes).toEqual([{
       change: { status: 'A', path: 'wiki/deployment.md' },
       content: '# Deployment\n\nReleases require review.\n',
-      similarNotes: [{ ...similarHit, content: similarContent }],
+      similarNotes: [{ path: similarHit.path, title: similarHit.title, excerpt: similarHit.excerpt }],
     }]);
     expect(await f.repo.readFile(`journal/${kstDate}.md`)).toBe(journalContent);
     expect(run.mergeSha).toBe(await f.repo.headSha());
@@ -340,6 +340,18 @@ describe('DreamingService.runOnce', () => {
     expect(f.repo.pushCount).toBe(1);
     expect(await f.repo.git(['rev-parse', 'main'], f.repo.origin)).toBe(run.mergeSha);
     expect(f.indexer.syncToHead).toHaveBeenCalledTimes(1);
+  });
+
+  it('bounds related-note excerpts instead of injecting their full bodies', async () => {
+    const f = await fixture();
+    const longExcerpt = 'Grounded related fact. '.repeat(200);
+    f.search.search.mockResolvedValue([{ ...similarHit, excerpt: longExcerpt }]);
+    await f.repo.change();
+    const run = await f.dreaming.runOnce();
+    expect(run.status).toBe('succeeded');
+    const related = inputOf(f.runAgent.mock.calls[0][0]).changedNotes[0].similarNotes[0];
+    expect(related).toEqual({ path: similarHit.path, title: similarHit.title, excerpt: longExcerpt.slice(0, 1500) });
+    expect(related).not.toHaveProperty('content');
   });
 
   it('keeps main untouched when Dony fails, but still pushes main', async () => {
