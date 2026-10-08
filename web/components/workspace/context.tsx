@@ -7,7 +7,7 @@ import { noteHref } from '@/components/common'
 import { api } from '@/lib/api'
 import { clearDraft, confirmEditorLeave, getEditorStatus, markDraftTransfer, renameDraft, subscribeEditorStatus } from '@/components/editor/state'
 import { notify } from '@/components/notifications'
-import { createWorkspace, GRAPH_TAB_PATH, isGraphTab, groupOrder, insertGroup, MAX_EDITOR_GROUPS, moveTab as moveLayoutTab, removeGroup, renamePath, removePath, visitGroup, validateV2, migrateV1, type WorkspaceState, type GroupId, type LayoutNode, type SplitSide, type DropTarget } from './layout'
+import { createWorkspace, isViewTab, isViewRoute, viewTabPath, viewTabPathname, groupOrder, insertGroup, MAX_EDITOR_GROUPS, moveTab as moveLayoutTab, removeGroup, renamePath, removePath, visitGroup, validateV2, migrateV1, type WorkspaceState, type GroupId, type LayoutNode, type SplitSide, type DropTarget } from './layout'
 
 export { MAX_EDITOR_GROUPS } from './layout'
 export type { WorkspaceTab, GroupId, EditorGroup, SplitNode, LayoutNode, SplitSide, DropTarget } from './layout'
@@ -17,7 +17,8 @@ export type Workspace = Omit<WorkspaceState, 'closed'> & {
   activePath: string
   setActiveGroup(id: GroupId): void
   focusGroup(target: GroupId | number): void
-  openNote(path: string, options?: { pin?: boolean; fragment?: string; group?: GroupId | 'side'; ref?: string }): void
+  openNote(path: string, options?: { pin?: boolean; fragment?: string; group?: GroupId | 'side'; ref?: string; query?: string; replace?: boolean }): void
+  openHref(href: string, options?: { group?: GroupId; replace?: boolean }): void
   openNoteAt(path: string, target: DropTarget): void
   moveTab(source: { groupId: GroupId; path: string }, target: DropTarget, options?: { copy?: boolean }): void
   splitEditor(side?: SplitSide): void
@@ -42,7 +43,11 @@ const storagePrefix = 'llmwiki.workspace.v2'
 const capNotice = () => notify({ title: `편집기 그룹은 최대 ${MAX_EDITOR_GROUPS}개까지 열 수 있습니다.`, description: '현재 그룹에서 노트를 엽니다.' })
 const activeHref = (state: WorkspaceState) => {
   const group = state.groups[state.activeGroupId]
-  return isGraphTab(group?.activePath ?? '') ? '/graph' : group?.activePath ? noteHref(group.activePath) + (group.ref ? `?ref=${encodeURIComponent(group.ref)}` : '') : '/wiki?empty=1'
+  if (isViewTab(group?.activePath ?? '')) {
+    const tab = group.tabs.find(tab => tab.path === group.activePath)
+    return viewTabPathname(group.activePath) + (tab?.query ? `?${tab.query}` : '')
+  }
+  return group?.activePath ? noteHref(group.activePath) + (group.ref ? `?ref=${encodeURIComponent(group.ref)}` : '') : '/wiki?empty=1'
 }
 function freshGroupId(state: WorkspaceState) {
   let index = 1
@@ -55,9 +60,9 @@ function ownerFor(state: WorkspaceState, path: string, remembered?: string) {
 }
 function leavingFor(state: WorkspaceState, id: string, path: string) {
   const previous = state.groups[id]?.activePath
-  return previous && !isGraphTab(previous) && previous !== path ? [previous] : []
+  return previous && !isViewTab(previous) && previous !== path ? [previous] : []
 }
-const notePaths = (paths: string[]) => paths.filter(path => !isGraphTab(path))
+const notePaths = (paths: string[]) => paths.filter(path => !isViewTab(path))
 function updateSizes(node: LayoutNode, id: string, sizes?: number[]): LayoutNode {
   if (node.type === 'group') return node
   if (node.id === id) {
@@ -72,13 +77,16 @@ function updateSizes(node: LayoutNode, id: string, sizes?: number[]): LayoutNode
 export function WorkspaceProvider({ children, userId }: { children: ReactNode; userId?: number }) {
   const pathname = usePathname()
   const searchParams = useSearchParams()
-  const urlPath = pathname === '/graph' ? GRAPH_TAB_PATH : pathname.startsWith('/wiki/') ? pathname.slice(6).split('/').map(decodeURIComponent).join('/') : ''
-  const urlRef = pathname === '/graph' ? undefined : searchParams.get('ref') || undefined
+  const urlIsView = isViewRoute(pathname)
+  const urlPath = urlIsView ? viewTabPath(pathname) : pathname.startsWith('/wiki/') ? pathname.slice(6).split('/').map(decodeURIComponent).join('/') : ''
+  const urlRef = urlIsView ? undefined : searchParams.get('ref') || undefined
+  const urlQuery = urlIsView ? searchParams.toString() : undefined
   const router = useRouter()
   const storageKey = `${storagePrefix}.${userId ?? 'default'}`
   const [state, setState] = useState<WorkspaceState>(createWorkspace)
   const stateRef = useRef(state)
   const [restoredKey, setRestoredKey] = useState<string | null>(null)
+  const openHrefRef = useRef<Workspace['openHref'] | null>(null)
   const ready = restoredKey === storageKey
   const [noteInfo, setNoteInfo] = useState<NoteInfo | null>(null)
   const owners = useRef(new Map<string, string>())
@@ -98,8 +106,10 @@ export function WorkspaceProvider({ children, userId }: { children: ReactNode; u
     setState(next)
   }, [])
   const navigate = useCallback((next: WorkspaceState, mode: 'push' | 'replace', fragment?: string) => {
+    const href = activeHref(next) + (fragment ? `#${encodeURIComponent(fragment)}` : '')
+    if (window.location.pathname + window.location.search + window.location.hash === href) return
     window.dispatchEvent(new Event('workspace-navigation'))
-    router[mode](activeHref(next) + (fragment ? `#${encodeURIComponent(fragment)}` : ''))
+    router[mode](href)
   }, [router])
   const setActiveGroup = useCallback((id: GroupId) => {
     const current = stateRef.current
@@ -150,9 +160,11 @@ export function WorkspaceProvider({ children, userId }: { children: ReactNode; u
     } catch { /* Private storage and stale sessions still allow an in-memory workspace. */ }
     if (urlPath) {
       const showing = restored.groups[restored.activeGroupId]?.activePath === urlPath ? restored.activeGroupId : groupOrder(restored.layout).find(id => restored.groups[id]?.activePath === urlPath)
-      restored = visitGroup(restored, showing ?? restored.activeGroupId, urlPath)
-      const id = restored.activeGroupId
-      restored = { ...restored, groups: { ...restored.groups, [id]: { ...restored.groups[id], ref: urlRef } } }
+      restored = visitGroup(restored, showing ?? restored.activeGroupId, urlPath, false, urlRef, undefined, urlQuery)
+      if (!urlIsView) {
+        const id = restored.activeGroupId
+        restored = { ...restored, groups: { ...restored.groups, [id]: { ...restored.groups[id], ref: urlRef } } }
+      }
     }
     commit(restored)
     setRestoredKey(storageKey)
@@ -160,21 +172,24 @@ export function WorkspaceProvider({ children, userId }: { children: ReactNode; u
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [storageKey, commit])
   useEffect(() => {
-    if (!ready || (pathname !== '/graph' && !pathname.startsWith('/wiki'))) return
-    if (pathname === '/graph' && searchParams.size) router.replace('/graph', { scroll: false })
+    if (!ready || (!urlIsView && pathname !== '/wiki' && !pathname.startsWith('/wiki/'))) return
     const current = stateRef.current
     let next = current
     if (urlPath) {
       const showing = current.groups[current.activeGroupId]?.activePath === urlPath ? current.activeGroupId : groupOrder(current.layout).find(id => current.groups[id]?.activePath === urlPath)
-      next = showing ? { ...current, activeGroupId: showing } : visitGroup(current, current.activeGroupId, urlPath, false, urlRef, new Set(Object.values(current.groups).flatMap(group => group.tabs.filter(tab => !isGraphTab(tab.path) && getEditorStatus(tab.path)?.dirty).map(tab => tab.path))))
-      const id = next.activeGroupId
-      if (next.groups[id].ref !== urlRef) next = { ...next, groups: { ...next.groups, [id]: { ...next.groups[id], ref: urlRef } } }
+      const id = showing ?? current.activeGroupId
+      const group = current.groups[id]
+      const tab = group.tabs.find(tab => tab.path === urlPath)
+      if (!showing || (urlIsView ? tab?.query !== (urlQuery || undefined) : group.ref !== urlRef) || current.activeGroupId !== id) {
+        next = visitGroup(current, id, urlPath, false, urlRef, new Set(Object.values(current.groups).flatMap(group => group.tabs.filter(tab => !isViewTab(tab.path) && getEditorStatus(tab.path)?.dirty).map(tab => tab.path))), urlQuery)
+        if (!urlIsView && next.groups[id].ref !== urlRef) next = { ...next, groups: { ...next.groups, [id]: { ...next.groups[id], ref: urlRef } } }
+      }
     } else if (searchParams.get('empty') === '1' && current.groups[current.activeGroupId]?.activePath) {
       const id = current.activeGroupId
       next = { ...current, groups: { ...current.groups, [id]: { ...current.groups[id], activePath: '', ref: undefined } } }
     }
     if (next !== current) commit(next)
-  }, [urlPath, urlRef, pathname, searchParams, ready, commit, router])
+  }, [urlPath, urlRef, urlQuery, urlIsView, pathname, searchParams, ready, commit])
   useEffect(() => {
     if (!ready) return
     try { localStorage.setItem(storageKey, JSON.stringify(state)) } catch { /* Storage may be unavailable. */ }
@@ -183,7 +198,7 @@ export function WorkspaceProvider({ children, userId }: { children: ReactNode; u
     const current = stateRef.current
     let changed = false
     const groups = Object.fromEntries(Object.entries(current.groups).map(([id, group]) => [id, { ...group, tabs: group.tabs.map(tab => {
-      if (!isGraphTab(tab.path) && !tab.pinned && getEditorStatus(tab.path)?.dirty) { changed = true; return { ...tab, pinned: true } }
+      if (!isViewTab(tab.path) && !tab.pinned && getEditorStatus(tab.path)?.dirty) { changed = true; return { ...tab, pinned: true } }
       return tab
     }) }]))
     if (changed) commit({ ...current, groups })
@@ -197,9 +212,9 @@ export function WorkspaceProvider({ children, userId }: { children: ReactNode; u
   useEffect(() => {
     const sameDocument = (left: URL, right: URL) => left.origin === right.origin && left.pathname === right.pathname && left.search === right.search
     const confirmDestination = (destination: URL, groupId?: string) => {
-      if (destination.origin !== window.location.origin || (destination.pathname !== '/graph' && destination.pathname !== '/wiki' && !destination.pathname.startsWith('/wiki/'))) return confirmEditorLeave(notePaths(Object.values(stateRef.current.groups).flatMap(group => group.tabs.map(tab => tab.path))))
+      if (destination.origin !== window.location.origin || (!isViewRoute(destination.pathname) && destination.pathname !== '/wiki' && !destination.pathname.startsWith('/wiki/'))) return confirmEditorLeave(notePaths(Object.values(stateRef.current.groups).flatMap(group => group.tabs.map(tab => tab.path))))
       let path = ''
-      try { path = destination.pathname === '/graph' ? GRAPH_TAB_PATH : destination.pathname.slice(6).split('/').map(decodeURIComponent).join('/') } catch { return confirmEditorLeave(notePaths(Object.values(stateRef.current.groups).flatMap(group => group.tabs.map(tab => tab.path)))) }
+      try { path = isViewRoute(destination.pathname) ? viewTabPath(destination.pathname) : destination.pathname.slice(6).split('/').map(decodeURIComponent).join('/') } catch { return confirmEditorLeave(notePaths(Object.values(stateRef.current.groups).flatMap(group => group.tabs.map(tab => tab.path)))) }
       const current = stateRef.current
       if (groupId && current.groups[groupId]) return confirmEditorLeave(leavingFor(current, groupId, path))
       if (Object.values(current.groups).some(group => group.activePath === path && path)) return true
@@ -210,8 +225,15 @@ export function WorkspaceProvider({ children, userId }: { children: ReactNode; u
       const anchor = event.target instanceof Element ? event.target.closest<HTMLAnchorElement>('a[href]') : null
       if (!anchor || anchor.hasAttribute('download') || (anchor.target && anchor.target !== '_self')) return
       const destination = new URL(anchor.href, window.location.href)
-      if (!['http:', 'https:'].includes(destination.protocol) || sameDocument(destination, new URL(window.location.href))) return
+      if (!['http:', 'https:'].includes(destination.protocol)) return
       const groupId = anchor.closest<HTMLElement>('[data-workspace-group]')?.dataset.workspaceGroup
+      if (destination.origin === window.location.origin && isViewRoute(destination.pathname)) {
+        event.preventDefault()
+        event.stopImmediatePropagation()
+        openHrefRef.current?.(destination.pathname + destination.search, { group: groupId })
+        return
+      }
+      if (sameDocument(destination, new URL(window.location.href))) return
       if (!confirmDestination(destination, groupId)) { event.preventDefault(); event.stopImmediatePropagation() }
     }
     const beforeUnload = (event: BeforeUnloadEvent) => {
@@ -268,7 +290,7 @@ export function WorkspaceProvider({ children, userId }: { children: ReactNode; u
       if (history.replaceState === replace) history.replaceState = originalReplace
     }
   }, [])
-  const openNote = useCallback((path: string, options?: { pin?: boolean; fragment?: string; group?: GroupId | 'side'; ref?: string }) => {
+  const openNote = useCallback((path: string, options?: { pin?: boolean; fragment?: string; group?: GroupId | 'side'; ref?: string; query?: string; replace?: boolean }) => {
     if (!path) return
     let current = stateRef.current
     let id = options?.group ?? current.activeGroupId
@@ -282,13 +304,41 @@ export function WorkspaceProvider({ children, userId }: { children: ReactNode; u
       }
     }
     if (!current.groups[id] || !confirmEditorLeave(leavingFor(current, id, path))) return
-    const dirty = new Set(Object.values(current.groups).flatMap(group => group.tabs.filter(tab => !isGraphTab(tab.path) && getEditorStatus(tab.path)?.dirty).map(tab => tab.path)))
-    const next = visitGroup(current, id, path, options?.pin, isGraphTab(path) ? undefined : options?.ref, dirty)
+    const dirty = new Set(Object.values(current.groups).flatMap(group => group.tabs.filter(tab => !isViewTab(tab.path) && getEditorStatus(tab.path)?.dirty).map(tab => tab.path)))
+    const next = visitGroup(current, id, path, options?.pin, isViewTab(path) ? undefined : options?.ref, dirty, options?.query)
     commit(next)
-    queueFragment(id, path, isGraphTab(path) ? undefined : options?.fragment)
-    navigate(next, 'push', isGraphTab(path) ? undefined : options?.fragment)
+    queueFragment(id, path, isViewTab(path) ? undefined : options?.fragment)
+    navigate(next, options?.replace ? 'replace' : 'push', isViewTab(path) ? undefined : options?.fragment)
     if (options?.group) focusGroup(id)
   }, [commit, queueFragment, navigate, focusGroup])
+  const openHref = useCallback((href: string, options?: { group?: GroupId; replace?: boolean }) => {
+    const url = new URL(href, window.location.href)
+    const view = url.origin === window.location.origin && isViewRoute(url.pathname)
+    const note = url.origin === window.location.origin && url.pathname.startsWith('/wiki/')
+    if (!view && !note) {
+      window.dispatchEvent(new Event('workspace-navigation'))
+      router[options?.replace ? 'replace' : 'push'](href)
+      return
+    }
+    const path = view ? viewTabPath(url.pathname) : url.pathname.slice(6).split('/').map(decodeURIComponent).join('/')
+    const query = view ? url.searchParams.toString() : undefined
+    const ref = note ? url.searchParams.get('ref') || undefined : undefined
+    const fragment = note && url.hash ? decodeURIComponent(url.hash.slice(1)) : undefined
+    const current = stateRef.current
+    const id = options?.group ?? current.activeGroupId
+    if (!current.groups[id]) return
+    if (id === current.activeGroupId) {
+      openNote(path, { query, ref, fragment, replace: options?.replace, pin: note })
+      return
+    }
+    // A mounted view in a background group owns its location, not the address bar.
+    if (!confirmEditorLeave(leavingFor(current, id, path))) return
+    const dirty = new Set(Object.values(current.groups).flatMap(group => group.tabs.filter(tab => !isViewTab(tab.path) && getEditorStatus(tab.path)?.dirty).map(tab => tab.path)))
+    const next = visitGroup(current, id, path, note, ref, dirty, query)
+    commit({ ...next, activeGroupId: current.activeGroupId })
+    queueFragment(id, path, fragment)
+  }, [openNote, commit, queueFragment, router])
+  openHrefRef.current = openHref
   const moveTab = useCallback((source: { groupId: GroupId; path: string }, target: DropTarget, options?: { copy?: boolean }) => {
     const current = stateRef.current
     if (!current.groups[source.groupId]?.tabs.some(tab => tab.path === source.path) || !current.groups[target.groupId]) return
@@ -300,7 +350,7 @@ export function WorkspaceProvider({ children, userId }: { children: ReactNode; u
     if (next === current) return
     const oldOwner = ownerFor(current, source.path, owners.current.get(source.path))
     const newOwner = ownerFor(next, source.path, oldOwner)
-    if (!isGraphTab(source.path) && oldOwner !== newOwner && getEditorStatus(source.path)?.dirty) markDraftTransfer(source.path)
+    if (!isViewTab(source.path) && oldOwner !== newOwner && getEditorStatus(source.path)?.dirty) markDraftTransfer(source.path)
     commit(next)
     navigate(next, 'push')
     focusGroup(next.activeGroupId)
@@ -380,7 +430,7 @@ export function WorkspaceProvider({ children, userId }: { children: ReactNode; u
     const current = stateRef.current
     const tab = current.closed.at(-1)
     if (!tab || !confirmEditorLeave(leavingFor(current, current.activeGroupId, tab.path))) return
-    const next = { ...visitGroup(current, current.activeGroupId, tab.path, tab.pinned), closed: current.closed.slice(0, -1) }
+    const next = { ...visitGroup(current, current.activeGroupId, tab.path, tab.pinned, undefined, undefined, tab.query), closed: current.closed.slice(0, -1) }
     commit(next)
     navigate(next, 'push')
   }, [commit, navigate])
@@ -388,10 +438,10 @@ export function WorkspaceProvider({ children, userId }: { children: ReactNode; u
   const resetSplitSizes = useCallback((id: string) => commit({ ...stateRef.current, layout: updateSizes(stateRef.current.layout, id) }), [commit])
   const isEditorOwner = useCallback((id: string, path: string) => ownerFor(stateRef.current, path, owners.current.get(path)) === id, [])
   const revealFolder = useCallback((path: string) => window.dispatchEvent(new CustomEvent('workspace-reveal', { detail: path })), [])
-  const toggleFavorite = useCallback((path: string) => { if (isGraphTab(path)) return; const current = stateRef.current; commit({ ...current, favoritePaths: current.favoritePaths.includes(path) ? current.favoritePaths.filter(item => item !== path) : [...current.favoritePaths, path] }) }, [commit])
-  const rememberTitle = useCallback((path: string, title: string) => { if (isGraphTab(path)) return; const current = stateRef.current; if (current.knownTitles[path] !== title) commit({ ...current, knownTitles: { ...current.knownTitles, [path]: title } }) }, [commit])
+  const toggleFavorite = useCallback((path: string) => { if (isViewTab(path)) return; const current = stateRef.current; commit({ ...current, favoritePaths: current.favoritePaths.includes(path) ? current.favoritePaths.filter(item => item !== path) : [...current.favoritePaths, path] }) }, [commit])
+  const rememberTitle = useCallback((path: string, title: string) => { if (isViewTab(path)) return; const current = stateRef.current; if (current.knownTitles[path] !== title) commit({ ...current, knownTitles: { ...current.knownTitles, [path]: title } }) }, [commit])
   const renameNotePath = useCallback((from: string, to: string) => {
-    if (isGraphTab(from) || isGraphTab(to)) return
+    if (isViewTab(from) || isViewTab(to)) return
     const current = stateRef.current
     const next = renamePath(current, from, to)
     renameDraft(from, to)
@@ -403,7 +453,7 @@ export function WorkspaceProvider({ children, userId }: { children: ReactNode; u
     if (current.groups[current.activeGroupId]?.activePath === from) router.replace(activeHref(next) + window.location.hash)
   }, [commit, router])
   const removeNotePath = useCallback((path: string) => {
-    if (isGraphTab(path)) return
+    if (isViewTab(path)) return
     const current = stateRef.current
     const next = removePath(current, path)
     clearDraft(path)
@@ -414,7 +464,7 @@ export function WorkspaceProvider({ children, userId }: { children: ReactNode; u
   }, [commit, navigate])
   const activePath = state.groups[state.activeGroupId]?.activePath ?? ''
   const { closed: _closed, ...workspaceState } = state
-  return <Context.Provider value={{ ...workspaceState, groupOrder: groupOrder(state.layout), activePath, setActiveGroup, focusGroup, openNote, openNoteAt, moveTab, splitEditor, closeTab, closeOthers, closeGroup, pinTab, reopenClosed, setSplitSizes, resetSplitSizes, isEditorOwner, revealFolder, toggleFavorite, rememberTitle, renameNotePath, removeNotePath, noteInfo: !isGraphTab(activePath) && noteInfo?.path === activePath ? noteInfo : null, setNoteInfo }}>{children}</Context.Provider>
+  return <Context.Provider value={{ ...workspaceState, groupOrder: groupOrder(state.layout), activePath, setActiveGroup, focusGroup, openNote, openHref, openNoteAt, moveTab, splitEditor, closeTab, closeOthers, closeGroup, pinTab, reopenClosed, setSplitSizes, resetSplitSizes, isEditorOwner, revealFolder, toggleFavorite, rememberTitle, renameNotePath, removeNotePath, noteInfo: !isViewTab(activePath) && noteInfo?.path === activePath ? noteInfo : null, setNoteInfo }}>{children}</Context.Provider>
 }
 
 export function useWorkspace() {

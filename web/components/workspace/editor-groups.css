@@ -16,6 +16,10 @@
 .workspace-editor-separator[aria-orientation="horizontal"] { height: 1px; width: 100%; cursor: row-resize; }
 .workspace-editor-separator:hover, .workspace-editor-separator[data-separator="active"], .workspace-editor-separator:focus-visible { background: var(--ring); }
 .workspace-editor-separator:focus-visible { outline: 2px solid var(--ring); outline-offset: -1px; }
+.explorer-editors-separator::after { content: ""; position: absolute; inset: -4px 0; }
+@media (pointer: coarse) {
+  .explorer-editors-separator::after { inset-block: -8px; }
+}
 /* The reader is deliberately not a containing block: the drop overlay spans the
    whole group (tab strip included) so a split preview shows the new window. */
 .workspace-tabs { display: flex; min-height: 40px; flex-shrink: 0; border-bottom: 1px solid var(--border); background: var(--secondary); transition: background var(--motion-base) var(--ease-out); }

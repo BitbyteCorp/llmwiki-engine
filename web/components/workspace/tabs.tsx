@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState, type DragEvent } from 'react'
-import { Columns2, Ellipsis, Network, Pin, Rows2, X } from 'lucide-react'
+import { Columns2, Ellipsis, Pin, Rows2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { cn } from '@/lib/utils'
@@ -9,7 +9,8 @@ import { useEditorStatus } from '@/components/editor/state'
 import { MAX_EDITOR_GROUPS, useWorkspace, type EditorGroup } from './context'
 import { getActiveDrag, hasWorkspaceDrag, isCopyDrop, readDropPayload, setTabDragData, useActiveDrag } from './dnd'
 import { useTabMotion } from './flip'
-import { isGraphTab } from './layout'
+import { isViewTab } from './layout'
+import { ViewTabIcon, viewTabTitle } from './views'
 
 export function WorkspaceTabs({ group }: { group: EditorGroup }) {
   const workspace = useWorkspace()
@@ -93,21 +94,21 @@ export function WorkspaceTabs({ group }: { group: EditorGroup }) {
       else workspace.openNoteAt(payload.path, target)
       clearDrop()
     }}>
-      {group.tabs.map((tab, index) => <div key={tab.path} data-tab-item={tab.path} className={cn('workspace-tab', group.activePath === tab.path && 'is-active', drag?.kind === 'tab' && drag.groupId === group.id && drag.path === tab.path && 'is-dragging')} draggable onDragStart={event => setTabDragData(event, group.id, tab.path, isGraphTab(tab.path) ? '그래프' : workspace.knownTitles[tab.path])} onDragEnd={clearDrop} onContextMenu={event => { event.preventDefault(); setMenuPath(tab.path) }} onAuxClick={event => { if (event.button === 1) { event.preventDefault(); workspace.closeTab(tab.path, group.id) } }} onMouseDown={event => { if (event.button === 1) event.preventDefault() }}>
-        <button role="tab" aria-selected={group.activePath === tab.path} tabIndex={group.activePath === tab.path ? 0 : -1} data-tab-path={tab.path} data-group-id={group.id} className={cn('flex min-w-0 items-center gap-1.5 px-3 py-2 text-sm', !tab.pinned && 'italic')} title={isGraphTab(tab.path) ? '그래프' : tab.path} onClick={event => workspace.openNote(tab.path, { group: group.id, pin: event.ctrlKey || event.metaKey || undefined })} onDoubleClick={() => workspace.pinTab(tab.path, group.id)} onKeyDown={event => {
+      {group.tabs.map((tab, index) => <div key={tab.path} data-tab-item={tab.path} className={cn('workspace-tab', group.activePath === tab.path && 'is-active', drag?.kind === 'tab' && drag.groupId === group.id && drag.path === tab.path && 'is-dragging')} draggable onDragStart={event => setTabDragData(event, group.id, tab.path, workspace.knownTitles[tab.path], tab.query)} onDragEnd={clearDrop} onContextMenu={event => { event.preventDefault(); setMenuPath(tab.path) }} onAuxClick={event => { if (event.button === 1) { event.preventDefault(); workspace.closeTab(tab.path, group.id) } }} onMouseDown={event => { if (event.button === 1) event.preventDefault() }}>
+        <button role="tab" aria-selected={group.activePath === tab.path} tabIndex={group.activePath === tab.path ? 0 : -1} data-tab-path={tab.path} data-group-id={group.id} className={cn('flex min-w-0 items-center gap-1.5 px-3 py-2 text-sm', !tab.pinned && 'italic')} title={isViewTab(tab.path) ? viewTabTitle(tab.path, tab.query) : tab.path} onClick={event => workspace.openNote(tab.path, { group: group.id, pin: event.ctrlKey || event.metaKey || undefined, query: tab.query })} onDoubleClick={() => workspace.pinTab(tab.path, group.id)} onKeyDown={event => {
           if (event.nativeEvent.isComposing || event.keyCode === 229) return
           if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) { event.preventDefault(); setMenuPath(tab.path); return }
-          if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); workspace.setActiveGroup(group.id); workspace.openNote(tab.path, { group: 'side' }); return }
+          if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); workspace.setActiveGroup(group.id); workspace.openNote(tab.path, { group: 'side', query: tab.query }); return }
           const next = event.key === 'ArrowRight' ? (index + 1) % group.tabs.length : event.key === 'ArrowLeft' ? (index + group.tabs.length - 1) % group.tabs.length : event.key === 'Home' ? 0 : event.key === 'End' ? group.tabs.length - 1 : null
-          if (next !== null) { event.preventDefault(); workspace.openNote(group.tabs[next].path, { group: group.id }); root.current?.querySelectorAll<HTMLElement>('[role="tab"]')[next]?.focus() }
+          if (next !== null) { event.preventDefault(); workspace.openNote(group.tabs[next].path, { group: group.id, query: group.tabs[next].query }); root.current?.querySelectorAll<HTMLElement>('[role="tab"]')[next]?.focus() }
           if (event.key === 'Delete') { event.preventDefault(); workspace.closeTab(tab.path, group.id) }
-        }}>{isGraphTab(tab.path) && <Network className="size-3.5 shrink-0" />}<span className="min-w-0 truncate">{isGraphTab(tab.path) ? '그래프' : workspace.knownTitles[tab.path] || tab.path.split('/').pop()}</span>{!isGraphTab(tab.path) && <DirtyIndicator path={tab.path} />}</button>
+        }}>{isViewTab(tab.path) && <ViewTabIcon path={tab.path} className="size-3.5 shrink-0" />}<span className="min-w-0 truncate">{isViewTab(tab.path) ? viewTabTitle(tab.path, tab.query) : workspace.knownTitles[tab.path] || tab.path.split('/').pop()}</span>{!isViewTab(tab.path) && <DirtyIndicator path={tab.path} />}</button>
         {tab.pinned && <Pin aria-label="고정됨" className="size-3 shrink-0 text-muted-foreground" />}
-        <button className="p-2 text-muted-foreground hover:text-foreground" aria-label={`${isGraphTab(tab.path) ? '그래프' : tab.path} 탭 닫기`} onClick={() => workspace.closeTab(tab.path, group.id)}><X className="size-3.5" /></button>
+        <button className="p-2 text-muted-foreground hover:text-foreground" aria-label={`${isViewTab(tab.path) ? viewTabTitle(tab.path, tab.query) : tab.path} 탭 닫기`} onClick={() => workspace.closeTab(tab.path, group.id)}><X className="size-3.5" /></button>
         <DropdownMenu open={menuPath === tab.path} onOpenChange={open => setMenuPath(open ? tab.path : null)}>
-          <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label={`${isGraphTab(tab.path) ? '그래프' : tab.path} 탭 메뉴`} />}><Ellipsis className="size-3.5" /></DropdownMenuTrigger>
+          <DropdownMenuTrigger render={<Button variant="ghost" size="icon-sm" aria-label={`${isViewTab(tab.path) ? viewTabTitle(tab.path, tab.query) : tab.path} 탭 메뉴`} />}><Ellipsis className="size-3.5" /></DropdownMenuTrigger>
           <DropdownMenuContent finalFocus={() => { if (!openedSideFromMenu.current) return true; openedSideFromMenu.current = false; workspace.focusGroup(activeGroupId.current); return false }}><DropdownMenuGroup>
-            <DropdownMenuItem onClick={() => { openedSideFromMenu.current = true; workspace.setActiveGroup(group.id); workspace.openNote(tab.path, { group: 'side' }) }}>옆에 열기</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => { openedSideFromMenu.current = true; workspace.setActiveGroup(group.id); workspace.openNote(tab.path, { group: 'side', query: tab.query }) }}>옆에 열기</DropdownMenuItem>
             <DropdownMenuItem onClick={() => workspace.pinTab(tab.path, group.id)} disabled={tab.pinned}>탭 고정</DropdownMenuItem>
             <DropdownMenuItem onClick={() => workspace.closeTab(tab.path, group.id)}>탭 닫기</DropdownMenuItem>
             <DropdownMenuItem onClick={() => workspace.closeOthers(tab.path, group.id)}>다른 탭 모두 닫기</DropdownMenuItem>

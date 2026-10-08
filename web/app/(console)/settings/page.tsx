@@ -1,9 +1,11 @@
+import { Suspense } from 'react'
 import { redirect } from 'next/navigation'
-import { SettingsPage } from '@/pages-ui/settings'
+import { Loading } from '@/components/common'
+import { WikiPage } from '@/pages-ui/wiki'
 
 export default async function Page({ searchParams }: { searchParams: Promise<{ section?: string | string[] }> }) {
   const params = await searchParams
   const section = Array.isArray(params.section) ? params.section[0] : params.section
   if (section === 'tokens' || section === 'export') redirect(`/settings?tab=${section}`)
-  return <SettingsPage publicUrl={process.env.PUBLIC_URL || undefined} />
+  return <Suspense fallback={<Loading label="설정을 불러오는 중" />}><WikiPage /></Suspense>
 }

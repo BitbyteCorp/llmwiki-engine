@@ -1,7 +1,8 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useViewLocation } from '@/components/workspace/view-location'
+import { usePublicUrl } from '@/components/app-shell'
 import { useQuery } from '@tanstack/react-query'
 import { useTheme } from 'next-themes'
 import { Laptop, Moon, Sun, UserRound } from 'lucide-react'
@@ -22,10 +23,11 @@ const themeOptions = [{ value: 'system', label: '시스템', icon: Laptop }, { v
 const personalTabs = [{ id: 'account', label: '내 계정' }, { id: 'appearance', label: '화면 테마' }, { id: 'tokens', label: 'API 토큰' }, { id: 'mcp', label: 'MCP · Skill' }, { id: 'export', label: '내보내기' }] as const
 const adminTabs = [{ id: 'ops', label: '운영 현황' }, { id: 'users', label: '사용자' }, { id: 'login', label: '로그인 설정' }, { id: 'acl', label: '접근 권한' }, { id: 'audit', label: '감사 로그' }] as const
 
-export function SettingsPage({ publicUrl }: { publicUrl?: string }) {
+export function SettingsPage() {
+  const publicUrl = usePublicUrl()
   const me = useQuery({ queryKey: ['me'], queryFn: api.me })
-  const router = useRouter()
-  const params = useSearchParams()
+  const location = useViewLocation()
+  const params = location.searchParams
   const layout = useRef<HTMLDivElement>(null)
   const [desktop, setDesktop] = useState(false)
   useEffect(() => {
@@ -44,7 +46,7 @@ export function SettingsPage({ publicUrl }: { publicUrl?: string }) {
     const query = new URLSearchParams(params.toString())
     query.delete('section')
     query.set('tab', next)
-    router.replace(`/settings?${query}`, { scroll: false })
+    location.replace(`/settings?${query}`)
   }
   return <div ref={layout} className="@container/settings-layout min-w-0 space-y-4">
     <PageHeader title="설정" description="개인 설정과 관리 기능을 한곳에서 확인합니다." />
@@ -61,7 +63,7 @@ export function SettingsPage({ publicUrl }: { publicUrl?: string }) {
             if (nextIndex === null) return
             event.preventDefault()
             const next = tabs[nextIndex]!
-            const target = document.getElementById(`settings-tab-${next.id}`)
+            const target = layout.current?.querySelector<HTMLButtonElement>(`#settings-tab-${next.id}`)
             target?.focus({ preventScroll: true })
             target?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
             selectTab(next.id)

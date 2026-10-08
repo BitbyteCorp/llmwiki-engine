@@ -2,7 +2,8 @@
 
 import { useSyncExternalStore, type DragEvent } from 'react'
 import { noteHref } from '@/components/common'
-import { isGraphTab } from './layout'
+import { isViewTab, viewTabPathname } from './layout'
+import { viewTabTitle } from './views'
 
 /** Repository note path. Explorer folder moves and editor-group drops share this type. */
 export const NOTE_MIME = 'application/x-llmwiki-note'
@@ -73,14 +74,14 @@ export function setNoteDragData(event: DragEvent, path: string, options?: { titl
 }
 
 /** Starts an editor tab drag. Tabs move by default and copy with Ctrl/⌘ or Alt. */
-export function setTabDragData(event: DragEvent, groupId: string, path: string, title?: string) {
+export function setTabDragData(event: DragEvent, groupId: string, path: string, title?: string, query?: string) {
   event.dataTransfer.setData(TAB_MIME, JSON.stringify({ groupId, path }))
-  if (!isGraphTab(path)) {
-    event.dataTransfer.setData('text/plain', path)
-    event.dataTransfer.setData('text/uri-list', new URL(noteHref(path), window.location.origin).href)
-  }
+  const view = isViewTab(path)
+  const href = view ? `${viewTabPathname(path)}${query ? `?${query}` : ''}` : noteHref(path)
+  event.dataTransfer.setData('text/plain', view ? href : path)
+  event.dataTransfer.setData('text/uri-list', new URL(href, window.location.origin).href)
   event.dataTransfer.effectAllowed = 'copyMove'
-  chip(event, label(path, title))
+  chip(event, view ? viewTabTitle(path, query) : label(path, title))
   publish({ kind: 'tab', groupId, path })
   clearOnEnd(event.currentTarget)
 }

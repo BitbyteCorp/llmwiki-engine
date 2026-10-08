@@ -3,15 +3,15 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { Command } from 'cmdk'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { usePathname, useRouter, useSearchParams } from 'next/navigation'
+import { usePathname, useSearchParams } from 'next/navigation'
 import { useTheme } from 'next-themes'
 import { api, type Note } from '@/lib/api'
 import { askAgent, openChat } from '@/lib/chat-context'
 import { ErrorNotice, Loading } from '@/components/common'
 import { useOpsCommands } from '@/components/admin/ops-commands'
-import { confirmEditorLeave, dispatchEditorCommand, type EditorCommand } from '@/components/editor/state'
+import { dispatchEditorCommand, type EditorCommand } from '@/components/editor/state'
 import { useWorkspace } from './context'
-import { GRAPH_TAB_PATH, isGraphTab } from './layout'
+import { GRAPH_TAB_PATH, isViewTab } from './layout'
 import { saveDirtyGroups, shortcutHint, useShortcutPlatform, workspaceKeybindings } from './keybindings'
 import { panelRegistry, type PanelId } from './registry'
 
@@ -37,14 +37,13 @@ export function Palettes({ mode, setMode, admin, selectPanel, toggleSidebar, tog
   const opsCommands = useOpsCommands()
   const queryClient = useQueryClient()
   const activePath = workspace.activePath
-  const activeNotePath = isGraphTab(activePath) ? '' : activePath
+  const activeNotePath = isViewTab(activePath) ? '' : activePath
+  const activeTab = workspace.groups[workspace.activeGroupId]?.tabs.find(tab => tab.path === activePath)
   const pathname = usePathname()
   const searchParams = useSearchParams()
   const isHistoryRoute = pathname === '/history' || pathname.startsWith('/history/')
   const historyRoutePath = isHistoryRoute ? searchParams.get('path') : null
   const historyNotePath = historyRoutePath || activeNotePath
-  const navigation = useRouter()
-  const router = { push: (href: string) => { if (confirmEditorLeave()) navigation.push(href) } }
   const { resolvedTheme, setTheme } = useTheme()
   const tree = useQuery({ queryKey: ['notes/tree'], queryFn: api.tree })
   const me = useQuery({ queryKey: ['me'], queryFn: api.me, retry: false })
@@ -99,7 +98,7 @@ export function Palettes({ mode, setMode, admin, selectPanel, toggleSidebar, tog
             if (ref) params.set('ref', ref)
             if (current) params.set('current', current)
           }
-          router.push(`/history/blame?${params}`)
+          workspace.openHref(`/history/blame?${params}`)
           return
         }
         dispatchEditorCommand(command.command, command.command === 'new' ? undefined : activeNotePath, command.command === 'new' ? undefined : { exactPath: true })
@@ -118,13 +117,13 @@ export function Palettes({ mode, setMode, admin, selectPanel, toggleSidebar, tog
       askAgent({ notePath: activeNotePath, ...(note ? { ref: note.updatedSha } : {}) })
     } }] : []),
     { id: 'graph-open', label: '그래프 열기', keywords: ['Graph'], action: () => workspace.openNote(GRAPH_TAB_PATH) },
-    { id: 'tags-view', label: '태그 보기', keywords: ['Tags'], action: () => router.push('/tags') },
+    { id: 'tags-view', label: '태그 보기', keywords: ['Tags'], action: () => workspace.openHref('/tags') },
     { id: 'backlinks-panel', label: '백링크 패널', keywords: ['Links Backlinks'], action: () => selectPanel('links') },
-    { id: 'duplicates-open', label: '중복 후보', keywords: ['Duplicates'], action: () => router.push('/search/duplicates') },
-    { id: 'settings', label: '설정 열기', keywords: ['Settings Profile Theme'], action: () => router.push('/settings') },
-    { id: 'api-tokens', label: 'API 토큰 관리', keywords: ['API Tokens Credentials'], action: () => router.push('/settings?tab=tokens') },
-    { id: 'imports', label: '가져오기 열기', keywords: ['Import URL Text PDF Obsidian Notion'], action: () => router.push('/imports') },
-    { id: 'export', label: '내보내기', keywords: ['Export ZIP Bundle Backup'], action: () => router.push('/settings?tab=export') },
+    { id: 'duplicates-open', label: '중복 후보', keywords: ['Duplicates'], action: () => workspace.openHref('/search/duplicates') },
+    { id: 'settings', label: '설정 열기', keywords: ['Settings Profile Theme'], action: () => workspace.openHref('/settings') },
+    { id: 'api-tokens', label: 'API 토큰 관리', keywords: ['API Tokens Credentials'], action: () => workspace.openHref('/settings?tab=tokens') },
+    { id: 'imports', label: '가져오기 열기', keywords: ['Import URL Text PDF Obsidian Notion'], action: () => workspace.openHref('/imports') },
+    { id: 'export', label: '내보내기', keywords: ['Export ZIP Bundle Backup'], action: () => workspace.openHref('/settings?tab=export') },
     ...opsCommands,
     { id: 'sidebar', label: '사이드바 접기 / 펼치기', keywords: ['Toggle Sidebar'], action: toggleSidebar },
     { id: 'chat-toggle', label: '대화 패널 접기 / 펼치기', keywords: ['Toggle Chat Panel'], action: toggleChat },
@@ -135,20 +134,20 @@ export function Palettes({ mode, setMode, admin, selectPanel, toggleSidebar, tog
     { id: 'close', label: '현재 탭 닫기', keywords: ['Close Active Tab'], action: () => workspace.closeTab(activePath) },
     { id: 'close-group', label: '현재 편집 그룹 닫기', keywords: ['Close Active Editor Group'], action: () => workspace.closeGroup(workspace.activeGroupId) },
     { id: 'close-other-groups', label: '다른 편집 그룹 모두 닫기', keywords: ['Close Other Editor Groups'], disabled: workspace.groupOrder.length < 2, action: () => { for (const groupId of workspace.groupOrder) if (groupId !== workspace.activeGroupId) workspace.closeGroup(groupId) } },
-    { id: 'open-side', label: '현재 노트 옆 그룹에 열기', keywords: ['Open Note Side Group'], action: () => workspace.openNote(activePath, { group: 'side' }) },
+    { id: 'open-side', label: '현재 탭 옆 그룹에 열기', keywords: ['Open Tab Side Group'], action: () => workspace.openNote(activePath, { group: 'side', query: activeTab?.query }) },
     { id: 'close-others', label: '다른 탭 모두 닫기', keywords: ['Close Other Tabs'], action: () => workspace.closeOthers(activePath) },
-    { id: 'note-history', label: '이 노트의 변경 이력', keywords: ['Note History Follow Rename'], action: () => router.push(`/history?path=${encodeURIComponent(historyNotePath)}&follow=1`) },
-    { id: 'activity-timeline', label: '전체 변경 활동', keywords: ['Activity Timeline History', '이력'], action: () => router.push('/history') },
-    { id: 'history-journal', label: '일기', keywords: ['Journal Diary'], action: () => router.push('/journal') },
-    { id: 'history-dreams', label: '꿈꾸기 기록', keywords: ['Dreaming Runs'], action: () => router.push('/dreams') },
+    { id: 'note-history', label: '이 노트의 변경 이력', keywords: ['Note History Follow Rename'], action: () => workspace.openHref(`/history?path=${encodeURIComponent(historyNotePath)}&follow=1`) },
+    { id: 'activity-timeline', label: '전체 변경 활동', keywords: ['Activity Timeline History', '이력'], action: () => workspace.openHref('/history') },
+    { id: 'history-journal', label: '일기', keywords: ['Journal Diary'], action: () => workspace.openHref('/journal') },
+    { id: 'history-dreams', label: '꿈꾸기 기록', keywords: ['Dreaming Runs'], action: () => workspace.openHref('/dreams') },
     { id: 'favorite', label: '현재 노트 즐겨찾기 전환', keywords: ['Favorite'], action: () => workspace.toggleFavorite(activePath) },
     { id: 'reveal', label: '현재 노트 탐색기에서 표시', keywords: ['Reveal Explorer'], action: () => { selectPanel('explorer'); workspace.revealFolder(activePath) } },
     { id: 'theme', label: '밝은 / 어두운 테마 전환', keywords: ['Toggle Theme Dark Light'], action: () => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark') },
     { id: 'system-theme', label: '시스템 테마 사용', keywords: ['System Theme'], action: () => setTheme('system') },
     { id: 'help', label: '단축키 도움말', keywords: ['Keyboard Help'], action: () => setMode('help') },
-  ].filter(command => (activePath || !['pin', 'close', 'close-others'].includes(command.id)) && (activeNotePath || !['open-side', 'favorite', 'reveal'].includes(command.id)) && (historyNotePath || command.id !== 'note-history'))
-  const suggestedTitles = new Map(suggestions.data?.filter(note => !isGraphTab(note.path)).map(note => [note.path, note.title]) ?? [])
-  const files = [...new Set([...suggestions.data?.map(note => note.path) ?? [], ...workspace.recentPaths, ...tree.data?.files ?? []])].filter(path => !isGraphTab(path))
+  ].filter(command => (activePath || !['pin', 'close', 'close-others', 'open-side'].includes(command.id)) && (activeNotePath || !['favorite', 'reveal'].includes(command.id)) && (historyNotePath || command.id !== 'note-history'))
+  const suggestedTitles = new Map(suggestions.data?.filter(note => !isViewTab(note.path)).map(note => [note.path, note.title]) ?? [])
+  const files = [...new Set([...suggestions.data?.map(note => note.path) ?? [], ...workspace.recentPaths, ...tree.data?.files ?? []])].filter(path => !isViewTab(path))
   return <dialog ref={dialog} aria-label={renderedMode === 'quickopen' ? '노트 빠르게 열기' : renderedMode === 'help' ? '단축키 도움말' : '명령 팔레트'} className="workspace-dialog w-[min(36rem,calc(100vw-2rem))] rounded-lg border bg-popover p-0 text-popover-foreground shadow-xl" onCancel={event => { event.preventDefault(); if (!composing.current) setMode(null) }} onClick={event => { if (event.target === event.currentTarget) { const rect = event.currentTarget.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) setMode(null) } }}>
     {renderedMode === 'help' ? <div className="max-h-[80vh] overflow-y-auto p-5"><div className="mb-4 flex justify-between"><h2 className="font-bold">단축키 도움말</h2><button aria-label="도움말 닫기" onClick={() => setMode(null)}>닫기</button></div><dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-3 text-sm">{workspaceKeybindings.map(binding => <Fragment key={binding.id}><dt>{binding.label}</dt><dd className="text-right"><kbd className="text-xs text-muted-foreground">{shortcutHint(binding.id, platform)}</kbd></dd></Fragment>)}<dt>선택 / 열기 / 닫기</dt><dd><kbd>↑ ↓ / Enter / Esc</kbd></dd><dt>검색 결과 옆 그룹에 열기</dt><dd><kbd>{platform === 'mac' ? '⌘' : 'Ctrl'} Enter</kbd></dd><dt>노트 고정 / 옆 그룹에 열기</dt><dd>두 번 클릭 / {platform === 'mac' ? '⌥' : 'Alt'} 클릭</dd></dl><p className="mt-4 text-xs text-muted-foreground">Alt 노트·탭 단축키와 ?는 입력 영역 밖에서만 동작합니다. 빠른 열기: # 소제목 · &gt; 명령</p></div> : <Command loop filter={headingMode ? () => 1 : paletteScore} label={commandMode ? '명령 팔레트' : '노트 빠르게 열기'} onKeyDownCapture={event => {
       splitSelection.current = event.key === 'Enter' && (event.ctrlKey || event.metaKey)
@@ -160,7 +159,7 @@ export function Palettes({ mode, setMode, admin, selectPanel, toggleSidebar, tog
         {commandMode ? <Command.Group heading="작업 공간 명령">{commands.map(command => <Command.Item key={command.id} value={command.label} keywords={command.keywords} disabled={command.disabled} onSelect={() => run(command.action)}><span>{command.label}</span>{shortcutHint(command.id, platform) && <kbd className="ml-auto shrink-0 pl-4 text-xs text-muted-foreground">{shortcutHint(command.id, platform)}</kbd>}</Command.Item>)}</Command.Group> : headingMode ? <>
           {headings.isFetching && <Loading label="소제목 검색 중…" />}
           {headings.error && <div className="p-2"><ErrorNotice error={headings.error} /><button className="explorer-row" onClick={() => void headings.refetch()}>다시 시도</button></div>}
-          <Command.Group heading="노트 소제목">{headings.data?.hits.filter(hit => hit.anchor && !isGraphTab(hit.path)).map((hit, index) => <Command.Item key={`${hit.path}:${hit.anchor}:${index}`} value={`${hit.path}:${hit.anchor}:${index}`} onSelect={() => run(() => openResult(hit.path, hit.anchor ?? undefined))}><span className="truncate">{hit.heading}</span><span className="ml-auto truncate text-xs text-muted-foreground">{hit.title} · {hit.path}</span></Command.Item>)}</Command.Group>
+          <Command.Group heading="노트 소제목">{headings.data?.hits.filter(hit => hit.anchor && !isViewTab(hit.path)).map((hit, index) => <Command.Item key={`${hit.path}:${hit.anchor}:${index}`} value={`${hit.path}:${hit.anchor}:${index}`} onSelect={() => run(() => openResult(hit.path, hit.anchor ?? undefined))}><span className="truncate">{hit.heading}</span><span className="ml-auto truncate text-xs text-muted-foreground">{hit.title} · {hit.path}</span></Command.Item>)}</Command.Group>
         </> : <>
           {(tree.isPending || suggestions.isFetching) && <Loading label="노트 목록 불러오는 중…" />}
           {(tree.error || suggestions.error) && <div className="p-2"><ErrorNotice error={tree.error || suggestions.error} /><button className="explorer-row" onClick={() => { void tree.refetch(); void suggestions.refetch() }}>다시 시도</button></div>}

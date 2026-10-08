@@ -1,17 +1,14 @@
 'use client'
 
 import { Fragment, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react'
-import dynamic from 'next/dynamic'
-import { Loading } from '@/components/common'
 import { Group, Panel, Separator, useGroupRef, type Layout } from 'react-resizable-panels'
 import { NoteReader } from './note-reader'
 import { useWorkspace, type EditorGroup, type LayoutNode, type SplitNode, type SplitSide } from './context'
 import { WorkspaceTabs } from './tabs'
 import { GroupDropArea } from './drop-overlay'
 import { useGroupMotion } from './flip'
-import { isGraphTab } from './layout'
-
-const GraphView = dynamic(() => import('@/components/search/graph-view').then(module => module.GraphView), { ssr: false, loading: () => <Loading /> })
+import { isViewTab } from './layout'
+import { ViewTabContent } from './views'
 
 function nodeId(node: LayoutNode) { return node.type === 'group' ? node.groupId : node.id }
 
@@ -64,8 +61,9 @@ function SplitLayout({ node, empty }: { node: SplitNode; empty: ReactNode }) {
 
 function EditorPane({ group, mobile, empty, side }: { group: EditorGroup; mobile: boolean; empty: ReactNode; side?: SplitSide }) {
   const workspace = useWorkspace()
+  const activeTab = group.tabs.find(tab => tab.path === group.activePath)
   return <section data-workspace-group={group.id} data-active={workspace.activeGroupId === group.id} data-entry-side={side ?? 'bottom'} tabIndex={-1} aria-label={`편집기 그룹 ${workspace.groupOrder.indexOf(group.id) + 1}`} className="workspace-editor-group" onFocusCapture={() => workspace.setActiveGroup(group.id)} onPointerDownCapture={() => workspace.setActiveGroup(group.id)}>
     <WorkspaceTabs group={group} />
-    <GroupDropArea group={group} mobile={mobile}>{isGraphTab(group.activePath) ? <GraphView key={group.id} groupId={group.id} /> : group.activePath ? <NoteReader key={`${group.id}:${group.activePath}:${group.ref ?? 'main'}`} path={group.activePath} groupId={group.id} revisionRef={group.ref} /> : empty}</GroupDropArea>
+    <GroupDropArea group={group} mobile={mobile}>{isViewTab(group.activePath) ? <ViewTabContent key={`${group.id}:${group.activePath}`} path={group.activePath} query={activeTab?.query} groupId={group.id} /> : group.activePath ? <NoteReader key={`${group.id}:${group.activePath}:${group.ref ?? 'main'}`} path={group.activePath} groupId={group.id} revisionRef={group.ref} /> : empty}</GroupDropArea>
   </section>
 }

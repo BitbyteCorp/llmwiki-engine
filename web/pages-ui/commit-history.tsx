@@ -4,7 +4,7 @@ import { useState } from "react"
 import { useQuery } from "@tanstack/react-query"
 import Link from "next/link"
 import dynamic from "next/dynamic"
-import { useParams } from "next/navigation"
+import { useViewLocation } from "@/components/workspace/view-location"
 import { api, ApiError, historyApi } from "@/lib/api"
 import type { FileChange } from "@/lib/api"
 import { EmptyState, ErrorNotice, Loading, PageHeader } from "@/components/common"
@@ -27,7 +27,8 @@ export function FileList({ files, versionSha, deletedVersionSha, selected, onSel
 }
 
 export function CommitPage() {
-  const { sha: encodedSha } = useParams<{ sha: string }>()
+  const { pathname } = useViewLocation()
+  const encodedSha = pathname.split("/")[3]
   const sha = encodedSha === undefined ? "" : decodeURIComponent(encodedSha)
   return <CommitDetail key={sha} sha={sha}/>
 }

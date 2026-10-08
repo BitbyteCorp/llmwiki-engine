@@ -7,17 +7,19 @@ import { api } from '@/lib/api'
 import type { CatalogNote, DuplicatePair } from '@/lib/api'
 import { EmptyState, ErrorNotice, Loading, PageHeader, noteHref } from '@/components/common'
 import { useWorkspace } from '@/components/workspace/context'
+import { useViewLocation } from '@/components/workspace/view-location'
 import { setNoteDragData } from '@/components/workspace/dnd'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 
 function Passage({ note, passage }: { note: CatalogNote; passage: DuplicatePair['passages'][number]['left'] }) {
   const workspace = useWorkspace()
+  const { groupId } = useViewLocation()
   return <div className="min-w-0 space-y-1 border-l pl-2">
     <Link href={noteHref(note.path) + (passage.anchor ? `#${encodeURIComponent(passage.anchor)}` : '')} draggable onDragStart={event => setNoteDragData(event, note.path, { title: note.title })} onClick={event => {
       if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return
       event.preventDefault()
-      workspace.openNote(note.path, { fragment: passage.anchor ?? undefined })
+      workspace.openNote(note.path, { group: groupId, fragment: passage.anchor ?? undefined })
     }} className="break-words text-label-13 font-medium underline underline-offset-4">{note.title || note.path}{passage.anchor ? ` · #${passage.anchor}` : ''}</Link>
     <p className="whitespace-pre-wrap break-words text-label-13 leading-5">{passage.excerpt || '비교할 구절이 제공되지 않았습니다.'}</p>
   </div>
@@ -25,9 +27,10 @@ function Passage({ note, passage }: { note: CatalogNote; passage: DuplicatePair[
 
 export function DuplicatesPage() {
   const workspace = useWorkspace()
+  const { groupId } = useViewLocation()
   const duplicates = useQuery({ queryKey: ['duplicates'], queryFn: ({ signal }) => api.duplicates(signal) })
   function compare(pair: DuplicatePair, passage = pair.passages[0]) {
-    workspace.openNote(pair.left.path, { pin: true, fragment: passage?.left.anchor ?? undefined })
+    workspace.openNote(pair.left.path, { pin: true, group: groupId, fragment: passage?.left.anchor ?? undefined })
     workspace.openNote(pair.right.path, { pin: true, group: 'side', fragment: passage?.right.anchor ?? undefined })
   }
 
@@ -43,7 +46,7 @@ export function DuplicatesPage() {
           <Button variant="outline" onClick={() => compare(pair)} aria-label={`${pair.left.title || pair.left.path}와 ${pair.right.title || pair.right.path} 분할 비교`}><Columns2 aria-hidden="true" />비교</Button>
         </div>
         <p className="text-xs text-muted-foreground">{pair.reason === 'exact' ? '정규화된 내용 해시가 같은 노트입니다. 서식 차이는 있을 수 있습니다.' : '노트 임베딩의 코사인 유사도가 0.98 이상인 후보입니다. 아래 구절과 원문을 확인하세요.'}</p>
-        <div className="grid gap-x-6 gap-y-1.5 md:grid-cols-2">{[pair.left, pair.right].map((note, index) => <div key={note.path} className="min-w-0 space-y-0.5"><div className="flex flex-wrap items-baseline gap-x-2"><p className="text-xs text-muted-foreground">{index === 0 ? '왼쪽 노트' : '오른쪽 노트'}</p><Link href={noteHref(note.path)} draggable onDragStart={event => setNoteDragData(event, note.path, { title: note.title })} onClick={event => { if (event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); workspace.openNote(note.path) } }} className="break-words text-label-13 font-semibold underline-offset-4 hover:underline">{note.title || note.path}</Link></div><p className="break-all text-xs text-muted-foreground">{note.path}</p></div>)}</div>
+        <div className="grid gap-x-6 gap-y-1.5 md:grid-cols-2">{[pair.left, pair.right].map((note, index) => <div key={note.path} className="min-w-0 space-y-0.5"><div className="flex flex-wrap items-baseline gap-x-2"><p className="text-xs text-muted-foreground">{index === 0 ? '왼쪽 노트' : '오른쪽 노트'}</p><Link href={noteHref(note.path)} draggable onDragStart={event => setNoteDragData(event, note.path, { title: note.title })} onClick={event => { if (event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) { event.preventDefault(); workspace.openNote(note.path, { group: groupId }) } }} className="break-words text-label-13 font-semibold underline-offset-4 hover:underline">{note.title || note.path}</Link></div><p className="break-all text-xs text-muted-foreground">{note.path}</p></div>)}</div>
         {pair.passages.length === 0 ? <p className="text-label-13 text-muted-foreground">일치 구절이 제공되지 않았습니다. 비교로 두 노트의 원문을 확인하세요.</p> : <div className="space-y-2">{pair.passages.map((passage, index) => <section key={index} aria-label={`일치 구절 ${index + 1}`} className="space-y-1.5"><div className="grid items-stretch gap-2 md:grid-cols-2"><Passage note={pair.left} passage={passage.left} /><Passage note={pair.right} passage={passage.right} /></div>{pair.passages.length > 1 && <Button variant="ghost" size="sm" onClick={() => compare(pair, passage)}>이 구절부터 비교</Button>}</section>)}</div>}
       </article>)}</div>
     </section>)}

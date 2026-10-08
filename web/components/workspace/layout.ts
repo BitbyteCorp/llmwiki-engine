@@ -1,4 +1,4 @@
-export type WorkspaceTab = { path: string; pinned: boolean }
+export type WorkspaceTab = { path: string; pinned: boolean; query?: string }
 export type GroupId = string
 export type EditorGroup = { id: GroupId; tabs: WorkspaceTab[]; activePath: string; ref?: string }
 export type SplitNode = { type: 'split'; id: string; orientation: 'horizontal' | 'vertical'; children: LayoutNode[]; sizes: number[] }
@@ -7,9 +7,15 @@ export type SplitSide = 'left' | 'right' | 'top' | 'bottom'
 export type DropTarget = { kind: 'tabs'; groupId: GroupId; index: number } | { kind: 'group'; groupId: GroupId } | { kind: 'split'; groupId: GroupId; side: SplitSide }
 export type WorkspaceState = { groups: Record<GroupId, EditorGroup>; layout: LayoutNode; activeGroupId: GroupId; favoritePaths: string[]; recentPaths: string[]; knownTitles: Record<string, string>; closed: WorkspaceTab[] }
 export const MAX_EDITOR_GROUPS = 6
-export const GRAPH_TAB_PATH = '@graph'
+export const GRAPH_TAB_PATH = '@/graph'
 
-export function isGraphTab(path: string): boolean { return path === GRAPH_TAB_PATH }
+export function isViewRoute(pathname: string): boolean {
+  return /^\/(?:graph|search(?:\/duplicates)?|tags(?:\/[^/]+)?|history(?:\/(?:commits\/[^/]+|compare|blame))?|jobs(?:\/[^/]+)?|dreams(?:\/[^/]+)?|journal|imports|settings)$/.test(pathname)
+}
+
+export function isViewTab(path: string): boolean { return path.startsWith('@') && isViewRoute(viewTabPathname(path)) }
+export function viewTabPath(pathname: string): string { return `@${pathname}` }
+export function viewTabPathname(path: string): string { return path.slice(1) }
 
 export function createWorkspace(): WorkspaceState {
   return { groups: { 'group-1': { id: 'group-1', tabs: [], activePath: '' } }, layout: { type: 'group', groupId: 'group-1' }, activeGroupId: 'group-1', favoritePaths: [], recentPaths: [], knownTitles: {}, closed: [] }
@@ -95,25 +101,34 @@ export function removeGroup(state: WorkspaceState, id: GroupId): WorkspaceState 
   return { ...state, groups, layout: remove(state.layout)!, activeGroupId: state.activeGroupId === id ? neighbour(state.layout, id)! : state.activeGroupId }
 }
 
-export function visitGroup(state: WorkspaceState, id: GroupId, path: string, pin = false, ref?: string, dirtyPaths?: Set<string>): WorkspaceState {
+export function visitGroup(state: WorkspaceState, id: GroupId, path: string, pin = false, ref?: string, dirtyPaths?: Set<string>, query?: string): WorkspaceState {
   const group = state.groups[id]
   if (!group || !path) return state
-  const graph = isGraphTab(path)
-  pin ||= graph
+  const view = isViewTab(path)
+  pin ||= view
   let tabs = group.tabs.map(tab => !tab.pinned && dirtyPaths?.has(tab.path) ? { ...tab, pinned: true } : tab)
-  if (tabs.some(tab => tab.path === path)) tabs = tabs.map(tab => tab.path === path && pin ? { ...tab, pinned: true } : tab)
+  if (tabs.some(tab => tab.path === path)) tabs = tabs.map(tab => {
+    if (tab.path !== path) return tab
+    const updated = { ...tab, pinned: tab.pinned || pin }
+    if (query !== undefined) {
+      if (query) updated.query = query
+      else delete updated.query
+    }
+    return updated
+  })
   else {
     tabs = [...tabs]
+    const tab: WorkspaceTab = { path, pinned: pin, ...(query ? { query } : {}) }
     const preview = tabs.findIndex(tab => !tab.pinned)
-    if (!pin && preview >= 0) tabs[preview] = { path, pinned: false }
-    else tabs.push({ path, pinned: pin })
+    if (!pin && preview >= 0) tabs[preview] = tab
+    else tabs.push(tab)
   }
   const next: EditorGroup = { ...group, tabs, activePath: path }
-  if (graph) delete next.ref
+  if (view) delete next.ref
   else if (ref !== undefined) next.ref = ref
   else if (path !== group.activePath) delete next.ref
-  const recentPaths = state.recentPaths.filter(item => !isGraphTab(item) && item !== path)
-  return { ...state, groups: { ...state.groups, [id]: next }, activeGroupId: id, recentPaths: (graph ? recentPaths : [path, ...recentPaths]).slice(0, 30) }
+  const recentPaths = state.recentPaths.filter(item => !isViewTab(item) && item !== path)
+  return { ...state, groups: { ...state.groups, [id]: next }, activeGroupId: id, recentPaths: (view ? recentPaths : [path, ...recentPaths]).slice(0, 30) }
 }
 
 function withoutTab(group: EditorGroup, path: string): EditorGroup {
@@ -130,24 +145,25 @@ export function moveTab(state: WorkspaceState, source: { groupId: GroupId; path:
   const tab = sourceGroup?.tabs.find(item => item.path === source.path)
   if (!tab || !Object.hasOwn(state.groups, target.groupId)) return state
   if (target.kind === 'split' && target.groupId === source.groupId && sourceGroup.tabs.length === 1 && !options.copy) return state
-  const graph = isGraphTab(tab.path)
+  const view = isViewTab(tab.path)
+  const movedTab: WorkspaceTab = { ...tab, pinned: true }
   let destination = target.groupId
   if (target.kind === 'split' && Object.keys(state.groups).length < MAX_EDITOR_GROUPS) {
     destination = options.newGroupId ?? unusedId(state, 'group')
-    const next = insert(state, target.groupId, target.side, { id: destination, tabs: [{ path: tab.path, pinned: true }], activePath: tab.path, ...(!graph && sourceGroup.activePath === tab.path && sourceGroup.ref !== undefined ? { ref: sourceGroup.ref } : {}) }, options.splitId)
+    const next = insert(state, target.groupId, target.side, { id: destination, tabs: [movedTab], activePath: tab.path, ...(!view && sourceGroup.activePath === tab.path && sourceGroup.ref !== undefined ? { ref: sourceGroup.ref } : {}) }, options.splitId)
     if (next === state) return state
     state = next
   } else {
     const group = state.groups[destination]
     const existingIndex = group.tabs.findIndex(item => item.path === tab.path)
-    let tabs = group.tabs.map(item => item.path === tab.path ? { ...item, pinned: true } : item)
+    let tabs = group.tabs.map(item => item.path === tab.path ? movedTab : item)
     if (target.kind === 'tabs') {
       let index = Math.max(0, Math.min(group.tabs.length, Math.trunc(target.index)))
       if (existingIndex >= 0) { tabs.splice(existingIndex, 1); if (existingIndex < index) index-- }
-      tabs.splice(index, 0, { path: tab.path, pinned: true })
-    } else if (existingIndex < 0) tabs = [...tabs, { path: tab.path, pinned: true }]
+      tabs.splice(index, 0, movedTab)
+    } else if (existingIndex < 0) tabs = [...tabs, movedTab]
     const next: EditorGroup = { ...group, tabs, activePath: tab.path }
-    if (graph) delete next.ref
+    if (view) delete next.ref
     else if (group.activePath !== tab.path) {
       delete next.ref
       if (sourceGroup.activePath === tab.path && sourceGroup.ref !== undefined) next.ref = sourceGroup.ref
@@ -159,22 +175,22 @@ export function moveTab(state: WorkspaceState, source: { groupId: GroupId; path:
     state = { ...state, groups: { ...state.groups, [source.groupId]: remaining } }
     if (!remaining.tabs.length) state = removeGroup(state, source.groupId)
   }
-  const recentPaths = state.recentPaths.filter(path => !isGraphTab(path) && path !== tab.path)
-  return { ...state, activeGroupId: destination, recentPaths: (graph ? recentPaths : [tab.path, ...recentPaths]).slice(0, 30) }
+  const recentPaths = state.recentPaths.filter(path => !isViewTab(path) && path !== tab.path)
+  return { ...state, activeGroupId: destination, recentPaths: (view ? recentPaths : [tab.path, ...recentPaths]).slice(0, 30) }
 }
 
 function mergeTabs(tabs: WorkspaceTab[]): WorkspaceTab[] {
   const merged: WorkspaceTab[] = []
   for (const tab of tabs) {
     const existing = merged.find(item => item.path === tab.path)
-    if (existing) existing.pinned ||= tab.pinned
+    if (existing) { existing.pinned ||= tab.pinned; if (existing.query === undefined && tab.query !== undefined) existing.query = tab.query }
     else merged.push({ ...tab })
   }
   return merged
 }
 
 export function renamePath(state: WorkspaceState, from: string, to: string): WorkspaceState {
-  if (from === to || isGraphTab(from) || isGraphTab(to)) return state
+  if (from === to || isViewTab(from) || isViewTab(to)) return state
   const rename = (path: string) => path === from ? to : path
   const groups = Object.fromEntries(Object.entries(state.groups).map(([id, group]) => [id, { ...group, tabs: mergeTabs(group.tabs.map(tab => ({ ...tab, path: rename(tab.path) }))), activePath: rename(group.activePath) }]))
   const knownTitles = { ...state.knownTitles }
@@ -183,7 +199,7 @@ export function renamePath(state: WorkspaceState, from: string, to: string): Wor
 }
 
 export function removePath(state: WorkspaceState, path: string): WorkspaceState {
-  if (isGraphTab(path)) return state
+  if (isViewTab(path)) return state
   const groups = Object.fromEntries(Object.entries(state.groups).map(([id, group]) => [id, withoutTab(group, path)]))
   const knownTitles = { ...state.knownTitles }
   delete knownTitles[path]
@@ -194,25 +210,32 @@ export function removePath(state: WorkspaceState, path: string): WorkspaceState 
 
 function record(value: unknown): value is Record<string, unknown> { return !!value && typeof value === 'object' && !Array.isArray(value) }
 function paths(value: unknown): value is string[] { return Array.isArray(value) && value.every(path => typeof path === 'string' && !!path) }
-function tabs(value: unknown): value is WorkspaceTab[] { return Array.isArray(value) && value.every(tab => record(tab) && typeof tab.path === 'string' && !!tab.path && typeof tab.pinned === 'boolean') }
+function tabs(value: unknown): value is WorkspaceTab[] { return Array.isArray(value) && value.every(tab => record(tab) && typeof tab.path === 'string' && !!tab.path && typeof tab.pinned === 'boolean' && (tab.query === undefined || typeof tab.query === 'string')) }
 function metadata(value: Record<string, unknown>): boolean {
   return paths(value.favoritePaths) && paths(value.recentPaths) && tabs(value.closed) && record(value.knownTitles) && Object.values(value.knownTitles).every(title => typeof title === 'string')
 }
 
+function storedPath(path: string): string { return path === '@graph' ? GRAPH_TAB_PATH : path }
+function storedTab(tab: WorkspaceTab): WorkspaceTab {
+  const path = storedPath(tab.path)
+  const restored = { ...tab, path, pinned: tab.pinned || isViewTab(path) }
+  if (!restored.query) delete restored.query
+  return restored
+}
+function notePaths(value: unknown): string[] { return [...new Set((value as string[]).filter(path => !isViewTab(storedPath(path))))] }
+
 export function migrateV1(value: unknown): WorkspaceState {
   if (!record(value) || !tabs(value.tabs) || !metadata(value) || !(value.splitPath === null || typeof value.splitPath === 'string')) return createWorkspace()
   const state = createWorkspace()
-  state.favoritePaths = [...new Set((value.favoritePaths as string[]).filter(path => !isGraphTab(path)))]
-  state.recentPaths = [...new Set((value.recentPaths as string[]).filter(path => !isGraphTab(path)))]
-  state.knownTitles = { ...value.knownTitles as Record<string, string> }
-  delete state.knownTitles[GRAPH_TAB_PATH]
-  state.closed = (value.closed as WorkspaceTab[]).map(tab => ({ ...tab, pinned: tab.pinned || isGraphTab(tab.path) }))
-  const migratedTabs = mergeTabs(value.tabs)
-  for (const tab of migratedTabs) if (isGraphTab(tab.path)) tab.pinned = true
+  state.favoritePaths = notePaths(value.favoritePaths)
+  state.recentPaths = notePaths(value.recentPaths)
+  state.knownTitles = Object.fromEntries(Object.entries(value.knownTitles as Record<string, string>).filter(([path]) => !isViewTab(storedPath(path))))
+  state.closed = (value.closed as WorkspaceTab[]).map(storedTab)
+  const migratedTabs = mergeTabs(value.tabs.map(storedTab))
   // Legacy storage did not persist selection; URL reconciliation selects the actual tab.
   state.groups['group-1'] = { id: 'group-1', tabs: migratedTabs, activePath: migratedTabs[0]?.path ?? '' }
   if (!value.splitPath) return state
-  const splitPath = value.splitPath as string
+  const splitPath = storedPath(value.splitPath as string)
   const ratio = typeof value.splitRatio === 'number' && Number.isFinite(value.splitRatio) ? Math.min(0.8, Math.max(0.2, value.splitRatio)) : 0.5
   let result = insertGroup(state, 'group-1', 'right', { id: 'group-2', tabs: [{ path: splitPath, pinned: true }], activePath: splitPath })
   if (!migratedTabs.length) return removeGroup(result, 'group-1')
@@ -227,7 +250,7 @@ export function validateV2(value: unknown): WorkspaceState {
   const groups: Record<GroupId, EditorGroup> = Object.fromEntries(entries.map(([id, group]) => [id, group])) as Record<GroupId, EditorGroup>
   for (const [id, group] of entries) {
     if (!id || !record(group) || group.id !== id || !tabs(group.tabs) || typeof group.activePath !== 'string' || (group.ref !== undefined && typeof group.ref !== 'string')) return createWorkspace()
-    if (new Set(group.tabs.map(tab => tab.path)).size !== group.tabs.length || group.tabs.filter(tab => !tab.pinned && !isGraphTab(tab.path)).length > 1) return createWorkspace()
+    if (new Set(group.tabs.map(tab => tab.path)).size !== group.tabs.length || group.tabs.filter(tab => !tab.pinned && !isViewTab(storedPath(tab.path))).length > 1) return createWorkspace()
     if (group.tabs.length ? !group.tabs.some(tab => tab.path === group.activePath) : group.activePath !== '' || entries.length > 1 || group.ref !== undefined) return createWorkspace()
   }
   if (!Object.hasOwn(groups, value.activeGroupId)) return createWorkspace()
@@ -250,11 +273,10 @@ export function validateV2(value: unknown): WorkspaceState {
   if (!validNode(value.layout) || leaves.size !== entries.length) return createWorkspace()
   const restoredGroups = Object.fromEntries(entries.map(([id]) => {
     const group = groups[id]
-    const restored: EditorGroup = { ...group, tabs: group.tabs.map(tab => ({ ...tab, pinned: tab.pinned || isGraphTab(tab.path) })) }
-    if (isGraphTab(restored.activePath)) delete restored.ref
+    const restored: EditorGroup = { ...group, activePath: storedPath(group.activePath), tabs: mergeTabs(group.tabs.map(storedTab)) }
+    if (isViewTab(restored.activePath)) delete restored.ref
     return [id, restored]
   }))
-  const knownTitles = { ...value.knownTitles as Record<string, string> }
-  delete knownTitles[GRAPH_TAB_PATH]
-  return { groups: restoredGroups, layout: normalizeLayout(value.layout), activeGroupId: value.activeGroupId, favoritePaths: [...new Set((value.favoritePaths as string[]).filter(path => !isGraphTab(path)))], recentPaths: [...new Set((value.recentPaths as string[]).filter(path => !isGraphTab(path)))], knownTitles, closed: (value.closed as WorkspaceTab[]).map(tab => ({ ...tab, pinned: tab.pinned || isGraphTab(tab.path) })) }
+  const knownTitles = Object.fromEntries(Object.entries(value.knownTitles as Record<string, string>).filter(([path]) => !isViewTab(storedPath(path))))
+  return { groups: restoredGroups, layout: normalizeLayout(value.layout), activeGroupId: value.activeGroupId, favoritePaths: notePaths(value.favoritePaths), recentPaths: notePaths(value.recentPaths), knownTitles, closed: (value.closed as WorkspaceTab[]).map(storedTab) }
 }

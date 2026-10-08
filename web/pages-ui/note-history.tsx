@@ -5,7 +5,7 @@ import type { Ref } from "react"
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query"
 import Link from "next/link"
 import dynamic from "next/dynamic"
-import { useRouter } from "next/navigation"
+import { useViewLocation } from "@/components/workspace/view-location"
 import { api, historyApi } from "@/lib/api"
 import type { CommitInfo } from "@/lib/api"
 import { EmptyState, ErrorNotice, Loading, PageHeader, formatDate, noteHref } from "@/components/common"
@@ -93,7 +93,7 @@ function VersionRow({ commit, path, allowed, selecting, selected, selectionFull,
 }
 
 export function NoteHistory({ path }: { path: string }) {
-  const router = useRouter()
+  const { push } = useViewLocation()
   const pickerRef = useRef<HTMLInputElement>(null)
   const [selecting, setSelecting] = useState(false)
   const [selected, setSelected] = useState<string[]>([])
@@ -124,13 +124,13 @@ export function NoteHistory({ path }: { path: string }) {
       <Button size="xs" variant="outline" nativeButton={false} render={<Link href={`/history/blame?${new URLSearchParams({ path })}`}/>}>줄별 작성자</Button>
       <Button size="xs" variant="outline" nativeButton={false} render={<Link href="/history"/>}>전체 활동</Button>
     </>}/>
-    <NoteHistoryPicker path={path} inputRef={pickerRef} onSelect={nextPath => router.push(historyHref(nextPath))}/>
+    <NoteHistoryPicker path={path} inputRef={pickerRef} onSelect={nextPath => push(historyHref(nextPath))}/>
     <div className="flex flex-wrap items-center justify-between gap-2">
       <Button size="xs" variant="outline" aria-pressed={selecting} onClick={() => { setSelecting(value => !value); setSelected([]) }}>{selecting ? "버전 선택 닫기" : "비교할 두 버전 선택"}</Button>
     </div>
     {selecting && <div className="sticky top-0 z-10 flex flex-wrap items-center gap-2 border-y bg-background px-2 py-1.5">
       <span className="text-xs tabular-nums text-muted-foreground" aria-live="polite">{selected.length}/2 선택 · 이전 버전부터 비교합니다</span>
-      <Button size="xs" disabled={pair.length !== 2} onClick={() => { if (pair.length === 2) router.push(compareHref(pair[1].sha, pair[0].sha, path)) }}>선택한 두 버전 비교</Button>
+      <Button size="xs" disabled={pair.length !== 2} onClick={() => { if (pair.length === 2) push(compareHref(pair[1].sha, pair[0].sha, path)) }}>선택한 두 버전 비교</Button>
       {selected.length > 0 && <Button size="xs" variant="ghost" onClick={() => setSelected([])}>선택 해제</Button>}
     </div>}
     {history.isPending && <Loading label="노트 이력을 불러오는 중…"/>}

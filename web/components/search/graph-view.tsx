@@ -7,7 +7,7 @@ import { ChevronDown, List, LocateFixed, Maximize, RefreshCw, Search } from 'luc
 import { api } from '@/lib/api'
 import { EmptyState, ErrorNotice, Loading, noteHref } from '@/components/common'
 import { useWorkspace } from '@/components/workspace/context'
-import { isGraphTab } from '@/components/workspace/layout'
+import { isViewTab } from '@/components/workspace/layout'
 import { setNoteDragData } from '@/components/workspace/dnd'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -27,7 +27,7 @@ export function GraphView({ groupId }: { groupId: string }) {
     .filter(node => !term || `${node.title} ${node.path}`.toLocaleLowerCase('ko-KR').includes(term))
     .sort((left, right) => (left.title || left.path).localeCompare(right.title || right.path, 'ko') || left.path.localeCompare(right.path)), [graph.data, term])
   const matchedPaths = useMemo(() => new Set(term ? nodes.map(node => node.path) : []), [nodes, term])
-  const activePaths = useMemo(() => new Set(Object.values(workspace.groups).map(group => group.activePath).filter(path => path && !isGraphTab(path))), [workspace.groups])
+  const activePaths = useMemo(() => new Set(Object.values(workspace.groups).map(group => group.activePath).filter(path => path && !isViewTab(path))), [workspace.groups])
   const degrees = useMemo(() => {
     const counts = new Map<string, number>()
     for (const edge of graph.data?.edges ?? []) {

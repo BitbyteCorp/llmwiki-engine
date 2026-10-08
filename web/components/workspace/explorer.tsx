@@ -1,10 +1,9 @@
 'use client'
 
-import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { useRouter } from 'next/navigation'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronRight, FilePlus2, FileText, Folder, FolderPlus, LocateFixed, MoreHorizontal, Network, Star, X } from 'lucide-react'
+import { ChevronRight, FilePlus2, FileText, Folder, FolderPlus, LocateFixed, MoreHorizontal, Star, X } from 'lucide-react'
 import { api } from '@/lib/api'
 import { ErrorNotice, Loading } from '@/components/common'
 import { Button } from '@/components/ui/button'
@@ -12,11 +11,11 @@ import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import { useWorkspace } from './context'
 import { parentFolder, useFileOperations } from '@/components/editor/file-operations'
-import { confirmEditorLeave } from '@/components/editor/state'
 import { getActiveDrag, NOTE_MIME, setNoteDragData, setTabDragData } from './dnd'
-import { isGraphTab } from './layout'
+import { isViewTab } from './layout'
 import { DirtyIndicator } from './tabs'
 import { ViewHeader } from './view-pane'
+import { ViewTabIcon, viewTabTitle } from './views'
 
 type Node = { name: string; path: string; children?: Node[] }
 function buildTree(files: string[], folders: string[]): Node[] {
@@ -62,7 +61,6 @@ function FolderChildren({ open, render }: { open: boolean; render: () => ReactNo
 export function Explorer({ userId }: { userId: number }) {
   const workspace = useWorkspace()
   const tree = useQuery({ queryKey: ['notes/tree'], queryFn: api.tree })
-  const router = useRouter()
   const operations = useFileOperations(tree.data?.files ?? [])
   const [menu, setMenu] = useState<{ path: string; folder: boolean; x: number; y: number; trigger: HTMLElement } | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -71,6 +69,13 @@ export function Explorer({ userId }: { userId: number }) {
   const [filter, setFilter] = useState('')
   const [expanded, setExpanded] = useState<string[]>([])
   const [closedViews, setClosedViews] = useState<string[]>([])
+  const [editorsHeight, setEditorsHeight] = useState<number | null>(null)
+  const [editorsSize, setEditorsSize] = useState({ max: 192, current: 0 })
+  const [resizingEditors, setResizingEditors] = useState(false)
+  const viewsColumn = useRef<HTMLDivElement>(null)
+  const editorsList = useRef<HTMLDivElement>(null)
+  const favoritesView = useRef<HTMLElement>(null)
+  const editorsDrag = useRef<{ pointerId: number; y: number; height: number } | null>(null)
   const [highlight, setHighlight] = useState('')
   const [ready, setReady] = useState(false)
   const root = useRef<HTMLDivElement>(null)
@@ -78,22 +83,27 @@ export function Explorer({ userId }: { userId: number }) {
   const storageKey = `llmwiki.explorer.v1.${userId}`
   useEffect(() => {
     try {
-      const saved = JSON.parse(localStorage.getItem(storageKey) || 'null') as { filter: string; expanded: string[]; closedViews?: string[] } | null
-      if (saved && typeof saved.filter === 'string' && Array.isArray(saved.expanded)) { setFilter(saved.filter); setExpanded(saved.expanded); if (Array.isArray(saved.closedViews)) setClosedViews(saved.closedViews.filter(view => typeof view === 'string')) }
+      const saved = JSON.parse(localStorage.getItem(storageKey) || 'null') as { filter: string; expanded: string[]; closedViews?: string[]; editorsHeight?: number | null } | null
+      if (saved && typeof saved.filter === 'string' && Array.isArray(saved.expanded)) {
+        setFilter(saved.filter)
+        setExpanded(saved.expanded)
+        if (Array.isArray(saved.closedViews)) setClosedViews(saved.closedViews.filter(view => typeof view === 'string'))
+        setEditorsHeight(typeof saved.editorsHeight === 'number' && Number.isFinite(saved.editorsHeight) && saved.editorsHeight >= 28 ? saved.editorsHeight : null)
+      }
     } catch { /* Explorer remains usable without persistent storage. */ }
     setReady(true)
   }, [storageKey])
   useEffect(() => {
-    if (ready) try { localStorage.setItem(storageKey, JSON.stringify({ filter, expanded, closedViews })) } catch { /* Storage may be unavailable. */ }
-  }, [filter, expanded, closedViews, ready, storageKey])
+    if (ready) try { localStorage.setItem(storageKey, JSON.stringify({ filter, expanded, closedViews, editorsHeight })) } catch { /* Storage may be unavailable. */ }
+  }, [filter, expanded, closedViews, editorsHeight, ready, storageKey])
   useEffect(() => {
-    if (!ready || !workspace.activePath || isGraphTab(workspace.activePath)) return
+    if (!ready || !workspace.activePath || isViewTab(workspace.activePath)) return
     const parts = workspace.activePath.split('/')
     const ancestors = parts.slice(0, -1).map((_, index) => parts.slice(0, index + 1).join('/'))
     setExpanded(previous => [...new Set([...previous, ...ancestors])])
   }, [workspace.activePath, ready])
   useEffect(() => {
-    if (!workspace.activePath || isGraphTab(workspace.activePath)) return
+    if (!workspace.activePath || isViewTab(workspace.activePath)) return
     const frame = requestAnimationFrame(() => {
       const target = Array.from(root.current?.querySelectorAll<HTMLElement>('[data-explorer-path]') ?? []).find(element => element.dataset.explorerPath === workspace.activePath)
       target?.scrollIntoView({ block: 'nearest', inline: 'nearest' })
@@ -227,23 +237,77 @@ export function Explorer({ userId }: { userId: number }) {
   const favoritesOpen = !closedViews.includes('favorites')
   const editorCount = workspace.groupOrder.reduce((count, id) => count + workspace.groups[id].tabs.length, 0)
   const toggleView = (id: string) => setClosedViews(previous => previous.includes(id) ? previous.filter(view => view !== id) : [...previous, id])
+  const minimumEditorsHeight = Math.min(28, editorsSize.max)
+  const clampedEditorsHeight = Math.max(minimumEditorsHeight, Math.min(editorsHeight ?? 0, editorsSize.max))
+  function resizeEditors(height: number) {
+    setEditorsHeight(Math.max(28, Math.min(height, editorsSize.max)))
+  }
+  useLayoutEffect(() => {
+    if (filter || !editorCount || !editorsOpen) return
+    const column = viewsColumn.current
+    const list = editorsList.current
+    if (!column || !list) return
+    const measure = () => {
+      // Reserve both view headers, the sash, favorites, and the expanded tree.
+      const max = Math.max(0, Math.floor(column.getBoundingClientRect().height - (favoritesView.current?.getBoundingClientRect().height ?? 0) - 24 - 1 - (treeOpen ? 128 : 24)))
+      const current = Math.min(max, Math.round(list.getBoundingClientRect().height))
+      setEditorsSize(previous => previous.max === max && previous.current === current ? previous : { max, current })
+    }
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(column)
+    observer.observe(list)
+    if (favoritesView.current) observer.observe(favoritesView.current)
+    window.addEventListener('resize', measure)
+    return () => { observer.disconnect(); window.removeEventListener('resize', measure) }
+  }, [filter, editorCount, editorsOpen, treeOpen, favoritesOpen, workspace.favoritePaths.length])
   return <div ref={root} className="flex h-full min-h-0 flex-col">
     <div className="flex h-9 shrink-0 items-center justify-between gap-2 px-3"><h2 className="text-xs font-semibold text-muted-foreground">탐색기</h2><div className="flex items-center">
-      {operations.canWrite && <><Button variant="ghost" size="icon-sm" aria-label="새 노트" disabled={operations.busy} onClick={() => operations.newNote(workspace.activePath ? parentFolder(workspace.activePath) : '')}><FilePlus2 className="size-4" /></Button><Button variant="ghost" size="icon-sm" aria-label="새 가상 폴더" disabled={operations.busy} onClick={() => operations.newFolder()}><FolderPlus className="size-4" /></Button></>}
-      <Button variant="ghost" size="icon-sm" aria-label="현재 노트 위치 표시" disabled={!workspace.activePath || isGraphTab(workspace.activePath)} onClick={() => workspace.revealFolder(workspace.activePath)}><LocateFixed className="size-4" /></Button>
+      {operations.canWrite && <><Button variant="ghost" size="icon-sm" aria-label="새 노트" disabled={operations.busy} onClick={() => operations.newNote(workspace.activePath && !isViewTab(workspace.activePath) ? parentFolder(workspace.activePath) : '')}><FilePlus2 className="size-4" /></Button><Button variant="ghost" size="icon-sm" aria-label="새 가상 폴더" disabled={operations.busy} onClick={() => operations.newFolder()}><FolderPlus className="size-4" /></Button></>}
+      <Button variant="ghost" size="icon-sm" aria-label="현재 노트 위치 표시" disabled={!workspace.activePath || isViewTab(workspace.activePath)} onClick={() => workspace.revealFolder(workspace.activePath)}><LocateFixed className="size-4" /></Button>
     </div></div>
     <div className="shrink-0 px-2 pb-2"><Input aria-label="노트 경로 필터" className="h-8" placeholder="경로·제목 필터…" value={filter} onChange={event => setFilter(event.target.value)} /></div>
     {operations.me.error && <div className="space-y-2 px-2 pb-2"><ErrorNotice error={operations.me.error} /><Button size="sm" variant="outline" onClick={() => void operations.me.refetch()}>권한 다시 확인</Button></div>}
     {operations.panel}
-    <div className="flex min-h-0 flex-1 flex-col">
-      {!filter && editorCount > 0 && <section aria-label="열린 편집기" className="flex shrink-0 flex-col border-b"><ViewHeader title="열린 편집기" open={editorsOpen} onToggle={() => toggleView('editors')} />{editorsOpen && <div className="max-h-[min(12rem,25vh)] overflow-auto px-2 pb-1">{workspace.groupOrder.map((groupId, index) => workspace.groups[groupId].tabs.length > 0 && <div key={groupId} role="group" aria-label={`${index + 1} 그룹`}>{workspace.groupOrder.length > 1 && <button type="button" className="flex h-5 w-full items-center px-2 text-left text-[11px] text-muted-foreground hover:text-foreground" onClick={() => workspace.focusGroup(groupId)}>{index + 1} 그룹</button>}<ul>{workspace.groups[groupId].tabs.map(tab => {
-        const graph = isGraphTab(tab.path)
-        const label = graph ? '그래프' : workspace.knownTitles[tab.path] || tab.path.split('/').pop()!
+    <div ref={viewsColumn} className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+      {!filter && editorCount > 0 && <section aria-label="열린 편집기" className={cn('flex shrink-0 flex-col', !editorsOpen && 'border-b')}><ViewHeader title="열린 편집기" open={editorsOpen} onToggle={() => toggleView('editors')} />{editorsOpen && <><div ref={editorsList} className="overflow-auto px-2 pb-1" style={editorsHeight === null ? { maxHeight: `min(12rem, 25vh, ${editorsSize.max}px)` } : { height: clampedEditorsHeight }}>{workspace.groupOrder.map((groupId, index) => workspace.groups[groupId].tabs.length > 0 && <div key={groupId} role="group" aria-label={`${index + 1} 그룹`}>{workspace.groupOrder.length > 1 && <button type="button" className="flex h-5 w-full items-center px-2 text-left text-[11px] text-muted-foreground hover:text-foreground" onClick={() => workspace.focusGroup(groupId)}>{index + 1} 그룹</button>}<ul>{workspace.groups[groupId].tabs.map(tab => {
+        const view = isViewTab(tab.path)
+        const label = view ? viewTabTitle(tab.path, tab.query) : workspace.knownTitles[tab.path] || tab.path.split('/').pop()!
         const shown = workspace.groups[groupId].activePath === tab.path
         const current = shown && groupId === workspace.activeGroupId
-        return <li key={tab.path} className={cn('group/editor flex min-w-0 items-center rounded-sm', current ? 'bg-accent' : shown && 'bg-accent/50')}><button type="button" className={cn('explorer-row min-w-0 flex-1', !tab.pinned && 'italic')} title={graph ? '그래프' : tab.path} aria-current={current ? 'page' : undefined} draggable onDragStart={event => setTabDragData(event, groupId, tab.path, graph ? '그래프' : workspace.knownTitles[tab.path])} onClick={() => workspace.openNote(tab.path, { group: groupId })} onKeyDown={event => { if (event.key === 'Delete') { event.preventDefault(); workspace.closeTab(tab.path, groupId) } }}>{graph ? <Network className="size-3.5 shrink-0" /> : <FileText className="size-3.5 shrink-0" />}<span className="truncate">{label}</span>{!graph && parentFolder(tab.path) && <span className="min-w-0 shrink truncate text-xs text-muted-foreground">{parentFolder(tab.path)}</span>}{!graph && <DirtyIndicator path={tab.path} />}</button><button type="button" title="편집기 닫기" aria-label={`${label} 편집기 닫기`} className={cn('flex h-7 shrink-0 items-center px-1 text-muted-foreground hover:text-foreground group-focus-within/editor:opacity-100 group-hover/editor:opacity-100 [@media(hover:none)]:opacity-100', !current && 'opacity-0')} onClick={() => workspace.closeTab(tab.path, groupId)}><X className="size-3.5" /></button></li>
-      })}</ul></div>)}</div>}</section>}
-      {!filter && workspace.favoritePaths.length > 0 && <section aria-label="즐겨찾기" className="flex shrink-0 flex-col border-b"><ViewHeader title="즐겨찾기" open={favoritesOpen} onToggle={() => toggleView('favorites')} />{favoritesOpen && <ul className="max-h-[min(10rem,20vh)] overflow-auto px-2 pb-1">{workspace.favoritePaths.map(path => <li key={path}><button className={cn('explorer-row w-full', workspace.activePath === path && 'bg-accent')} title={path} draggable onDragStart={event => setNoteDragData(event, path, { title: workspace.knownTitles[path], move: operations.canWrite && !operations.busy && !path.startsWith('raw/') })} onDragEnd={() => { clearFolderHover(); setDropFolder(null) }} onContextMenu={event => openMenu(event, path, false)} onKeyDown={event => { if (event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10') openMenu(event, path, false); else if (event.key === 'F2' && operations.canWrite && !path.startsWith('raw/')) { event.preventDefault(); operations.move(path) } }} onClick={() => workspace.openNote(path)}><FileText className="size-3.5 shrink-0" /><span className="truncate">{workspace.knownTitles[path] || path}</span></button></li>)}</ul>}</section>}
+        return <li key={tab.path} className={cn('group/editor flex min-w-0 items-center rounded-sm', current ? 'bg-accent' : shown && 'bg-accent/50')}><button type="button" className={cn('explorer-row min-w-0 flex-1', !tab.pinned && 'italic')} title={view ? label : tab.path} aria-current={current ? 'page' : undefined} draggable onDragStart={event => setTabDragData(event, groupId, tab.path, view ? label : workspace.knownTitles[tab.path], tab.query)} onClick={() => workspace.openNote(tab.path, { group: groupId, query: tab.query })} onKeyDown={event => { if (event.key === 'Delete') { event.preventDefault(); workspace.closeTab(tab.path, groupId) } }}>{view ? <ViewTabIcon path={tab.path} className="size-3.5 shrink-0" /> : <FileText className="size-3.5 shrink-0" />}<span className="truncate">{label}</span>{!view && parentFolder(tab.path) && <span className="min-w-0 shrink truncate text-xs text-muted-foreground">{parentFolder(tab.path)}</span>}{!view && <DirtyIndicator path={tab.path} />}</button><button type="button" title="편집기 닫기" aria-label={`${label} 편집기 닫기`} className={cn('flex h-7 shrink-0 items-center px-1 text-muted-foreground hover:text-foreground group-focus-within/editor:opacity-100 group-hover/editor:opacity-100 [@media(hover:none)]:opacity-100', !current && 'opacity-0')} onClick={() => workspace.closeTab(tab.path, groupId)}><X className="size-3.5" /></button></li>
+      })}</ul></div>)}</div>
+        <div role="separator" aria-orientation="horizontal" aria-label="열린 편집기 높이 조절" aria-valuemin={minimumEditorsHeight} aria-valuemax={editorsSize.max} aria-valuenow={editorsSize.current} tabIndex={0} className="workspace-editor-separator explorer-editors-separator" data-separator={resizingEditors ? 'active' : undefined}
+          onPointerDown={event => {
+            if (event.button !== 0) return
+            event.preventDefault()
+            event.currentTarget.focus({ preventScroll: true })
+            event.currentTarget.setPointerCapture(event.pointerId)
+            editorsDrag.current = { pointerId: event.pointerId, y: event.clientY, height: editorsList.current?.getBoundingClientRect().height ?? 0 }
+            setResizingEditors(true)
+          }}
+          onPointerMove={event => {
+            const drag = editorsDrag.current
+            if (drag?.pointerId === event.pointerId) resizeEditors(drag.height + event.clientY - drag.y)
+          }}
+          onPointerUp={event => {
+            if (editorsDrag.current?.pointerId !== event.pointerId) return
+            resizeEditors(editorsDrag.current.height + event.clientY - editorsDrag.current.y)
+            event.currentTarget.releasePointerCapture(event.pointerId)
+            editorsDrag.current = null
+            setResizingEditors(false)
+          }}
+          onLostPointerCapture={() => { editorsDrag.current = null; setResizingEditors(false) }}
+          onPointerCancel={() => { editorsDrag.current = null; setResizingEditors(false) }}
+          onDoubleClick={() => setEditorsHeight(null)}
+          onKeyDown={event => {
+            if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return
+            event.preventDefault()
+            resizeEditors(event.key === 'Home' ? minimumEditorsHeight : event.key === 'End' ? editorsSize.max : editorsSize.current + (event.key === 'ArrowDown' ? 16 : -16))
+          }}
+        />
+      </>}</section>}
+      {!filter && workspace.favoritePaths.length > 0 && <section ref={favoritesView} aria-label="즐겨찾기" className="flex shrink-0 flex-col border-b"><ViewHeader title="즐겨찾기" open={favoritesOpen} onToggle={() => toggleView('favorites')} />{favoritesOpen && <ul className="max-h-[min(10rem,20vh)] overflow-auto px-2 pb-1">{workspace.favoritePaths.map(path => <li key={path}><button className={cn('explorer-row w-full', workspace.activePath === path && 'bg-accent')} title={path} draggable onDragStart={event => setNoteDragData(event, path, { title: workspace.knownTitles[path], move: operations.canWrite && !operations.busy && !path.startsWith('raw/') })} onDragEnd={() => { clearFolderHover(); setDropFolder(null) }} onContextMenu={event => openMenu(event, path, false)} onKeyDown={event => { if (event.key === 'ContextMenu' || event.shiftKey && event.key === 'F10') openMenu(event, path, false); else if (event.key === 'F2' && operations.canWrite && !path.startsWith('raw/')) { event.preventDefault(); operations.move(path) } }} onClick={() => workspace.openNote(path)}><FileText className="size-3.5 shrink-0" /><span className="truncate">{workspace.knownTitles[path] || path}</span></button></li>)}</ul>}</section>}
       <section aria-label="저장소 루트" className={cn('flex min-w-0 flex-col', treeOpen ? 'min-h-32 flex-1' : 'shrink-0')}>
         <ViewHeader title={`저장소 루트 · 노트 ${filtered.length}개`} open={treeOpen} onToggle={() => toggleView('tree')} className={cn('explorer-folder', dropFolder === '' && 'bg-accent ring-2 ring-ring')} onContextMenu={event => openMenu(event, '', true)} onDragOver={event => overFolder(event, '')} onDragLeave={leaveFolder} onDrop={event => drop(event, '')} actions={<button type="button" className="flex h-6 shrink-0 items-center px-1 text-muted-foreground hover:text-foreground" aria-label="저장소 루트 작업 메뉴" aria-haspopup="menu" onClick={event => openMenu(event, '', true)}><MoreHorizontal className="size-4" /></button>} />
         {treeOpen && <div className="min-h-0 flex-1 overflow-auto px-2 pb-2">
@@ -269,7 +333,7 @@ export function Explorer({ userId }: { userId: number }) {
       {!menu.folder && writableMenu && <><button type="button" role="menuitem" className={menuButton} disabled={operations.busy} onClick={() => runMenu(() => { const path = menu.path; setRenaming({ path, name: path.split('/').pop()! }); workspace.revealFolder(path) })}>이름 변경 <kbd className="ml-auto text-xs">F2</kbd></button><button type="button" role="menuitem" className={menuButton} disabled={operations.busy} onClick={() => runMenu(() => operations.move(menu.path))}>폴더 이동…</button><button type="button" role="menuitem" className={cn(menuButton, 'text-destructive')} disabled={operations.busy} onClick={() => runMenu(() => operations.remove(menu.path))}>노트 삭제…</button><hr className="my-1 border-border" /></>}
       <button type="button" role="menuitem" className={menuButton} onClick={() => { void operations.copy(menu.path || '.'); setMenu(null) }}>경로 복사</button>
       {!menu.folder && <button type="button" role="menuitem" className={menuButton} onClick={() => { void operations.copy(menu.path, true); setMenu(null) }}>위키링크 복사</button>}
-      <button type="button" role="menuitem" className={menuButton} onClick={() => { const path = menu.path; setMenu(null); if (confirmEditorLeave()) router.push(`/history${path ? `?path=${encodeURIComponent(path)}` : ''}`) }}>변경 이력 열기</button>
+      <button type="button" role="menuitem" className={menuButton} onClick={() => { const path = menu.path; setMenu(null); workspace.openHref(`/history${path ? `?path=${encodeURIComponent(path)}` : ''}`) }}>변경 이력 열기</button>
     </div>, menu.trigger.closest('dialog[open]') ?? document.body)}
   </div>
 }

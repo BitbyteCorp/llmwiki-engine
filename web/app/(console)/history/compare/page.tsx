@@ -1,7 +1,7 @@
 import { Suspense } from 'react'
 import { Loading } from '@/components/common'
-import { ComparePage } from '@/pages-ui/history-compare'
+import { WikiPage } from '@/pages-ui/wiki'
 
 export default function Page() {
-  return <Suspense fallback={<Loading label="비교 화면을 불러오는 중…"/>}><ComparePage /></Suspense>
+  return <Suspense fallback={<Loading label="비교 화면을 불러오는 중" />}><WikiPage /></Suspense>
 }

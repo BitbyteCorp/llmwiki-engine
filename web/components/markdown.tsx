@@ -126,7 +126,7 @@ export function imageSource(src: string | undefined, path?: string, ref?: string
   return `/api/notes/raw?${query}`
 }
 
-export const Markdown = memo(function Markdown({ content, path, ref, groupId, onNavigate }: { content: string; path?: string; ref?: string; groupId?: GroupId; onNavigate?: Navigate }) {
+export const Markdown = memo(function Markdown({ content, path, ref, groupId, onNavigate, updateFragmentUrl = true }: { content: string; path?: string; ref?: string; groupId?: GroupId; onNavigate?: Navigate; updateFragmentUrl?: boolean }) {
   const root = useRef<HTMLDivElement>(null)
   const workspace = useOptionalWorkspace()
   const openNote = workspace?.openNote
@@ -141,9 +141,10 @@ export const Markdown = memo(function Markdown({ content, path, ref, groupId, on
       target.focus({ preventScroll: true })
       target.scrollIntoView({ block: 'start' })
     }
+    if (!updateFragmentUrl) return
     if (groupId && groupId !== activeGroupId && path && openNote) openNote(path, { group: groupId, fragment, ref: groupRef })
     else window.history.replaceState(window.history.state, '', `#${encodeURIComponent(fragment)}`)
-  }, [groupId, activeGroupId, path, openNote, groupRef])
+  }, [groupId, activeGroupId, path, openNote, groupRef, updateFragmentUrl])
   const navigate = useMemo<Navigate | undefined>(() => onNavigate || openNote ? (target, options) => {
     const group = options?.group ?? groupId
     // Following a link pins the destination like VS Code code navigation; same-note fragments keep the tab as is.

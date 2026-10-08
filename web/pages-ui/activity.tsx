@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
-import { usePathname, useRouter, useSearchParams } from 'next/navigation'
+import { useViewLocation } from '@/components/workspace/view-location'
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { GitCommitHorizontal, ListTodo, Moon, Cloud } from 'lucide-react'
 import { api, activityApi, type ActivityFilters, type ActivityKind, type ActivitySource } from '@/lib/api'
@@ -115,9 +115,7 @@ function ActivityTimeline({ filters, resetHref }: { filters: ActivityFilters; re
 }
 
 export function ActivityPage() {
-  const params = useSearchParams()
-  const pathname = usePathname()
-  const router = useRouter()
+  const { searchParams: params, pathname, push } = useViewLocation()
   const tree = useQuery({ queryKey: ['notes/tree'], queryFn: api.tree })
   const filters: ActivityFilters = { type: (params.get('type') || undefined) as ActivityKind | undefined, source: (params.get('source') || undefined) as ActivitySource | undefined, path: params.get('path') || undefined }
   const filterKey = JSON.stringify(filters)
@@ -139,7 +137,7 @@ export function ActivityPage() {
         if (value) next.set(name, value)
         else next.delete(name)
       }
-      router.push(`${pathname}?${next}`)
+      push(`${pathname}?${next}`)
     }}>
       <label className="space-y-1 text-xs text-muted-foreground"><span className="block">기록 종류</span><NativeSelect size="sm" name="type" defaultValue={filters.type ?? ''}><option value="">전체 종류</option>{Object.entries(activityTypeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</NativeSelect></label>
       <label className="space-y-1 text-xs text-muted-foreground"><span className="block">출처</span><NativeSelect size="sm" name="source" defaultValue={filters.source ?? ''}><option value="">전체 출처</option>{Object.entries(activitySourceLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</NativeSelect></label>

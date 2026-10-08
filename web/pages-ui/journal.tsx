@@ -4,7 +4,7 @@ import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import Link from 'next/link'
 import dynamic from 'next/dynamic'
-import { usePathname, useRouter, useSearchParams } from 'next/navigation'
+import { useViewLocation } from '@/components/workspace/view-location'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { api, dreamsApi } from '@/lib/api'
 import { EmptyState, ErrorNotice, Loading, PageHeader, noteHref } from '@/components/common'
@@ -36,9 +36,8 @@ function todayKst() {
 }
 
 export function JournalPage() {
-  const params = useSearchParams()
-  const pathname = usePathname()
-  const router = useRouter()
+  const location = useViewLocation()
+  const { pathname, searchParams: params } = location
   const dateParam = params.get('date')
   const invalidDate = dateParam !== null && !validDate(dateParam)
   const journal = useQuery({ queryKey: ['journal'], queryFn: ({ signal }) => dreamsApi.journal(signal) })
@@ -64,15 +63,15 @@ export function JournalPage() {
     const next = new URLSearchParams(params.toString())
     next.set('date', date)
     setBrowsedMonth(null)
-    router.push(`${pathname}?${next}`)
+    location.push(`${pathname}?${next}`)
   }
 
   useEffect(() => {
     if (dateParam !== null || !journal.isSuccess) return
     const next = new URLSearchParams(params.toString())
     next.set('date', selectedDate)
-    router.replace(`${pathname}?${next}`, { scroll: false })
-  }, [dateParam, journal.isSuccess, params, pathname, router, selectedDate])
+    location.replace(`${pathname}?${next}`)
+  }, [dateParam, journal.isSuccess, params, pathname, location, selectedDate])
 
   return <div className="min-w-0 space-y-4">
     <PageHeader title="일기" description="날짜별로 꿈꾸기가 정리한 지식과 하루의 기록을 읽습니다." actions={<Button variant="outline" nativeButton={false} render={<Link href="/dreams" />}>꿈꾸기 실행 기록</Button>} />
@@ -106,7 +105,7 @@ export function JournalPage() {
             {!selected.dreamRunId && <p className="text-xs text-muted-foreground">이 일기에 연결된 꿈꾸기 실행 기록이 없습니다.</p>}
             {note.isPending && <Loading label="일기 본문을 불러오는 중…" />}
             {note.error && <div className="space-y-2"><ErrorNotice error={note.error} /><Button variant="outline" disabled={note.isFetching} onClick={() => void note.refetch()}>본문 다시 시도</Button></div>}
-            {note.isSuccess && <article className="min-w-0" aria-label={`${selectedDate} 일기 본문`}><Markdown content={note.data.body} path={selected.path} /></article>}
+            {note.isSuccess && <article className="min-w-0" aria-label={`${selectedDate} 일기 본문`}><Markdown content={note.data.body} path={selected.path} groupId={location.groupId} updateFragmentUrl={false} /></article>}
           </>}
         </section>
       </div>}

@@ -1,6 +1,6 @@
 'use client'
 
-import { useRouter } from 'next/navigation'
+import { useWorkspace } from '@/components/workspace/context'
 import { useIsMutating, useMutation, useQueryClient } from '@tanstack/react-query'
 import { opsApi, importKeys, type OpsJob } from '@/lib/api'
 import { notify } from '@/components/notifications'
@@ -29,7 +29,7 @@ function actionLink(command: OpsCommand) {
 
 export function useOpsActions(openImport?: () => void) {
   const client = useQueryClient()
-  const router = useRouter()
+  const { openHref } = useWorkspace()
   const busy = useIsMutating({ mutationKey: opsMutationKey, exact: true }) > 0
   const operation = useMutation({
     mutationKey: opsMutationKey,
@@ -64,7 +64,7 @@ export function useOpsActions(openImport?: () => void) {
     if (client.isMutating({ mutationKey: opsMutationKey, exact: true })) return
     if (command.kind === 'import') {
       if (openImport) openImport()
-      else if (confirmEditorLeave()) router.push('/imports?new=1')
+      else if (confirmEditorLeave()) openHref('/imports?new=1')
       return
     }
     const description = confirmation(command)

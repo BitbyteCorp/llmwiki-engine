@@ -1,14 +1,13 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { useRouter } from 'next/navigation'
 import { useTheme } from 'next-themes'
-import { confirmEditorLeave, dispatchEditorCommand, getEditorStatus, type EditorCommand } from '@/components/editor/state'
+import { dispatchEditorCommand, getEditorStatus, type EditorCommand } from '@/components/editor/state'
 import { openChat } from '@/lib/chat-context'
 import { useWorkspace, type Workspace } from './context'
 import type { PaletteMode } from './palettes'
 import type { PanelId } from './registry'
-import { isGraphTab } from './layout'
+import { isViewTab } from './layout'
 
 type Shortcut = { key: string; mod?: boolean; alt?: boolean; shift?: boolean; hint?: string }
 type BindingContext = {
@@ -23,7 +22,7 @@ type BindingContext = {
 type Binding = { id: string; label: string; shortcuts: Shortcut[]; outsideInput?: boolean; scope?: string; run(context: BindingContext, event: KeyboardEvent): void }
 
 function noteCommand(context: BindingContext, command: EditorCommand) {
-  const path = isGraphTab(context.workspace.activePath) ? '' : context.workspace.activePath
+  const path = isViewTab(context.workspace.activePath) ? '' : context.workspace.activePath
   if (path || command === 'new') dispatchEditorCommand(command, path || undefined, command === 'new' ? undefined : { exactPath: true })
 }
 function closeActiveTab({ workspace }: BindingContext) {
@@ -31,13 +30,13 @@ function closeActiveTab({ workspace }: BindingContext) {
 }
 function selectTab({ workspace }: BindingContext, index: number) {
   const tab = workspace.groups[workspace.activeGroupId]?.tabs[index]
-  if (tab) workspace.openNote(tab.path, { group: workspace.activeGroupId })
+  if (tab) workspace.openNote(tab.path, { group: workspace.activeGroupId, query: tab.query })
 }
 
 export function saveDirtyGroups(workspace: Workspace): void {
   for (const groupId of workspace.groupOrder) {
     const path = workspace.groups[groupId]?.activePath
-    if (path && !isGraphTab(path) && workspace.isEditorOwner(groupId, path) && getEditorStatus(path)?.dirty) dispatchEditorCommand('save', path, { exactPath: true })
+    if (path && !isViewTab(path) && workspace.isEditorOwner(groupId, path) && getEditorStatus(path)?.dirty) dispatchEditorCommand('save', path, { exactPath: true })
   }
 }
 
@@ -76,7 +75,8 @@ export const workspaceKeybindings: readonly Binding[] = [
     const path = target?.dataset.tabPath || target?.title
     if (path) {
       if (target?.dataset.groupId) context.workspace.setActiveGroup(target.dataset.groupId)
-      context.workspace.openNote(path, { group: 'side' })
+      const tab = context.workspace.groups[target?.dataset.groupId || context.workspace.activeGroupId]?.tabs.find(tab => tab.path === path)
+      context.workspace.openNote(path, { group: 'side', query: tab?.query })
     }
   } },
   { id: 'focus-group', label: '번호로 편집 그룹 초점', shortcuts: Array.from({ length: 9 }, (_, index) => ({ key: String(index + 1), mod: true, hint: '1–9' })), run: (context, event) => context.workspace.focusGroup(Number(shortcutKey(event)) - 1) },
@@ -86,7 +86,7 @@ export const workspaceKeybindings: readonly Binding[] = [
   { id: 'editor-rename', label: '탐색기 / 탭 이름 바꾸기', shortcuts: [{ key: 'F2' }], outsideInput: true, scope: '[role="tab"], [data-explorer-path]', run: (context, event) => {
     const target = event.target instanceof Element ? event.target.closest<HTMLElement>('[role="tab"]') : null
     const path = target?.dataset.tabPath || target?.title
-    if (path && !isGraphTab(path)) dispatchEditorCommand('rename', path, { exactPath: true })
+    if (path && !isViewTab(path)) dispatchEditorCommand('rename', path, { exactPath: true })
   } },
   { id: 'help', label: '단축키 도움말', shortcuts: [{ key: '?' }, { key: 'F1' }], run: context => context.setMode('help') },
 ]
@@ -132,11 +132,10 @@ export function shortcutHint(id: string, platform: 'mac' | 'ctrl' = 'ctrl'): str
 
 export function useWorkspaceKeybindings(options: { setMode(mode: PaletteMode): void; selectPanel(id: PanelId): void; toggleSidebar(): void; toggleChat(): void; mobile: boolean }): void {
   const workspace = useWorkspace()
-  const router = useRouter()
   const { resolvedTheme, setTheme } = useTheme()
   const context: BindingContext = {
     ...options, workspace,
-    openSettings: () => { if (confirmEditorLeave()) router.push('/settings') },
+    openSettings: () => workspace.openHref('/settings'),
     toggleTheme: () => setTheme(resolvedTheme === 'dark' ? 'light' : 'dark'),
   }
   const current = useRef(context)

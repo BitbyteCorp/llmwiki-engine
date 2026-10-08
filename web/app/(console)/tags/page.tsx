@@ -1,5 +1,7 @@
-import { TagsPage } from '@/components/search/tags-view'
+import { Suspense } from 'react'
+import { Loading } from '@/components/common'
+import { WikiPage } from '@/pages-ui/wiki'
 
 export default function Page() {
-  return <TagsPage />
+  return <Suspense fallback={<Loading label="태그를 불러오는 중" />}><WikiPage /></Suspense>
 }

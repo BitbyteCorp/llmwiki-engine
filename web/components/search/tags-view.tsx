@@ -3,7 +3,7 @@
 import { useId, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import Link from 'next/link'
-import { useParams } from 'next/navigation'
+import { useViewLocation } from '@/components/workspace/view-location'
 import { ArrowLeft, Hash } from 'lucide-react'
 import { api } from '@/lib/api'
 import { EmptyState, ErrorNotice, Loading, PageHeader } from '@/components/common'
@@ -46,8 +46,8 @@ export function TagsPage() {
 }
 
 export function TagNotesPage() {
-  const { tag: encodedTag } = useParams<{ tag: string }>()
-  let tag = encodedTag ?? ''
+  const { pathname, groupId } = useViewLocation()
+  let tag = pathname.split('/')[2] ?? ''
   try { tag = decodeURIComponent(tag) } catch { /* Keep malformed URL text readable without crashing the page. */ }
   const notes = useQuery({ queryKey: ['tags', 'notes', tag], queryFn: ({ signal }) => api.tagNotes(tag, signal), enabled: Boolean(tag) })
 
@@ -57,7 +57,7 @@ export function TagNotesPage() {
     {notes.isError && <div className="space-y-2"><ErrorNotice error={notes.error} /><Button variant="outline" disabled={notes.isFetching} onClick={() => void notes.refetch()}>노트 다시 시도</Button></div>}
     {notes.data && <section aria-label="태그 노트" className="space-y-2">
       <p aria-live="polite" className="text-label-13 text-muted-foreground">{notes.data.length}개 노트</p>
-      {notes.data.length ? <KnowledgeNoteList notes={notes.data} /> : <EmptyState title="이 태그가 포함된 노트가 없습니다" description="태그가 변경되었거나 색인이 갱신되는 중일 수 있습니다. 다른 태그를 선택해 보세요." />}
+      {notes.data.length ? <KnowledgeNoteList notes={notes.data} groupId={groupId} /> : <EmptyState title="이 태그가 포함된 노트가 없습니다" description="태그가 변경되었거나 색인이 갱신되는 중일 수 있습니다. 다른 태그를 선택해 보세요." />}
     </section>}
   </div>
 }

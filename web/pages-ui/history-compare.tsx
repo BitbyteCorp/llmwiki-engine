@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react"
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query"
 import dynamic from "next/dynamic"
-import { useRouter, useSearchParams } from "next/navigation"
+import { useViewLocation } from "@/components/workspace/view-location"
 import { api, historyApi } from "@/lib/api"
 import type { CommitInfo } from "@/lib/api"
 import { EmptyState, ErrorNotice, Loading, PageHeader, formatDate } from "@/components/common"
@@ -41,8 +41,7 @@ function VersionPicker({ label, value, commits, selectedCommit, onChange, loadin
 }
 
 export function ComparePage() {
-  const params = useSearchParams()
-  const router = useRouter()
+  const { searchParams: params, push } = useViewLocation()
   const base = params.get("base") || ""
   const head = params.get("head") ?? "main"
   const path = params.get("path") || undefined
@@ -83,7 +82,7 @@ export function ComparePage() {
   const baseSummary = base === "main" ? "현재 버전" : baseCommit ? versionLabel(baseCommit) : base ? "선택한 이전 버전" : "이전 버전 선택"
   const headSummary = head === "main" ? "현재 버전" : headCommit ? versionLabel(headCommit) : head ? "선택한 이후 버전" : "이후 버전 선택"
   function selectVersion(field: "base" | "head", value: string) {
-    router.push(compareHref(field === "base" ? value : base, field === "head" ? value : head, path))
+    push(compareHref(field === "base" ? value : base, field === "head" ? value : head, path))
   }
   async function prepareRestore() {
     if (!path || !query.data || preparingRestore) return
@@ -116,9 +115,9 @@ export function ComparePage() {
   return <div className="min-w-0 space-y-3">
     <PageHeader title="버전 비교" description={base ? `${baseSummary} → ${headSummary}` : "노트를 고른 뒤 비교할 두 버전을 선택하세요."}/>
     <div className="flex flex-wrap items-center gap-1.5"><Badge variant="outline" className="max-w-full whitespace-normal break-all">{path || "전체 노트"}</Badge><Button variant="ghost" onClick={() => setChoosingNote(value => !value)}>{path ? "다른 노트" : "노트 선택"}</Button></div>
-    {choosingNote && <form className="space-y-1.5 border-b pb-2" onSubmit={event => { event.preventDefault(); if (notePath.trim()) { router.push(compareHref("", "main", notePath.trim())); setChoosingNote(false) } }}><div className="flex flex-wrap items-end gap-1.5"><label className="min-w-0 flex-1 space-y-1 text-xs text-muted-foreground">노트 선택<Input list="compare-note-options" value={notePath} onChange={event => setNotePath(event.target.value)} placeholder="노트 제목 또는 경로" aria-label="비교할 노트 선택" required/><datalist id="compare-note-options">{tree.data?.files.filter(file => file.endsWith(".md")).map(file => <option key={file} value={file}>{file.split("/").at(-1)?.replace(/\.md$/, "")}</option>)}</datalist></label><Button variant="outline" type="submit" disabled={!notePath.trim()}>선택</Button></div>{tree.isPending && <Loading label="노트 목록을 불러오는 중…"/>}{tree.isError && <RetryError error={tree.error} retry={() => void tree.refetch()}/>}</form>}
+    {choosingNote && <form className="space-y-1.5 border-b pb-2" onSubmit={event => { event.preventDefault(); if (notePath.trim()) { push(compareHref("", "main", notePath.trim())); setChoosingNote(false) } }}><div className="flex flex-wrap items-end gap-1.5"><label className="min-w-0 flex-1 space-y-1 text-xs text-muted-foreground">노트 선택<Input list="compare-note-options" value={notePath} onChange={event => setNotePath(event.target.value)} placeholder="노트 제목 또는 경로" aria-label="비교할 노트 선택" required/><datalist id="compare-note-options">{tree.data?.files.filter(file => file.endsWith(".md")).map(file => <option key={file} value={file}>{file.split("/").at(-1)?.replace(/\.md$/, "")}</option>)}</datalist></label><Button variant="outline" type="submit" disabled={!notePath.trim()}>선택</Button></div>{tree.isPending && <Loading label="노트 목록을 불러오는 중…"/>}{tree.isError && <RetryError error={tree.error} retry={() => void tree.refetch()}/>}</form>}
     <div className="grid min-w-0 gap-x-4 gap-y-2 sm:grid-cols-2"><VersionPicker label="이전 버전" value={base} commits={commits} selectedCommit={baseCommit} onChange={value => selectVersion("base", value)} loading={query.isFetching || baseDetail.isFetching}/><VersionPicker label="선택한 버전" value={head} commits={commits} selectedCommit={headCommit} onChange={value => selectVersion("head", value)} loading={query.isFetching || headDetail.isFetching}/></div>
-    <div className="flex flex-wrap gap-1.5"><Button variant="outline" disabled={!base || !head} onClick={() => router.push(compareHref(head, base, path))}>두 버전 바꾸기</Button>{history.hasNextPage && <Button variant="ghost" disabled={history.isFetchingNextPage} onClick={() => void history.fetchNextPage()}>{history.isFetchingNextPage ? "불러오는 중…" : "이전 버전 더 보기"}</Button>}{path && allowed && <Button disabled={!base || !query.data || query.isFetching || preparingRestore} onClick={() => void prepareRestore()}>{preparingRestore ? "복원할 버전 확인 중…" : "이 버전으로 복원…"}</Button>}</div>
+    <div className="flex flex-wrap gap-1.5"><Button variant="outline" disabled={!base || !head} onClick={() => push(compareHref(head, base, path))}>두 버전 바꾸기</Button>{history.hasNextPage && <Button variant="ghost" disabled={history.isFetchingNextPage} onClick={() => void history.fetchNextPage()}>{history.isFetchingNextPage ? "불러오는 중…" : "이전 버전 더 보기"}</Button>}{path && allowed && <Button disabled={!base || !query.data || query.isFetching || preparingRestore} onClick={() => void prepareRestore()}>{preparingRestore ? "복원할 버전 확인 중…" : "이 버전으로 복원…"}</Button>}</div>
     {path && allowed && base && <p className="text-xs text-muted-foreground">복원은 왼쪽의 이전 버전 내용을 현재 노트에 적용합니다.</p>}
     {restoreError != null && <ErrorNotice error={restoreError}/>}
     {history.isError && <RetryError error={history.error} retry={() => void history.refetch()}/>}
@@ -126,7 +125,7 @@ export function ComparePage() {
     {baseDetail.isError && <RetryError error={baseDetail.error} retry={() => void baseDetail.refetch()}/>}
     {headDetail.isError && <RetryError error={headDetail.error} retry={() => void headDetail.refetch()}/>}
     {!base || !head ? <EmptyState title="비교할 두 버전을 선택해 주세요" description="이전 버전을 고르고, 다른 과거 버전이나 현재 버전과 비교하세요."/> : query.isPending ? <Loading label="버전을 비교하는 중…"/> : query.isError ? <RetryError error={query.error} retry={() => void query.refetch()}/> : query.data && <section className="min-w-0 space-y-1.5" aria-label="두 버전의 변경 내용"><DiffView patch={query.data.patch} beforeLabel="이전 버전" afterLabel={head === "main" ? "현재 버전" : "선택한 버전"}/><FileList files={query.data.files} versionSha={query.data.head} deletedVersionSha={query.data.base}/></section>}
-    <details className="space-y-1.5"><summary className="h-7 cursor-pointer border-b text-label-13 font-semibold leading-7">고급 비교</summary><form className="space-y-1.5" onSubmit={event => { event.preventDefault(); router.push(compareHref(draft.base.trim(), draft.head.trim(), draft.path.trim() || undefined)) }}><div className="grid gap-x-4 gap-y-1.5 sm:grid-cols-2">{(["base", "head"] as const).map(field => <label key={field} className="block min-w-0 space-y-1 text-xs text-muted-foreground">{field === "base" ? "이전 버전 SHA / ref" : "이후 버전 SHA / ref"}<Input required value={draft[field]} onChange={event => setDraft(value => ({ ...value, [field]: event.target.value }))} aria-label={`${field} 버전`}/></label>)}</div><label className="block space-y-1 text-xs text-muted-foreground">파일 경로 (비우면 전체 노트)<Input value={draft.path} onChange={event => setDraft(value => ({ ...value, path: event.target.value }))} aria-label="비교 파일 경로"/></label><Button type="submit" variant="outline" disabled={!draft.base.trim() || !draft.head.trim()}>비교 적용</Button>{query.data && <p className="break-all font-mono text-xs text-muted-foreground">{query.data.base} → {query.data.head}</p>}</form></details>
+    <details className="space-y-1.5"><summary className="h-7 cursor-pointer border-b text-label-13 font-semibold leading-7">고급 비교</summary><form className="space-y-1.5" onSubmit={event => { event.preventDefault(); push(compareHref(draft.base.trim(), draft.head.trim(), draft.path.trim() || undefined)) }}><div className="grid gap-x-4 gap-y-1.5 sm:grid-cols-2">{(["base", "head"] as const).map(field => <label key={field} className="block min-w-0 space-y-1 text-xs text-muted-foreground">{field === "base" ? "이전 버전 SHA / ref" : "이후 버전 SHA / ref"}<Input required value={draft[field]} onChange={event => setDraft(value => ({ ...value, [field]: event.target.value }))} aria-label={`${field} 버전`}/></label>)}</div><label className="block space-y-1 text-xs text-muted-foreground">파일 경로 (비우면 전체 노트)<Input value={draft.path} onChange={event => setDraft(value => ({ ...value, path: event.target.value }))} aria-label="비교 파일 경로"/></label><Button type="submit" variant="outline" disabled={!draft.base.trim() || !draft.head.trim()}>비교 적용</Button>{query.data && <p className="break-all font-mono text-xs text-muted-foreground">{query.data.base} → {query.data.head}</p>}</form></details>
     {restore && path && <RestoreVersionDialog targetPath={path} {...restore} open onOpenChange={open => { if (!open) setRestore(null) }}/>}
   </div>
 }

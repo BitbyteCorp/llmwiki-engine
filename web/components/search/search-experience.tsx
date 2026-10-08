@@ -7,6 +7,7 @@ import { Columns2, LoaderCircle, Search, SlidersHorizontal, X } from 'lucide-rea
 import { api, type SearchFilters } from '@/lib/api'
 import { EmptyState, ErrorNotice, Loading, formatDate, noteHref } from '@/components/common'
 import { useWorkspace } from '@/components/workspace/context'
+import type { GroupId } from '@/components/workspace/layout'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -36,10 +37,11 @@ function filterChips(filters: SearchFilters): FilterChip[] {
   })
 }
 
-export function SearchExperience({ value, onSubmit, compact = false }: {
+export function SearchExperience({ value, onSubmit, compact = false, groupId }: {
   value: SearchState
   onSubmit(value: SearchState): void
   compact?: boolean
+  groupId?: GroupId
 }) {
   const id = useId()
   const workspace = useWorkspace()
@@ -191,8 +193,8 @@ export function SearchExperience({ value, onSubmit, compact = false }: {
     updateFilter(chip.key, chip.key === 'tags' ? toggleSearchTag(value.filters.tags, chip.value) : '')
   }
   function open(path: string, anchor: string | null, split = false) {
-    if (split && !workspace.activePath) workspace.openNote(workspace.recentPaths[0] ?? path, { pin: true })
-    workspace.openNote(path, { fragment: anchor ?? undefined, group: split ? 'side' : undefined })
+    if (split && !workspace.activePath) workspace.openNote(workspace.recentPaths[0] ?? path, { pin: true, group: groupId })
+    workspace.openNote(path, { fragment: anchor ?? undefined, group: split ? 'side' : groupId })
   }
   function clickNote(event: MouseEvent<HTMLAnchorElement>, path: string, anchor: string | null) {
     if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return

@@ -1,7 +1,7 @@
 'use client'
 
 import { Suspense, useEffect, useMemo, useState } from 'react'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useViewLocation } from '@/components/workspace/view-location'
 import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowRight, Plus, RefreshCw } from 'lucide-react'
 import { api, importsApi, importKeys, type User } from '@/lib/api'
@@ -22,18 +22,16 @@ export function ImportsPage() {
 
 function ImportsList({ user }: { user: User }) {
   const client = useQueryClient()
-  const router = useRouter()
-  const searchParams = useSearchParams()
-  const [creating, setCreating] = useState(false)
+  const location = useViewLocation()
+  const searchParams = location.searchParams
   const [selected, setSelected] = useState<string | null>(null)
-  const dialogOpen = user.role !== 'viewer' && (creating || searchParams.get('new') === '1')
+  const dialogOpen = user.role !== 'viewer' && searchParams.get('new') === '1'
   function closeImport() {
-    setCreating(false)
     if (searchParams.has('new')) {
       const params = new URLSearchParams(searchParams.toString())
       params.delete('new')
       const query = params.toString()
-      router.replace(`/imports${query ? `?${query}` : ''}`, { scroll: false })
+      location.replace(`/imports${query ? `?${query}` : ''}`)
     }
   }
   const list = useInfiniteQuery({
@@ -56,7 +54,7 @@ function ImportsList({ user }: { user: User }) {
   return <div className="space-y-4">
     <PageHeader title="원문 가져오기" description={user.role === 'admin' ? '전체 사용자의 수집 기록과 도니 통합 진행 상태를 확인합니다.' : '내가 가져온 원문과 도니 통합 진행 상태를 확인합니다.'} actions={<>
       <Button variant="outline" disabled={list.isFetching} onClick={() => void list.refetch()}><RefreshCw className={`size-3.5 ${list.isFetching ? 'animate-spin motion-reduce:animate-none' : ''}`} />새로고침</Button>
-      {user.role !== 'viewer' && <Button onClick={() => setCreating(true)}><Plus className="size-3.5" />새 가져오기</Button>}
+      {user.role !== 'viewer' && <Button onClick={() => { const params = new URLSearchParams(searchParams); params.set('new', '1'); location.push(`/imports?${params}`) }}><Plus className="size-3.5" />새 가져오기</Button>}
     </>} />
     {user.role === 'viewer' && <p className="rounded-lg border bg-muted/30 px-3 py-2 text-label-13 text-muted-foreground">가져오기 기록은 조회할 수 있습니다. 새 원문을 가져오려면 편집자 이상의 권한이 필요합니다.</p>}
     {list.isPending && <Loading label="가져오기 기록을 불러오는 중…" />}

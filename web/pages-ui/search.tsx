@@ -2,20 +2,19 @@
 
 import { useMemo } from 'react'
 import Link from 'next/link'
-import { useRouter, useSearchParams } from 'next/navigation'
+import { useViewLocation } from '@/components/workspace/view-location'
 import { PageHeader } from '@/components/common'
 import { Button } from '@/components/ui/button'
 import { SearchExperience } from '@/components/search/search-experience'
 import { readSearchState, searchHref, searchParams } from '@/components/search/search-state'
 
 export function SearchPage() {
-  const params = useSearchParams()
-  const router = useRouter()
+  const { groupId, searchParams: params, push } = useViewLocation()
   const value = useMemo(() => readSearchState(params), [params])
 
   function submit(next: typeof value) {
     if (searchParams(next).toString() === searchParams(value).toString()) return
-    router.push(searchHref(next), { scroll: false })
+    push(searchHref(next))
   }
 
   return <div className="space-y-4">
@@ -24,6 +23,6 @@ export function SearchPage() {
       <Button variant="outline" size="sm" nativeButton={false} render={<Link href="/tags" />}>태그 탐색</Button>
       <Button variant="outline" size="sm" nativeButton={false} render={<Link href="/search/duplicates" />}>중복 노트</Button>
     </nav>} />
-    <SearchExperience value={value} onSubmit={submit} />
+    <SearchExperience value={value} onSubmit={submit} groupId={groupId} />
   </div>
 }

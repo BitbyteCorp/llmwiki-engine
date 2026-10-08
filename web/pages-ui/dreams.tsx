@@ -2,7 +2,7 @@
 
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import Link from 'next/link'
-import { useParams } from 'next/navigation'
+import { useViewLocation } from '@/components/workspace/view-location'
 import { dreamsApi, type OpsDreamRun } from '@/lib/api'
 import { EmptyState, ErrorNotice, Loading, PageHeader, formatDate, noteHref } from '@/components/common'
 import { Badge } from '@/components/ui/badge'
@@ -54,7 +54,8 @@ export function DreamsPage() {
 }
 
 export function DreamPage() {
-  const { id: encodedId } = useParams<{ id: string }>()
+  const { pathname } = useViewLocation()
+  const encodedId = pathname.split('/')[2]
   const id = encodedId === undefined ? undefined : decodeURIComponent(encodedId)
   const query = useQuery({ queryKey: ['dream', id], queryFn: ({ signal }) => dreamsApi.detail(id!, signal), enabled: !!id })
   if (!id) return <EmptyState title="실행 기록을 선택해 주세요" />

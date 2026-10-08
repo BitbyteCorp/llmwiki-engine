@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import Link from 'next/link'
-import { useParams, useRouter, useSearchParams } from 'next/navigation'
+import { useViewLocation } from '@/components/workspace/view-location'
 import { api, jobsApi, type JobEvent, type JobSubagent, type WriteJob } from '@/lib/api'
 import { EmptyState, ErrorNotice, Loading, PageHeader, formatDate, noteHref } from '@/components/common'
 import { Badge } from '@/components/ui/badge'
@@ -27,8 +27,7 @@ function jobsHref(status?: string, before?: string) {
 }
 
 export function JobsPage() {
-  const params = useSearchParams()
-  const router = useRouter()
+  const { searchParams: params, push } = useViewLocation()
   const rawStatus = params.get('status')
   const status = rawStatus && Object.hasOwn(statusLabels, rawStatus) ? rawStatus as WriteJob['status'] : undefined
   const before = params.get('before') || undefined
@@ -36,7 +35,7 @@ export function JobsPage() {
   return <div className="min-w-0 space-y-4">
     <PageHeader title="내 쓰기 작업" description="내가 요청한 작업의 진행 상태와 변경 결과를 확인합니다." actions={<Button variant="outline" nativeButton={false} render={<Link href="/history" />}>전체 활동</Button>} />
     <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-2">
-      <label className="flex items-center gap-2 text-xs text-muted-foreground">상태<NativeSelect size="sm" value={status ?? ''} onChange={event => router.push(jobsHref(event.target.value))} aria-label="작업 상태 필터"><NativeSelectOption value="">전체 상태</NativeSelectOption>{Object.entries(statusLabels).map(([value, label]) => <NativeSelectOption key={value} value={value}>{label}</NativeSelectOption>)}</NativeSelect></label>
+      <label className="flex items-center gap-2 text-xs text-muted-foreground">상태<NativeSelect size="sm" value={status ?? ''} onChange={event => push(jobsHref(event.target.value))} aria-label="작업 상태 필터"><NativeSelectOption value="">전체 상태</NativeSelectOption>{Object.entries(statusLabels).map(([value, label]) => <NativeSelectOption key={value} value={value}>{label}</NativeSelectOption>)}</NativeSelect></label>
       <Button variant="ghost" disabled={jobs.isFetching} onClick={() => void jobs.refetch()}>새로고침</Button>
     </div>
     {jobs.isPending && <Loading label="내 작업을 불러오는 중…" />}
@@ -87,13 +86,13 @@ function JobSubagents({ events }: { events: JobEvent[] }) {
 }
 
 export function JobPage() {
-  const params = useParams<{ id: string }>()
-  const id = decodeURIComponent(params.id)
+  const { pathname } = useViewLocation()
+  const id = decodeURIComponent(pathname.split('/')[2] ?? '')
   return <JobDetailPage key={id} id={id} />
 }
 
 function JobDetailPage({ id }: { id: string }) {
-  const router = useRouter()
+  const { push } = useViewLocation()
   const client = useQueryClient()
   const me = useQuery({ queryKey: ['me'], queryFn: api.me })
   const detail = useQuery({ queryKey: ['job', id], queryFn: ({ signal }) => jobsApi.detail(id, signal) })
@@ -104,7 +103,7 @@ function JobDetailPage({ id }: { id: string }) {
       setConfirmCancel(false)
       void client.invalidateQueries({ queryKey: ['jobs'] })
       void client.invalidateQueries({ queryKey: ['job', id] })
-      if (kind === 'retry') router.push(`/jobs/${encodeURIComponent(result.job.id)}`)
+      if (kind === 'retry') push(`/jobs/${encodeURIComponent(result.job.id)}`)
     },
   })
   if (detail.isPending) return <Loading label="쓰기 작업을 불러오는 중…" />

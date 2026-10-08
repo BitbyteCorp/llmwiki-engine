@@ -1,7 +1,7 @@
 'use client'
 
 import { useQuery } from '@tanstack/react-query'
-import { useRouter } from 'next/navigation'
+import { useWorkspace } from '@/components/workspace/context'
 import { api, opsApi } from '@/lib/api'
 import { confirmEditorLeave } from '@/components/editor/state'
 import { useOpsActions } from './ops-actions'
@@ -13,11 +13,11 @@ export function useOpsCommands(): OpsPaletteCommand[] {
   const admin = me.data?.user.role === 'admin'
   const ops = useQuery({ queryKey: ['ops'], queryFn: ({ signal }) => opsApi.status(signal), enabled: admin })
   const actions = useOpsActions()
-  const router = useRouter()
+  const { openHref } = useWorkspace()
   if (!admin) return []
   const unavailable = actions.busy || !ops.data
   return [
-    { id: 'admin-ops', label: '운영 설정 열기', keywords: ['Operations Queue Index Dream Settings'], action: () => { if (confirmEditorLeave()) router.push('/settings?tab=ops') } },
+    { id: 'admin-ops', label: '운영 설정 열기', keywords: ['Operations Queue Index Dream Settings'], action: () => { if (confirmEditorLeave()) openHref('/settings?tab=ops') } },
     { id: 'ops-dream', label: '지금 꿈꾸기 실행', keywords: ['Dream Now Dony Journal 도니'], disabled: unavailable || Boolean(ops.data?.dreams.running), action: () => actions.request({ kind: 'dream' }) },
     { id: 'ops-incremental', label: '증분 재색인', keywords: ['Incremental Reindex Search'], disabled: unavailable || Boolean(ops.data?.index.syncing), action: () => actions.request({ kind: 'incremental' }) },
     { id: 'ops-full', label: '전체 재색인', keywords: ['Full Rebuild Reindex Search'], disabled: unavailable || Boolean(ops.data?.index.syncing), action: () => actions.request({ kind: 'full' }) },

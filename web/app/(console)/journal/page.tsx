@@ -1,5 +1,7 @@
-import { JournalPage } from '@/pages-ui/journal'
+import { Suspense } from 'react'
+import { Loading } from '@/components/common'
+import { WikiPage } from '@/pages-ui/wiki'
 
 export default function Page() {
-  return <JournalPage />
+  return <Suspense fallback={<Loading label="일기를 불러오는 중" />}><WikiPage /></Suspense>
 }

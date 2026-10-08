@@ -9,14 +9,14 @@ import { wikiTarget } from '@/lib/wikilinks'
 import { EmptyState, ErrorNotice, Loading, noteHref } from '@/components/common'
 import { Button } from '@/components/ui/button'
 import { useWorkspace } from '@/components/workspace/context'
-import { isGraphTab } from '@/components/workspace/layout'
+import { isViewTab } from '@/components/workspace/layout'
 import { ViewHeader } from '@/components/workspace/view-pane'
 import { dispatchEditorCommand } from '@/components/editor/state'
 import { KnowledgeNoteList } from './note-list'
 
 export function LinksPanel() {
   const { activePath, openNote } = useWorkspace()
-  const notePath = isGraphTab(activePath) ? '' : activePath
+  const notePath = isViewTab(activePath) ? '' : activePath
   const links = useQuery({ queryKey: ['links', notePath], queryFn: ({ signal }) => api.links(notePath, signal), enabled: Boolean(notePath) })
   const similar = useQuery({ queryKey: ['similar', notePath], queryFn: ({ signal }) => api.similar(notePath, signal), enabled: Boolean(notePath) })
   const me = useQuery({ queryKey: ['me'], queryFn: api.me, enabled: Boolean(notePath) })

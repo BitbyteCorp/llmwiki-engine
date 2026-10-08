@@ -15,6 +15,7 @@ import { Notifications } from '@/components/notifications'
 import { ChatPane } from '@/components/chat/chat-pane'
 import { cn } from '@/lib/utils'
 import { MAX_EDITOR_GROUPS, useWorkspace } from './context'
+import { isViewRoute } from './layout'
 import { panelRegistry, type PanelId } from './registry'
 import { Palettes, type PaletteMode } from './palettes'
 import { useWorkspaceKeybindings, shortcutHint, useShortcutPlatform } from './keybindings'
@@ -51,7 +52,7 @@ export function WorkspaceShell({ user, children }: { user: User; children: React
   const storageKey = `llmwiki.shell.v2.${user.id}`
   const ready = restoredKey === storageKey
   const isChat = pathname === '/chat' || pathname.startsWith('/chat/')
-  const isWorkspaceRoute = pathname === '/wiki' || pathname.startsWith('/wiki/') || pathname === '/graph'
+  const isWorkspaceRoute = pathname === '/wiki' || pathname.startsWith('/wiki/') || isViewRoute(pathname)
   const items = panelRegistry.filter(panel => !panel.admin || user.role === 'admin')
   useLayoutEffect(() => {
     const media = window.matchMedia('(max-width: 767px)')

@@ -8,6 +8,7 @@ import { opsApi, type OpsJob, type OpsDreamRun } from "@/lib/api"
 import { useLiveConnection } from "@/lib/events"
 import { EmptyState, ErrorNotice, Loading, formatDate } from "@/components/common"
 import { Button } from "@/components/ui/button"
+import { useViewLocation } from "@/components/workspace/view-location"
 import { useOpsActions } from "./ops-actions"
 
 function Section({ title, icon, children, actions }: { title: string; icon: ReactNode; children: ReactNode; actions?: ReactNode }) {
@@ -34,7 +35,8 @@ export function OpsOverview() {
   const ops = useQuery({ queryKey: ["ops"], queryFn: ({ signal }) => opsApi.status(signal) })
   const jobs = useQuery({ queryKey: ["ops", "active-jobs"], queryFn: ({ signal }) => opsApi.activeJobs(signal) })
   const ready = useQuery({ queryKey: ["ops-ready"], queryFn: ({ signal }) => opsApi.ready(signal), retry: false })
-  const { busy, request: choose } = useOpsActions()
+  const location = useViewLocation()
+  const { busy, request: choose } = useOpsActions(() => location.push("/imports?new=1"))
   function refresh() { void ops.refetch(); void jobs.refetch(); void ready.refetch() }
   const data = ops.data
   return <div className="space-y-3">
