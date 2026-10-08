@@ -10,6 +10,7 @@ import type { AclUser } from '../acl/acl.service.js';
 import { LOGGER } from '../common/tokens.js';
 import { EventsService } from '../events/events.service.js';
 import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
+import { sliceCodePoints } from '../agent/output.js';
 import { AgentService } from '../agent/agent.service.js';
 import type { TokenUsage } from '../agent/agent.types.js';
 import { IndexerService } from '../rag/indexer.service.js';
@@ -290,7 +291,7 @@ export class WriteJobsService implements OnApplicationShutdown {
         onCheckpoint: checkpoint => repository.checkpoints.save(`job:${job.id}`, checkpoint),
         onUsage,
       });
-      const subject = summary.trim().split(/\r?\n/, 1)[0]?.slice(0, 200) || 'Update knowledge';
+      const subject = sliceCodePoints(summary.trim().split(/\r?\n/, 1)[0] ?? '', 0, 200) || 'Update knowledge';
       this.phase(job.id, 'committing');
       await wt.commit(subject, author);
       await this.assertWritable(wt, job.userId, job.id);

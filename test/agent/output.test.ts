@@ -1,7 +1,19 @@
 import { describe, expect, it } from 'vitest';
-import { capOutput, pageContent, PAGE_MAX_CHARS, SUBAGENT_MAX_CHARS, TOOL_MAX_CHARS } from '../../src/agent/output.js';
+import { capOutput, pageContent, sliceCodePoints, PAGE_MAX_CHARS, SUBAGENT_MAX_CHARS, TOOL_MAX_CHARS } from '../../src/agent/output.js';
 
 describe('bounded agent output', () => {
+  it.each<[number, number | undefined, string]>([
+    [0, 2, 'a'],
+    [2, undefined, '🧠b'],
+    [2, 3, '🧠'],
+    [-2, undefined, '🧠b'],
+    [0, -2, 'a'],
+    [Number.NaN, Number.POSITIVE_INFINITY, 'a🧠b'],
+    [4, 1, ''],
+  ])('slices UTF-16 offsets %s to %s without dropping or splitting paired units', (start, end, expected) => {
+    expect(sliceCodePoints('a🧠b', start, end)).toBe(expected);
+  });
+
   it('uses zero-based lines and preserves delimiters across line-limited pages', () => {
     const original = '# First\r\nfirst\r\n# Second\nsecond\n';
     const first = pageContent(original, 0, 2);
@@ -45,6 +57,43 @@ describe('bounded agent output', () => {
     expect(continuations.length).toBeGreaterThan(0);
   });
 
+  it('keeps emoji intact across escaped-content pages and reconstructs every physical line', () => {
+    const firstLine = 'a'.repeat(PAGE_MAX_CHARS - 8) + '🧠' + '\\"\u0000\t🧠'.repeat(5_000) + '\r\n';
+    const original = `${firstLine}last\n`;
+    let offset: number | null = 0;
+    let charOffset = 0;
+    let reconstructed = '';
+    for (let pages = 0; offset !== null; pages++) {
+      if (pages > 100) throw new Error('Paging failed to advance');
+      const page = pageContent(original, offset, undefined, charOffset);
+      expect(page.content).not.toMatch(/[\uD800-\uDFFF]/u);
+      expect(page.content.length).toBeLessThanOrEqual(PAGE_MAX_CHARS);
+      expect(JSON.stringify(page.content).length).toBeLessThanOrEqual(PAGE_MAX_CHARS);
+      reconstructed += page.content;
+      if (page.nextCharOffset !== undefined) {
+        expect(page.nextOffset).toBe(0);
+        expect(page.nextCharOffset).toBe(reconstructed.length);
+      }
+      offset = page.nextOffset;
+      charOffset = page.nextCharOffset ?? 0;
+    }
+    expect(reconstructed).toBe(original);
+  });
+
+  it('backs a mid-emoji charOffset up and retains physical continuation offsets', () => {
+    const line = `x🧠${'a'.repeat(PAGE_MAX_CHARS)}\r\n`;
+    const original = `prefix\r\n${line}last\n`;
+    const first = pageContent(original, 1, undefined, 2);
+    expect(first.content).toBe('🧠' + 'a'.repeat(PAGE_MAX_CHARS - 4));
+    expect(first.nextOffset).toBe(1);
+    expect(first.nextCharOffset).toBe(PAGE_MAX_CHARS - 1);
+    const second = pageContent(original, first.nextOffset!, undefined, first.nextCharOffset);
+    expect(second).toEqual({
+      content: 'aaaa\r\nlast\n', totalLines: 3, nextOffset: null, truncated: false,
+    });
+    expect('prefix\r\nx' + first.content + second.content).toBe(original);
+  });
+
   it('finishes a line exactly at the serialized page boundary and resumes one character beyond it', () => {
     const exact = 'a'.repeat(PAGE_MAX_CHARS - 2);
     expect(pageContent(exact)).toEqual({ content: exact, totalLines: 1, nextOffset: null, truncated: false });
@@ -67,6 +116,15 @@ describe('bounded agent output', () => {
     const capped = capOutput(exact + 'private tail', maximum);
     expect(capped.length).toBe(maximum);
     expect(capped).not.toContain('private tail');
+  });
+
+  it.each([TOOL_MAX_CHARS, SUBAGENT_MAX_CHARS])('does not split an emoji at the %i output cap', (maximum) => {
+    const marker = '\n[truncated: use paging or narrower queries to retrieve more.]';
+    const prefix = 'a'.repeat(maximum - marker.length - 1);
+    const capped = capOutput(prefix + '🧠private tail'.repeat(maximum), maximum);
+    expect(capped).toBe(prefix + marker);
+    expect(capped).not.toMatch(/[\uD800-\uDFFF]/u);
+    expect(capped.length).toBeLessThanOrEqual(maximum);
   });
 
   it('applies the 16000-character generic cap when no narrower cap is supplied', () => {

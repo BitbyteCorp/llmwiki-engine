@@ -10,9 +10,9 @@ import { newId } from '../../src/common/ids.js';
 import { KnowledgeRepo, type Worktree } from '../../src/knowledge/repo.js';
 import { SearchService } from '../../src/rag/search.service.js';
 import type { WriteJob } from '../../src/jobs/write-job.types.js';
-import { startFakeOpenAI, type FakeScript } from '../fake-openai.js';
+import { startFakeOpenAI, type FakeResponder, type FakeScript } from '../fake-openai.js';
 import { AgentService } from '../../src/agent/agent.service.js';
-import type { AgentCheckpoint, AgentTool, TokenUsage } from '../../src/agent/agent.types.js';
+import type { AgentCheckpoint, AgentTool, ChatMessage, TokenUsage } from '../../src/agent/agent.types.js';
 import { AclService } from '../../src/acl/acl.service.js';
 import { AuditService } from '../../src/audit/audit.service.js';
 import { UsersService } from '../../src/auth/users.service.js';
@@ -49,7 +49,7 @@ async function createAgent(
   return module.get(AgentService);
 }
 
-async function fixture(script: FakeScript, notes: Record<string, string> = {}) {
+async function fixture(script: FakeScript | FakeResponder, notes: Record<string, string> = {}) {
   const fake = await startFakeOpenAI(script);
   cleanup.push(() => fake.close());
   const config = loadConfig({ NODE_ENV: 'test', OPENAI_API_KEY: 'test-key', OPENAI_BASE_URL: fake.url });
@@ -58,6 +58,20 @@ async function fixture(script: FakeScript, notes: Record<string, string> = {}) {
   const search = { search: async () => [{ path: 'wiki/cache.md', title: '캐시', snippet: '근거', score: 1, heading: '', kind: 'wiki', related: [] }] } as unknown as SearchService;
   const log = pino({ level: 'silent' });
   return { agent: await createAgent(config, repo, search, log), fake, config, repo, search, log };
+}
+
+function strictUnicodeResponder(script: FakeScript): FakeResponder {
+  const check = (value: unknown): void => {
+    if (typeof value === 'string') {
+      if (!value.isWellFormed()) throw new SyntaxError('invalid_json: lone surrogate in request body');
+    } else if (value && typeof value === 'object') {
+      for (const item of Object.values(value)) check(item);
+    }
+  };
+  return (request, index) => {
+    check(request.body);
+    return script[index]!;
+  };
 }
 
 const lookup: AgentTool = {
@@ -275,6 +289,81 @@ describe('Dony Responses tool loop', () => {
     expect(outputs[1]!.output!.startsWith('{"error":"' + 'e'.repeat(15000))).toBe(true);
   });
 
+  it.each([false, true])('completes with tool output capped at an emoji boundary (streaming=%s)', async (streaming) => {
+    const { agent, fake } = await fixture(strictUnicodeResponder([
+      { name: 'large', arguments: {}, call_id: 'emoji-cap' },
+      '출력을 확인했다.',
+    ]));
+    const tool: AgentTool = {
+      name: 'large', description: '', parameters: {},
+      run: async () => 'x'.repeat(15937) + '😀' + 'tail'.repeat(100),
+    };
+    await expect(agent.runAgent({
+      instructions: '', input: '', tools: [tool],
+      ...(streaming ? { onTextDelta: () => {} } : {}),
+    })).resolves.toEqual({ text: '출력을 확인했다.', toolCalls: 1 });
+    expect(fake.requests[1]!.body.input).toEqual(expect.arrayContaining([
+      {
+        type: 'function_call_output', call_id: 'emoji-cap',
+        output: 'x'.repeat(15937) + '\n[truncated: use paging or narrower queries to retrieve more.]',
+      },
+    ]));
+  });
+
+  it.each([false, true])('repairs poisoned checkpoint strings before replay without changing the checkpoint (streaming=%s)', async (streaming) => {
+    const resume: AgentCheckpoint = {
+      input: [
+        { role: 'user', content: [{ type: 'input_text', text: '질문 \uD83D 😀' }] },
+        { type: 'function_call', name: 'lookup', arguments: '{"key":"\uDE00"}', call_id: 'saved-call' },
+        { type: 'function_call_output', call_id: 'saved-call', output: '결과 \uD83D' },
+        { type: 'function_call_output', call_id: 'saved-parts', output: [{ type: 'input_text', text: '중첩 \uDE00' }] },
+        { type: 'message', role: 'assistant', id: 'saved-message', status: 'completed', content: [
+          { type: 'output_text', text: '이전 \uD83D 답변', annotations: [] },
+        ] },
+      ],
+      text: '누적 답변. ', toolCalls: 2,
+    };
+    const original = structuredClone(resume);
+    const { agent, fake } = await fixture(strictUnicodeResponder(['재개했다.']));
+    await expect(agent.runAgent({
+      instructions: '', input: 'ignored', resume, tools: [],
+      ...(streaming ? { onTextDelta: () => {} } : {}),
+    })).resolves.toEqual({ text: '누적 답변. 재개했다.', toolCalls: 2 });
+    expect(fake.requests[0]!.body.input).toEqual([
+      { role: 'user', content: [{ type: 'input_text', text: '질문 � 😀' }] },
+      { type: 'function_call', name: 'lookup', arguments: '{"key":"�"}', call_id: 'saved-call' },
+      { type: 'function_call_output', call_id: 'saved-call', output: '결과 �' },
+      { type: 'function_call_output', call_id: 'saved-parts', output: [{ type: 'input_text', text: '중첩 �' }] },
+      { type: 'message', role: 'assistant', id: 'saved-message', status: 'completed', content: [
+        { type: 'output_text', text: '이전 � 답변', annotations: [] },
+      ] },
+    ]);
+    expect(resume).toEqual(original);
+  });
+
+  it('repairs every turn while leaving caller messages and queued content unchanged', async () => {
+    const input: ChatMessage[] = [{ role: 'user', content: [{ type: 'input_text', text: '질문 \uD83D 😀' }] }];
+    const queued: ChatMessage = { role: 'user', content: [{ type: 'input_text', text: '추가 \uDE00 😀' }] };
+    const original = structuredClone({ input, queued });
+    const { agent, fake } = await fixture(strictUnicodeResponder([
+      { name: 'lookup', arguments: { key: 'capital' }, call_id: 'malformed-tool' },
+      '완료했다.',
+    ]));
+    await expect(agent.runAgent({
+      instructions: '', input, tools: [{ ...lookup, run: async () => '도구 \uD83D 😀' }],
+      beforeTurn: () => [queued],
+    })).resolves.toEqual({ text: '완료했다.', toolCalls: 1 });
+    expect(fake.requests[0]!.body.input).toEqual([
+      { role: 'user', content: [{ type: 'input_text', text: '질문 � 😀' }] },
+      { role: 'user', content: [{ type: 'input_text', text: '추가 � 😀' }] },
+    ]);
+    expect(fake.requests[1]!.body.input).toEqual(expect.arrayContaining([
+      { type: 'function_call_output', call_id: 'malformed-tool', output: '도구 � 😀' },
+      { role: 'user', content: [{ type: 'input_text', text: '추가 � 😀' }] },
+    ]));
+    expect({ input, queued }).toEqual(original);
+  });
+
   it('lets the model recover from tool errors and malformed arguments', async () => {
     const { agent, fake } = await fixture([
       { functionCalls: [{ name: 'lookup', arguments: { key: 'missing' }, call_id: 'bad-key' }, { name: 'lookup', arguments: '{', call_id: 'bad-json' }, { name: 'absent', arguments: {}, call_id: 'unknown' }] },
@@ -332,6 +421,29 @@ describe('read-only answers', () => {
     expect(result.text).toBe(text);
     expect(result.citations).toEqual([{ path: 'wiki/cache.md', sha: 'test-sha' }]);
     expect(deltas.join('')).toBe(text);
+  });
+
+  it('shows a whole-character write summary when the preview ends inside an emoji', async () => {
+    const content = 'x'.repeat(79) + '😀' + 'new fact';
+    const { agent } = await fixture([
+      { name: 'write_knowledge', arguments: { content } },
+      '기록을 요청했다.',
+    ]);
+    const summaries: unknown[] = [];
+    const submitted: string[] = [];
+    await agent.answer([{ role: 'user', content }], () => {}, undefined, {
+      user: { id: 1, role: 'admin' },
+      submitKnowledge: async (value) => {
+        submitted.push(value);
+        return { jobId: job.id, status: 'queued' };
+      },
+      onEvent: (event, data) => { if (event === 'tool') summaries.push(data); },
+    });
+    expect(summaries).toEqual([
+      { name: 'write_knowledge', state: 'start', summary: 'x'.repeat(79) },
+      { name: 'write_knowledge', state: 'end', summary: 'x'.repeat(79), jobId: job.id },
+    ]);
+    expect(submitted).toEqual([content]);
   });
 
   it('aborts an in-progress streamed response before executing its tools', async () => {

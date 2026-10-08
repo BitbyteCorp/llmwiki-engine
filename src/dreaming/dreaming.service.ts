@@ -9,6 +9,7 @@ import type { Config } from '../config.js';
 import { EventsService } from '../events/events.service.js';
 import { KnowledgeRepo, type CommitInfo, type Worktree } from '../knowledge/repo.js';
 import type { Logger } from '../log.js';
+import { sliceCodePoints } from '../agent/output.js';
 import { AgentService } from '../agent/agent.service.js';
 import type { TokenUsage } from '../agent/agent.types.js';
 import { IndexerService } from '../rag/indexer.service.js';
@@ -172,7 +173,7 @@ export class DreamingService implements OnApplicationShutdown {
           const previous = content ?? await repo.readFile(change.oldPath ?? change.path, run.fromSha!);
           const hits = await this.search.search(`${change.path}\n${previous ?? ''}`, { limit: 6 });
           const similarNotes = hits.filter((hit) => hit.path !== change.path).slice(0, 5)
-            .map((hit) => ({ path: hit.path, title: hit.title, excerpt: hit.excerpt.slice(0, SIMILAR_NOTE_EXCERPT_CHARS) }));
+            .map((hit) => ({ path: hit.path, title: hit.title, excerpt: sliceCodePoints(hit.excerpt, 0, SIMILAR_NOTE_EXCERPT_CHARS) }));
           return { change, content, similarNotes };
         }));
         const changedPaths = changes.flatMap((change) => change.oldPath ? [change.oldPath, change.path] : [change.path]);
