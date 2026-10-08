@@ -66,14 +66,14 @@ describe('search workspace HTTP', () => {
     expect(suggest.body.map((note: { path: string }) => note.path)).toEqual([paths[0], paths[2]]);
   });
 
-  it('serves directional links, bounded graph and distinct note tag facets', async () => {
+  it('serves directional links, the full graph and distinct note tag facets', async () => {
     const links = await request(app.getHttpServer()).get('/api/links').query({ path: paths[1] }).set('x-session', 'viewer').expect(200);
     expect(links.body).toEqual({ outgoing: [{ path: paths[2], title: 'Journal' }], backlinks: [{ path: paths[0], title: 'Alpha 저장' }], unresolved: [] });
     const alpha = await request(app.getHttpServer()).get('/api/links').query({ path: paths[0] }).set('x-session', 'viewer').expect(200);
     expect(alpha.body.unresolved).toEqual(['missing']);
-    const graph = await request(app.getHttpServer()).get('/api/graph').query({ path: paths[0], depth: 1 }).set('x-session', 'viewer').expect(200);
-    expect(graph.body.nodes.map((node: { path: string }) => node.path)).toEqual([paths[0], paths[1]]);
-    expect(graph.body.edges).toEqual([{ from: paths[0], to: paths[1] }]);
+    const graph = await request(app.getHttpServer()).get('/api/graph').set('x-session', 'viewer').expect(200);
+    expect(graph.body.nodes.map((node: { path: string }) => node.path)).toEqual([paths[2], paths[0], paths[1]]);
+    expect(graph.body.edges).toEqual([{ from: paths[0], to: paths[1] }, { from: paths[1], to: paths[2] }]);
     const facets = await request(app.getHttpServer()).get('/api/tags').set('x-session', 'viewer').expect(200);
     expect(facets.body).toEqual([{ tag: 'journal', count: 1 }, { tag: 'search', count: 2 }]);
     const notes = await request(app.getHttpServer()).get('/api/tags/notes?tag=SEARCH').set('x-session', 'viewer').expect(200);
@@ -94,7 +94,7 @@ describe('search workspace HTTP', () => {
     expect(response.body.error.code).toBe('unauthorized');
   });
 
-  it.each(['/api/search', '/api/search?q=a&limit=0', '/api/search?q=a&limit=101', '/api/search?q=a&limit=1.5', '/api/search?q=a&from=bad', '/api/search/similar?path=../x.md', '/api/search/duplicates?limit=0', '/api/links', '/api/graph?depth=6', '/api/tags/notes'])('validates query inputs for %s', async (url) => {
+  it.each(['/api/search', '/api/search?q=a&limit=0', '/api/search?q=a&limit=101', '/api/search?q=a&limit=1.5', '/api/search?q=a&from=bad', '/api/search/similar?path=../x.md', '/api/search/duplicates?limit=0', '/api/links', '/api/tags/notes'])('validates query inputs for %s', async (url) => {
     const response = await request(app.getHttpServer()).get(url).set('x-session', 'viewer').expect(400);
     expect(response.body.error.code).toBe('invalid_input');
   });

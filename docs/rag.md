@@ -69,11 +69,11 @@ cursor는 처음 검색의 정렬된 결과 스냅샷과 오프셋을 가리킨�
 | `GET /api/search/similar` | `path`, `limit` 기본 20 | `[{path,title,score}]` |
 | `GET /api/search/duplicates` | `limit` 기본 20 | `[{left:{path,title},right:{path,title},score,reason,passages:[{left:{anchor,excerpt},right:{anchor,excerpt}}]}]` |
 | `GET /api/links` | `path` 필수 | `{outgoing:[{path,title}],backlinks:[{path,title}],unresolved:string[]}` |
-| `GET /api/graph` | `path` 선택, `depth` 1~5 기본 1 | `{nodes:[{path,title,tags}],edges:[{from,to}]}` |
+| `GET /api/graph` | 없음 | `{nodes:[{path,title,tags}],edges:[{from,to}]}`, 읽을 수 있는 모든 노트와 연결 |
 | `GET /api/tags` | 없음 | `[{tag,count}]` |
 | `GET /api/tags/notes` | `tag` 필수 | `[{path,title}]` |
 
-links는 별칭에 의한 중복을 제거하며 삭제·미해결 대상은 unresolved로 남긴다. unresolved는 정규화된 basename이 아니라 원래 대상 표기이며 `[[Archive/NewDraft.MD#절|별칭]]`은 `Archive/NewDraft.MD`로 반환된다. graph는 양방향 링크를 따라 이웃을 탐색하되 간선의 원래 방향을 유지한다. path를 생략하면 고립 노트를 포함한 전체 그래프를 반환한다. 존재하지 않거나 모호한 링크 대상은 노드·간선에서 제외한다.
+links는 별칭에 의한 중복을 제거하며 삭제·미해결 대상은 unresolved로 남긴다. unresolved는 정규화된 basename이 아니라 원래 대상 표기이며 `[[Archive/NewDraft.MD#절|별칭]]`은 `Archive/NewDraft.MD`로 반환된다. graph는 매개변수 없이 항상 고립 노트를 포함한 전체 그래프를 반환하며 간선의 원래 방향을 유지한다. 존재하지 않거나 모호한 링크 대상은 간선으로 연결하지 않는다.
 
 `NoteTargetResolver`는 `/api/notes/resolve`와 인덱서·catalog가 함께 쓰는 해석 규칙이다. 공백·fragment·alias·마지막 `.md`를 제거하고 대소문자를 무시한다. 폴더가 있는 대상은 전체 경로로, 폴더가 없는 대상은 basename으로 비교한다. 후보가 정확히 하나일 때만 연결하고 여러 개면 `path:null`과 정렬된 candidates를 반환한다. 대상이 없는 notes resolve 요청은 기존 404를 유지한다.
 
@@ -83,7 +83,7 @@ similar는 준비된 청크 벡터의 노트별 평균을 정규화하여 cosine
 
 ### catalog 스냅샷과 요청별 접근 투영
 
-링크·그래프 catalog는 사용자별 응답이 아니라 ACL 적용 전 노트·링크 후보와 입출력 인접 색인을 담은 스냅샷 하나를 보관한다. 현재 `indexed_sha`와 `index_meta.catalog_revision`의 쌍을 키로 사용하며 과거 SHA별 스냅샷을 쌓지 않는다. 경로를 지정한 links와 graph 조회는 인접 색인을 따라가므로 매번 전체 노트·간선을 스캔하지 않는다. SQLite 읽기 인덱스의 구성은 [읽기 성능](performance.md#sqlite-설정과-읽기-인덱스)에 기록한다.
+링크·그래프 catalog는 사용자별 응답이 아니라 ACL 적용 전 노트·링크 후보와 입출력 인접 색인을 담은 스냅샷 하나를 보관한다. 현재 `indexed_sha`와 `index_meta.catalog_revision`의 쌍을 키로 사용하며 과거 SHA별 스냅샷을 쌓지 않는다. 경로를 지정한 links 조회는 인접 색인을 따라가므로 매번 전체 노트·간선을 스캔하지 않는다. graph 조회는 전체 노트와 연결에 현재 사용자의 읽기 권한을 적용한다. SQLite 읽기 인덱스의 구성은 [읽기 성능](performance.md#sqlite-설정과-읽기-인덱스)에 기록한다.
 
 인덱서는 색인 반영 트랜잭션 안에서 `catalog_revision`을 증가시킨다. HEAD가 같아도 전체·레이아웃 재구축과 대기 벡터 재시도는 새 스냅샷을 만들 수 있다. 첫 색인 전처럼 revision이 없는 직접 DB fixture에만 `total_changes()`를 신선도 기준으로 사용한다. 초기화된 catalog는 인증·토큰·ACL 기록처럼 색인과 무관한 DB 변경 때문에 원천 스냅샷을 버리지 않는다.
 

@@ -67,9 +67,7 @@ describe('main-derived wikilink fidelity', () => {
     expect(catalog.links(source)).toEqual({
       outgoing: [], backlinks: [], unresolved: ['Other/Missing', 'Projects/Missing.MD'],
     });
-    expect(catalog.graph(source, 1)).toEqual({
-      nodes: [{ path: source, title: 'Source', tags: [] }], edges: [],
-    });
+    expect(catalog.graph().edges).toEqual([]);
   });
 
   it('selects a folder-qualified duplicate but leaves an ambiguous basename out of outgoing links and graph edges', async () => {
@@ -86,10 +84,7 @@ describe('main-derived wikilink fidelity', () => {
       outgoing: [{ path: 'wiki/b/shared.md', title: 'Second' }], backlinks: [], unresolved: [],
     });
     expect(catalog.links(ambiguous)).toEqual({ outgoing: [], backlinks: [], unresolved: ['Shared'] });
-    expect(catalog.graph(source, 1).edges).toEqual([{ from: source, to: 'wiki/b/shared.md' }]);
-    expect(catalog.graph(ambiguous, 1)).toEqual({
-      nodes: [{ path: ambiguous, title: 'Ambiguous', tags: [] }], edges: [],
-    });
+    expect(catalog.graph().edges).toEqual([{ from: source, to: 'wiki/b/shared.md' }]);
     expect(catalog.links('wiki/a/shared.md').backlinks).toEqual([]);
     expect(catalog.links('wiki/b/shared.md').backlinks).toEqual([{ path: source, title: 'Source' }]);
   });
@@ -105,7 +100,7 @@ describe('main-derived wikilink fidelity', () => {
     expect(catalog.links(source)).toEqual({
       outgoing: [{ path: 'wiki/archive.md.md', title: 'Intended' }], backlinks: [], unresolved: [],
     });
-    expect(catalog.graph(source, 1).edges).toEqual([{ from: source, to: 'wiki/archive.md.md' }]);
+    expect(catalog.graph().edges).toEqual([{ from: source, to: 'wiki/archive.md.md' }]);
   });
 
   it('re-resolves unchanged source links after target additions, ambiguity, rename and deletion', async () => {
@@ -127,19 +122,19 @@ describe('main-derived wikilink fidelity', () => {
     expect(catalog.links(source)).toEqual({
       outgoing: [{ path: 'raw/future.md', title: 'Raw Future' }], backlinks: [], unresolved: ['Future'],
     });
-    expect(catalog.graph(source, 1).edges).toEqual([{ from: source, to: 'raw/future.md' }]);
+    expect(catalog.graph().edges).toEqual([{ from: source, to: 'raw/future.md' }]);
 
     await commit(async (worktree) => { await worktree.move('raw/future.md', 'raw/renamed.md'); });
     await indexer.syncToHead();
     expect(catalog.links(source)).toEqual({
       outgoing: [{ path: 'wiki/future.md', title: 'Wiki Future' }], backlinks: [], unresolved: ['raw/Future.md'],
     });
-    expect(catalog.graph(source, 1).edges).toEqual([{ from: source, to: 'wiki/future.md' }]);
+    expect(catalog.graph().edges).toEqual([{ from: source, to: 'wiki/future.md' }]);
 
     await commit(async (worktree) => { await worktree.remove('wiki/future.md'); });
     await indexer.syncToHead();
     expect(catalog.links(source)).toEqual({ outgoing: [], backlinks: [], unresolved: ['Future', 'raw/Future.md'] });
-    expect(catalog.graph(source, 1).edges).toEqual([]);
+    expect(catalog.graph().edges).toEqual([]);
 
     await commit(async (worktree) => { await worktree.write('raw/future.md', '# Returned\nRecreated target.'); });
     await indexer.syncToHead();
@@ -161,11 +156,11 @@ describe('main-derived wikilink fidelity', () => {
     db.prepare('UPDATE links SET target_path = ? WHERE source_path = ?').run('wiki/decoy.md', source);
     if (!full) db.prepare("UPDATE index_meta SET value = 'obsolete' WHERE key = 'layout_version'").run();
     expect(catalog.links(source).outgoing).toEqual([{ path: 'wiki/decoy.md', title: 'Decoy' }]);
-    expect(catalog.graph(source, 1)).toEqual({
-      nodes: [
+    expect(catalog.graph()).toMatchObject({
+      nodes: expect.arrayContaining([
         { path: 'wiki/decoy.md', title: 'Decoy', tags: [] },
         { path: source, title: 'Stale title', tags: ['stale'] },
-      ],
+      ]),
       edges: [{ from: source, to: 'wiki/decoy.md' }],
     });
     await indexer.reindex({ full });
@@ -173,11 +168,11 @@ describe('main-derived wikilink fidelity', () => {
     expect(catalog.links(source)).toEqual({
       outgoing: [{ path: 'wiki/target.md', title: 'Target' }], backlinks: [], unresolved: [],
     });
-    expect(catalog.graph(source, 1)).toEqual({
-      nodes: [
+    expect(catalog.graph()).toMatchObject({
+      nodes: expect.arrayContaining([
         { path: source, title: 'Source', tags: [] },
         { path: 'wiki/target.md', title: 'Target', tags: ['restored'] },
-      ],
+      ]),
       edges: [{ from: source, to: 'wiki/target.md' }],
     });
     expect(catalog.links('wiki/decoy.md').backlinks).toEqual([]);
@@ -217,7 +212,7 @@ describe('main-derived wikilink fidelity', () => {
     expect(catalog.links(source)).toEqual({
       outgoing: [{ path: 'wiki/b/shared.md', title: 'Second' }], backlinks: [], unresolved: ['Projects/Missing.MD'],
     });
-    expect(catalog.graph(source, 1).edges).toEqual([{ from: source, to: 'wiki/b/shared.md' }]);
+    expect(catalog.graph().edges).toEqual([{ from: source, to: 'wiki/b/shared.md' }]);
     // A second synchronization at the same HEAD retains the recovered spelling.
     await indexer.syncToHead();
     expect(catalog.links(source).unresolved).toEqual(['Projects/Missing.MD']);

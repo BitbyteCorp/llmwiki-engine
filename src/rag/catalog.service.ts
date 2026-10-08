@@ -167,36 +167,10 @@ export class CatalogService {
     return { outgoing: summaries(outgoing), backlinks: summaries(backlinks), unresolved: [...unresolved].sort() };
   }
 
-  graph(path?: string, depth = 1, user?: AclUser): CatalogGraph {
-    if (user && path !== undefined) this.acl.assertRead(user, path);
+  graph(user?: AclUser): CatalogGraph {
     const snapshot = this.indexSnapshot();
     const { readable, target } = this.reader(snapshot, user);
-    const selected = new Set<string>(path === undefined
-      ? [...snapshot.notes.keys()].filter(readable)
-      : snapshot.notes.has(path) && readable(path) ? [path] : []);
-    if (path !== undefined) {
-      // Traverse only incident reader-resolved links, preserving their orientation.
-      let frontier = [...selected];
-      for (let distance = 0; distance < depth && frontier.length; distance++) {
-        const next: string[] = [];
-        const visit = (neighbor: string) => {
-          if (!selected.has(neighbor)) {
-            selected.add(neighbor);
-            next.push(neighbor);
-          }
-        };
-        for (const current of frontier) {
-          for (const link of snapshot.outgoing.get(current) ?? []) {
-            const destination = target(link);
-            if (destination !== null && destination !== undefined) visit(destination);
-          }
-          for (const link of snapshot.incoming.get(current) ?? []) {
-            if (target(link) === current) visit(link.source);
-          }
-        }
-        frontier = next;
-      }
-    }
+    const selected = new Set([...snapshot.notes.keys()].filter(readable));
     const edges: CatalogGraph['edges'] = [];
     const nodes = [...selected].sort().map((notePath) => {
       const note = snapshot.notes.get(notePath)!;

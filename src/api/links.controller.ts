@@ -9,10 +9,6 @@ import { CatalogService } from '../rag/catalog.service.js';
 import { notePathSchema } from './api.dto.js';
 
 const linksQuerySchema = z.object({ path: notePathSchema });
-const graphQuerySchema = z.object({
-  path: notePathSchema.optional(),
-  depth: z.coerce.number().int().min(1).max(5).default(1),
-});
 
 @Controller('api/links')
 @UseGuards(SessionGuard, RolesGuard)
@@ -31,7 +27,7 @@ export class GraphController {
   constructor(private readonly catalog: CatalogService) {}
 
   @Get()
-  graph(@Query(new ZodValidationPipe(graphQuerySchema)) query: z.infer<typeof graphQuerySchema>, @CurrentUser() user: User) {
-    return this.catalog.graph(query.path, query.depth, user);
+  graph(@CurrentUser() user: User) {
+    return this.catalog.graph(user);
   }
 }

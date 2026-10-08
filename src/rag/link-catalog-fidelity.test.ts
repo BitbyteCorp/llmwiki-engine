@@ -32,7 +32,7 @@ describe('reader-visible link resolution', () => {
     link('wiki/source.md', 'archive/newdraft', 'Archive/NewDraft.MD', null);
     link('wiki/source.md', 'secret/private', 'secret/Private', 'secret/Private.md');
     expect(catalog.links('wiki/source.md', viewer)).toEqual({ outgoing: [], backlinks: [], unresolved: ['Archive/NewDraft.MD'] });
-    expect(catalog.graph('wiki/source.md', 1, viewer).edges).toEqual([]);
+    expect(catalog.graph(viewer).edges).toEqual([]);
   });
 
   it('uses the same visible unique candidate for outgoing links, backlinks and graph', () => {
@@ -40,7 +40,7 @@ describe('reader-visible link resolution', () => {
     link('wiki/source.md', 'shared', 'Shared', null);
     expect(catalog.links('wiki/source.md', viewer)).toEqual({ outgoing: [{ path: 'public/Shared.md', title: 'public/Shared.md' }], backlinks: [], unresolved: [] });
     expect(catalog.links('public/Shared.md', viewer).backlinks).toEqual([{ path: 'wiki/source.md', title: 'wiki/source.md' }]);
-    expect(catalog.graph('wiki/source.md', 1, viewer)).toEqual({ nodes: [
+    expect(catalog.graph(viewer)).toEqual({ nodes: [
       { path: 'public/Shared.md', title: 'public/Shared.md', tags: [] },
       { path: 'wiki/source.md', title: 'wiki/source.md', tags: [] },
     ], edges: [{ from: 'wiki/source.md', to: 'public/Shared.md' }] });
@@ -53,13 +53,13 @@ describe('reader-visible link resolution', () => {
     expect(catalog.links('wiki/source.md', viewer).outgoing.map((hit) => hit.path)).toEqual(['public/Shared.md']);
     db.prepare('DELETE FROM acl_rules').run();
     expect(catalog.links('wiki/source.md', viewer)).toEqual({ outgoing: [], backlinks: [], unresolved: ['Shared'] });
-    expect(catalog.graph('wiki/source.md', 5, viewer).edges).toEqual([]);
+    expect(catalog.graph(viewer).edges).toEqual([]);
   });
 
   it('never reconstructs backlinks from hidden source notes', () => {
     link('secret/Shared.md', 'public/shared', 'public/Shared', 'public/Shared.md');
     expect(catalog.links('public/Shared.md', viewer)).toEqual({ outgoing: [], backlinks: [], unresolved: [] });
-    expect(catalog.graph(undefined, 1, viewer).edges).toEqual([]);
+    expect(catalog.graph(viewer).edges).toEqual([]);
   });
 
   it('projects warmed snapshots through current role grants and hides revoked resolved destinations', () => {
@@ -76,14 +76,14 @@ describe('reader-visible link resolution', () => {
     expect(catalog.links('wiki/source.md', editor)).toEqual({
       outgoing: [{ path: 'secret/Private.md', title: 'secret/Private.md' }], backlinks: [], unresolved: ['Shared'],
     });
-    expect(catalog.graph('wiki/source.md', 1, editor).edges).toEqual([
+    expect(catalog.graph(editor).edges).toEqual([
       { from: 'wiki/source.md', to: 'secret/Private.md' },
     ]);
     expect(catalog.links('wiki/source.md', viewer)).toEqual({
       outgoing: [{ path: 'public/Shared.md', title: 'public/Shared.md' }], backlinks: [], unresolved: [],
     });
     db.prepare("DELETE FROM acl_rules WHERE subject_type = 'role'").run();
-    expect(catalog.graph('wiki/source.md', 1, editor)).toEqual({
+    expect(catalog.graph(editor)).toEqual({
       nodes: [
         { path: 'public/Shared.md', title: 'public/Shared.md', tags: [] },
         { path: 'wiki/source.md', title: 'wiki/source.md', tags: [] },

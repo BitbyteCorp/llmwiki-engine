@@ -79,11 +79,6 @@ const delta = { path: 'wiki/D.md', title: 'Delta', tags: [] };
 const epsilon = { path: 'wiki/E.md', title: 'Epsilon', tags: ['maps'] };
 const isolated = { path: 'wiki/F.md', title: 'Isolated', tags: [] };
 
-const firstEdges = [
-  { from: 'wiki/A.md', to: 'wiki/B.md' },
-  { from: 'wiki/E.md', to: 'wiki/A.md' },
-];
-
 const allEdges = [
   { from: 'wiki/A.md', to: 'wiki/B.md' },
   { from: 'wiki/B.md', to: 'wiki/C.md' },
@@ -103,16 +98,9 @@ describe('CatalogService', () => {
     expect(catalog.links('wiki/F.md')).toEqual({ outgoing: [], backlinks: [], unresolved: [] });
   });
 
-  it('traverses links in either direction by bounded depth and preserves directed edges through cycles', () => {
+  it('returns every note including isolated notes and preserves directed edges through cycles', () => {
     seedGraph();
-    expect(catalog.graph('wiki/A.md', 1)).toEqual({ nodes: [alpha, beta, epsilon], edges: firstEdges });
-    expect(catalog.graph('wiki/A.md', 2)).toEqual({
-      nodes: [alpha, beta, gamma, epsilon],
-      edges: [allEdges[0], allEdges[1], allEdges[2], allEdges[4]],
-    });
-    expect(catalog.graph('wiki/A.md', 3)).toEqual({ nodes: [alpha, beta, gamma, delta, epsilon], edges: allEdges });
     expect(catalog.graph()).toEqual({ nodes: [alpha, beta, gamma, delta, epsilon, isolated], edges: allEdges });
-    expect(catalog.graph('wiki/Deleted.md', 5)).toEqual({ nodes: [], edges: [] });
   });
 
   it('does not share mutable link summaries, graph nodes, tags or edges between responses', () => {
@@ -121,7 +109,7 @@ describe('CatalogService', () => {
     links.outgoing[0]!.title = 'Mutated outgoing';
     links.backlinks[0]!.path = 'wiki/Mutated.md';
     links.unresolved.push('Mutated missing');
-    const graph = catalog.graph('wiki/A.md', 1);
+    const graph = catalog.graph();
     graph.nodes[0]!.title = 'Mutated node';
     graph.nodes[0]!.tags.push('mutated-tag');
     graph.edges[0]!.to = 'wiki/Mutated.md';
@@ -131,7 +119,7 @@ describe('CatalogService', () => {
       backlinks: [{ path: 'wiki/E.md', title: 'Epsilon' }],
       unresolved: ['deleted', 'unknown'],
     });
-    expect(catalog.graph('wiki/A.md', 1)).toEqual({ nodes: [alpha, beta, epsilon], edges: firstEdges });
+    expect(catalog.graph()).toEqual({ nodes: [alpha, beta, gamma, delta, epsilon, isolated], edges: allEdges });
   });
 
   it('counts distinct notes per tag and matches NFKC, lowercase, hash-prefixed normalized facets', () => {
@@ -198,7 +186,7 @@ describe('catalog REST routes', () => {
     return `http://127.0.0.1:${address.port}`;
   }
 
-  it('allows viewer sessions to browse links, graph and tag facets', async () => {
+  it('allows viewers to browse links, tags and the full graph regardless of query parameters', async () => {
     seedGraph();
     const base = await origin();
     const headers = { 'x-session': 'viewer' };
@@ -211,8 +199,8 @@ describe('catalog REST routes', () => {
     });
     const graph = await fetch(`${base}/api/graph?path=wiki/A.md&depth=2`, { headers });
     expect(await graph.json()).toEqual({
-      nodes: [alpha, beta, gamma, epsilon],
-      edges: [allEdges[0], allEdges[1], allEdges[2], allEdges[4]],
+      nodes: [alpha, beta, gamma, delta, epsilon, isolated],
+      edges: allEdges,
     });
     expect(await (await fetch(`${base}/api/tags`, { headers })).json()).toEqual([
       { tag: 'maps', count: 3 }, { tag: 'project-plan', count: 1 },
@@ -222,7 +210,7 @@ describe('catalog REST routes', () => {
       .toEqual([{ path: 'wiki/A.md', title: 'Alpha' }]);
   });
 
-  it('requires sessions and rejects absent parameters, unsafe paths and depth outside 1 through 5', async () => {
+  it('requires sessions and rejects absent parameters and unsafe paths', async () => {
     const base = await origin();
     for (const route of ['/api/links?path=wiki/A.md', '/api/graph', '/api/tags', '/api/tags/notes?tag=maps']) {
       const response = await fetch(`${base}${route}`);
@@ -231,7 +219,6 @@ describe('catalog REST routes', () => {
     }
     for (const route of [
       '/api/links', '/api/links?path=../private.md', '/api/tags/notes', '/api/tags/notes?tag=%20',
-      '/api/graph?depth=0', '/api/graph?depth=6', '/api/graph?depth=1.5', '/api/graph?depth=nope',
     ]) {
       const response = await fetch(`${base}${route}`, { headers: { 'x-session': 'viewer' } });
       expect(response.status).toBe(400);

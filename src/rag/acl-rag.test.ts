@@ -158,12 +158,10 @@ describe('ACL-aware RAG HTTP with a real repository and index', () => {
     }
   });
 
-  it('removes restricted nodes, edges, connectivity, resolved links and tag counts', async () => {
+  it('removes restricted nodes, edges, resolved links and tag counts', async () => {
     const links = await get(`/api/links?path=${visible[0]}`).expect(200);
     expect(links.body).toEqual({ outgoing: [], backlinks: [], unresolved: ['missing'] });
     expect((await get(`/api/links?path=${remote}`).expect(200)).body).toEqual({ outgoing: [], backlinks: [], unresolved: [] });
-    const neighborhood = await get(`/api/graph?path=${visible[0]}&depth=2`).expect(200);
-    expect(neighborhood.body).toEqual({ nodes: [{ path: visible[0], title: 'Needle', tags: ['common'] }], edges: [] });
     const graph = await get('/api/graph').expect(200);
     expect(graph.body.nodes.map((note: { path: string }) => note.path)).toEqual([...visible, remote]);
     expect(graph.body.edges).toEqual([]);
@@ -172,7 +170,7 @@ describe('ACL-aware RAG HTTP with a real repository and index', () => {
     expect((await get('/api/tags/notes?tag=classified').expect(200)).body).toEqual([]);
     for (const user of ['bob', 'admin']) {
       expect((await get(`/api/links?path=${visible[0]}`, user).expect(200)).body.outgoing).toEqual([{ path: bridge, title: 'Secret bridge' }]);
-      const allowed = await get(`/api/graph?path=${visible[0]}&depth=2`, user).expect(200);
+      const allowed = await get('/api/graph', user).expect(200);
       expect(allowed.body.nodes.map((note: { path: string }) => note.path)).toContain(remote);
       expect(allowed.body.edges).toContainEqual({ from: bridge, to: remote });
       expect((await get('/api/tags', user).expect(200)).body).toEqual([{ tag: 'classified', count: 1 }, { tag: 'common', count: 222 }, { tag: 'remote', count: 1 }]);
@@ -180,7 +178,7 @@ describe('ACL-aware RAG HTTP with a real repository and index', () => {
     }
   });
 
-  it.each(['/api/links', '/api/graph', '/api/search/similar'])('returns not_found for restricted source paths on %s', async (url) => {
+  it.each(['/api/links', '/api/search/similar'])('returns not_found for restricted source paths on %s', async (url) => {
     const denied = await get(`${url}?path=${bridge}`).expect(404);
     expect(denied.body.error.code).toBe('not_found');
     await get(`${url}?path=${bridge}`, 'bob').expect(200);
