@@ -222,6 +222,11 @@ export function SearchExperience({ value, onSubmit, compact = false }: {
           selectTag(tagSuggestions[activeTagIndex].tag)
           return
         }
+      } else if (event.key === 'Enter') {
+        event.preventDefault()
+        setTagToken(null)
+        submitQuery()
+        return
       }
     }
     if (event.key === 'Escape') {
@@ -233,7 +238,7 @@ export function SearchExperience({ value, onSubmit, compact = false }: {
     } else if (event.key === 'Enter') {
       event.preventDefault()
       const split = event.ctrlKey || event.metaKey
-      const item = activeItem ?? (split && draft === value.q ? hits[0] : undefined)
+      const item = draft === value.q ? activeItem ?? (split ? hits[0] : undefined) : undefined
       if (item) open(item.path, item.anchor, split)
       else submitQuery()
     }
@@ -251,14 +256,14 @@ export function SearchExperience({ value, onSubmit, compact = false }: {
             role="combobox" aria-autocomplete="list" aria-expanded={tagOpen || suggestions.length > 0}
             aria-controls={`${id}-suggestions ${id}-results${tagOpen ? ` ${id}-tags` : ''}`}
             aria-activedescendant={tagOpen ? (activeTagIndex >= 0 ? `${id}-tag-${activeTagIndex}` : undefined) : activeItem ? `${id}-option-${active}` : undefined}
-            onChange={event => { setDraft(event.target.value); syncHashtag(event.currentTarget) }}
+            onChange={event => { setDraft(event.target.value); setActive(-1); syncHashtag(event.currentTarget) }}
             onFocus={event => syncHashtag(event.currentTarget)} onBlur={() => setTagToken(null)}
             onClick={event => syncHashtag(event.currentTarget)} onSelect={event => syncHashtag(event.currentTarget)}
             onKeyUp={event => { if (['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) syncHashtag(event.currentTarget) }}
             onCompositionStart={() => { compositionRef.current = true; setComposing(true); setTagToken(null) }}
             onCompositionEnd={event => { compositionRef.current = false; setComposing(false); syncHashtag(event.currentTarget) }} onKeyDown={handleKeys} />
           {pendingDraft && <kbd aria-hidden="true" className="pointer-events-none absolute right-9 top-1/2 -translate-y-1/2 rounded border px-1 text-[10px] text-muted-foreground">Enter ↵</kbd>}
-          {draft && <Button type="button" variant="ghost" size="icon-xs" aria-label="검색어 지우기" className="absolute right-1.5 top-1/2 -translate-y-1/2" onClick={() => { setDraft(''); setTagToken(null); input.current?.focus() }}><X /></Button>}
+          {draft && <Button type="button" variant="ghost" size="icon-xs" aria-label="검색어 지우기" className="absolute right-1.5 top-1/2 -translate-y-1/2" onClick={() => { setDraft(''); setActive(-1); setTagToken(null); input.current?.focus() }}><X /></Button>}
           {tagOpen && <div id={`${id}-tags`} role="listbox" aria-label="태그 자동완성" className="absolute inset-x-0 top-full z-50 mt-1 overflow-hidden rounded-md border bg-popover p-1 text-popover-foreground shadow-md">
             {tagSuggestions.length ? tagSuggestions.map((item, index) => <button key={item.tag} id={`${id}-tag-${index}`} type="button" role="option" aria-selected={index === activeTagIndex} tabIndex={-1}
               className={`flex w-full min-w-0 items-center justify-between gap-2 rounded-sm px-2 py-1.5 text-left text-xs ${index === activeTagIndex ? 'bg-accent text-accent-foreground' : 'hover:bg-accent'}`}
