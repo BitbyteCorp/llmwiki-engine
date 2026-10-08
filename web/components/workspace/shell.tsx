@@ -5,7 +5,7 @@ import { usePathname, useRouter } from 'next/navigation'
 import { useQueryClient } from '@tanstack/react-query'
 import { useTheme } from 'next-themes'
 import { Group, Panel, Separator, usePanelRef } from 'react-resizable-panels'
-import { ChevronDown, LogOut, Menu, PanelLeftClose, PanelLeftOpen, Search, Columns2, CircleHelp, X, Settings, MessagesSquare, Sun, Moon, Monitor } from 'lucide-react'
+import { ChevronDown, LogOut, Menu, PanelLeftClose, PanelLeftOpen, Search, Columns2, CircleHelp, X, Settings, MessagesSquare, Sun, Moon, Monitor, Network } from 'lucide-react'
 import { api, type User } from '@/lib/api'
 import { CHAT_OPEN_EVENT, openChat, type ChatOpenRequest } from '@/lib/chat-context'
 import { ErrorNotice } from '@/components/common'
@@ -15,7 +15,7 @@ import { Notifications } from '@/components/notifications'
 import { ChatPane } from '@/components/chat/chat-pane'
 import { cn } from '@/lib/utils'
 import { MAX_EDITOR_GROUPS, useWorkspace } from './context'
-import { isViewRoute } from './layout'
+import { GRAPH_TAB_PATH, isViewRoute } from './layout'
 import { panelRegistry, type PanelId } from './registry'
 import { Palettes, type PaletteMode } from './palettes'
 import { useWorkspaceKeybindings, shortcutHint, useShortcutPlatform } from './keybindings'
@@ -186,6 +186,7 @@ export function WorkspaceShell({ user, children }: { user: User; children: React
       if (!mobile && layout.selected === panel.id && !layout.collapsed) setSidebarCollapsed(true)
       else selectPanel(panel.id)
     }}><panel.icon className="size-5" /></button>)}
+    <button type="button" aria-label="그래프 (Graph)" title="그래프" className="flex size-10 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground" onClick={() => workspace.openNote(GRAPH_TAB_PATH)}><Network className="size-5" /></button>
     <Button variant="ghost" size="icon-sm" className="mt-auto" aria-label="설정" title={`설정 (${shortcutHint('settings', shortcutPlatform)})`} onClick={() => navigate('/settings')}><Settings /></Button>
   </nav>
   const panels = <div ref={primary} className="h-full min-h-0 bg-secondary">{items.map(panel => <div key={panel.id} data-panel-id={panel.id} hidden={layout.selected !== panel.id} className="h-full min-h-0"><panel.component userId={user.id} /></div>)}</div>
