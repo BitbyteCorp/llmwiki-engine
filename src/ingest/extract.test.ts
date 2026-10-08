@@ -90,6 +90,16 @@ describe('source extraction', () => {
       .toBe(`[first](Untitled%20${one}.md)\n[second](Untitled%20${two}.md)\n[child](Untitled%20${two}/Child.md)\n[solo](Solo.md)`);
     expect(result.files.find((file) => file.path === `Untitled ${two}/Child.md`)!.buffer.toString()).toBe(`[up](../Untitled%20${two}.md)`);
   });
+  it('rewrites Notion links with bracketed text and unencoded closing parentheses in targets', () => {
+    const id = '0123456789abcdef0123456789abcdef';
+    const result = extractVault(Buffer.from(zipSync({
+      [`Home ${id}.md`]: strToU8(`[[보상] 기준](%5B%EB%B3%B4%EC%83%81%5D%20%EA%B8%B0%EC%A4%80%20${id}.md), [로그인 (해외)](%EB%A1%9C%EA%B7%B8%EC%9D%B8%20%28%ED%95%B4%EC%99%B8)%20${id}.md#top) (note)`),
+      [`[보상] 기준 ${id}.md`]: strToU8('reward'),
+      [`로그인 (해외) ${id}.md`]: strToU8('login'),
+    })), 'notion');
+    expect(result.files.find((file) => file.path === 'Home.md')!.buffer.toString())
+      .toBe('[[보상] 기준](%5B%EB%B3%B4%EC%83%81%5D%20%EA%B8%B0%EC%A4%80.md), [로그인 (해외)](%EB%A1%9C%EA%B7%B8%EC%9D%B8%20%28%ED%95%B4%EC%99%B8%29.md#top) (note)');
+  });
   it('rejects ZIP symlinks', () => {
     const archive = Buffer.from(zipSync({ 'note.md': strToU8('# Note') }));
     const central = archive.indexOf(Buffer.from([0x50, 0x4b, 0x01, 0x02]));

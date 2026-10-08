@@ -121,7 +121,9 @@ function rewriteNotionLinks(markdown: string, original: string, paths: Map<strin
     const mapped = paths.get(posix.join(posix.dirname(original), decoded));
     return markdownHref(mapped === undefined ? notionPath(decoded) : posix.relative(from, `/${mapped}`)) + match[2];
   };
-  return markdown.replace(/(!?\[[^\]\n]*\]\()(<[^>]+>|[^\s)]+)([^)]*\))/g, (_, open: string, target: string, close: string) =>
+  // Notion keeps `[`/`]` in link text (`[[보상] 제목](…)`) and percent-encodes `(` but not `)` in targets
+  // (`%28해외)%20<id>.md`), so a target may span literal `)` when it still ends in a file extension.
+  return markdown.replace(/(!?\[(?:[^[\]\n]|\[[^[\]\n]*\])*\]\()(<[^>]+>|[^\s)]*(?:\)[^\s()[\]]+)*\.[A-Za-z\d]+(?:[?#][^\s)]*)?(?=\))|[^\s)]+)([^)]*\))/g, (_, open: string, target: string, close: string) =>
     `${open}${target.startsWith('<') ? `<${normalize(target.slice(1, -1))}>` : normalize(target)}${close}`)
     .replace(/^(\s*\[[^\]\n]+\]:\s*)(<[^>]+>|\S+)/gm, (_, open: string, target: string) =>
       `${open}${target.startsWith('<') ? `<${normalize(target.slice(1, -1))}>` : normalize(target)}`)
