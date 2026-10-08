@@ -28,7 +28,7 @@ import { AclService } from '../src/acl/acl.service.js';
 import { AuditService } from '../src/audit/audit.service.js';
 
 const stamp = '2026-01-01T00:00:00.000Z';
-const schemas = ['001_core.sql', '002_auth.sql', '003_jobs.sql', '004_chat.sql', '007_history.sql', '010_chat.sql', '011_platform.sql', '013_acl.sql', '017_write_job_dedupe.sql', '019_agent_checkpoints.sql'].map((name) =>
+const schemas = ['001_core.sql', '002_auth.sql', '003_jobs.sql', '004_chat.sql', '007_history.sql', '010_chat.sql', '011_platform.sql', '013_acl.sql', '017_write_job_dedupe.sql', '019_agent_checkpoints.sql', '022_write_job_required_reads.sql'].map((name) =>
   readFileSync(new URL(`../src/db/migrations/${name}`, import.meta.url), 'utf8'));
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a1H8AAAAASUVORK5CYII=', 'base64');
 let directory: string;

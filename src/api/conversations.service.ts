@@ -192,7 +192,7 @@ export class ConversationsService implements OnModuleDestroy {
             if(!subagent) continue;
             subagents.set(subagent.id,{
               id:subagent.id,name:subagent.name,status:subagent.status,
-              files:subagent.files,toolCalls:subagent.toolCalls,
+              files:subagent.files,sources:subagent.sources,toolCalls:subagent.toolCalls,
               ...(subagent.result!==undefined ? {result:subagent.result} : {}),
               ...(subagent.error!==undefined ? {error:subagent.error} : {}),
             });

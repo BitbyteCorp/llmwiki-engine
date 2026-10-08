@@ -38,6 +38,7 @@ export interface ChatWriteSubagent {
   name: string;
   status: 'running' | 'completed' | 'failed' | 'cancelled';
   files: string[];
+  sources: string[];
   toolCalls: number;
   result?: string;
   error?: string;
@@ -103,4 +104,8 @@ export interface RunAgentOptions {
   /** Drain queued messages before each model turn. */
   beforeTurn?: () => ChatMessage[];
   onToolCall?: (count: number) => void;
+  /** Reject a final response with a follow-up user message, or accept it by returning nothing. */
+  beforeFinish?: (text: string) => string | undefined | Promise<string | undefined>;
+  /** Called before the generic turn-limit error; may throw a more specific failure. */
+  onTurnLimit?: () => void;
 }

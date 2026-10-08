@@ -171,7 +171,7 @@ describe('chat write job monitoring', () => {
     const output = (f.fake.requests[1].body.input as Array<{ type: string; output?: string }>).find(item => item.type === 'function_call_output')!;
     expect(JSON.parse(output.output!)).toEqual({
       jobId: job.id, status: 'running', phase: 'editing', summary: null, error: null, mergeSha: null, commits: [],
-      subagents: [{ ...subagent, status: 'completed', toolCalls: 3, result: '사실을 정리했다.' }],
+      subagents: [{ ...subagent, sources: [], status: 'completed', toolCalls: 3, result: '사실을 정리했다.' }],
     });
     expect(result.filter(frame => frame.event === 'tool').map(frame => frame.data)).toEqual([
       { name: 'get_write_status', state: 'start', summary: job.id, jobId: job.id },
@@ -246,6 +246,39 @@ describe('chat write job monitoring', () => {
       jobId: job.id, status: 'merging', summary: null, subagents: [{ id: 'sub-1', name: '정리', status: 'completed', files: [], toolCalls: 2 }],
     });
     expect(output.output).not.toContain('PRIVATE_');
+  });
+
+  it('filters unreadable subagent sources without hiding otherwise readable job status', async () => {
+    const args = { jobId: '' };
+    const f = await fixture([{ name: 'get_write_status', arguments: args }, 'The job is readable.'], 'editor');
+    const conversation = await f.create();
+    f.acl.create({ prefix: 'wiki/updates.md', subjectType: 'user', subject: '1', access: 'none' }, f.users.get(4)!);
+    const job = f.jobs.submit({
+      userId: 1, input: 'PUBLIC_JOB_INPUT', source: 'chat', client: conversation.id, sourcePaths: ['wiki/facts.md'],
+    });
+    args.jobId = job.id;
+    f.jobRepository.markMerging(job.id, 'PUBLIC_JOB_SUMMARY', []);
+    f.jobs.phase(job.id, 'editing', { subagent: {
+      id: 'sub-1', name: '정리', status: 'completed', files: ['wiki/facts.md'],
+      sources: ['wiki/facts.md', 'wiki/updates.md'], toolCalls: 2,
+      result: 'Processed wiki/updates.md', error: 'Could not read wiki/updates.md',
+    } });
+
+    await f.send(conversation.id, { content: 'Check my write.' });
+    const output = (f.fake.requests[1].body.input as Array<{ type: string; output?: string }>).find(item => item.type === 'function_call_output')!;
+    expect(JSON.parse(output.output!)).toMatchObject({
+      jobId: job.id, status: 'merging', phase: 'editing', summary: 'PUBLIC_JOB_SUMMARY',
+      subagents: [{
+        id: 'sub-1', name: '정리', status: 'completed', files: ['wiki/facts.md'], sources: ['wiki/facts.md'], toolCalls: 2,
+      }],
+    });
+    expect(output.output).not.toContain('wiki/updates.md');
+    expect(output.output).not.toContain('Processed');
+    expect(output.output).not.toContain('Could not read');
+
+    const visibleJob = await f.jobs.visible(f.users.get(1)!, f.jobs.get(job.id)!);
+    expect(visibleJob.input).toBe('PUBLIC_JOB_INPUT');
+    expect(visibleJob.summary).toBe('PUBLIC_JOB_SUMMARY');
   });
 
   it.each(['get_write_status', 'wait_write'])('hides another requester job from %s', async name => {

@@ -38,7 +38,7 @@ function gate() {
 
 type InputItem = { role?: string; content?: string; type?: string; call_id?: string; output?: string };
 type RequestBody = { input: InputItem[]; stream: boolean; tools: Array<{ name: string }> };
-type Initial = { id?: string; name?: string; task?: string; files?: string[]; jobId?: string };
+type Initial = { id?: string; name?: string; task?: string; files?: string[]; sources?: string[]; jobId?: string };
 type Call = { name: string; arguments: Record<string, unknown>; call_id: string };
 type Reply = FakeTurn | Call[];
 type Route = (initial: Initial, turn: number, body: RequestBody) => Reply | Promise<Reply>;
@@ -80,7 +80,8 @@ async function fixture(route: Route, embeddingUrl?: string) {
   const db = openDb(':memory:');
   runMigrations(db);
   cleanup.push(async () => db.close());
-  const acl = new AclService(db, new UsersService(new UsersRepository(db)), new AuditService(db));
+  const users = new UsersService(new UsersRepository(db));
+  const acl = new AclService(db, users, new AuditService(db));
   let search = { search: async () => [] } as unknown as SearchService;
   if (embeddingUrl) {
     db.exec('CREATE VIRTUAL TABLE chunk_vectors USING vec0(chunk_id INTEGER PRIMARY KEY, embedding float[2])');
@@ -104,11 +105,15 @@ async function fixture(route: Route, embeddingUrl?: string) {
   const changes: SubagentSnapshot[] = [];
   const tools = agent.worktreeTools(wt, author);
   function makePool(customTools = tools) {
-    const pool = new SubagentPool({ agent, instructions: 'Write only the delegated notes.', tools: customTools, wt, onChange: (snapshot) => changes.push(snapshot) });
+    const pool = new SubagentPool({
+      agent, instructions: 'Write only the delegated notes.', tools: customTools, wt,
+      validateSource: async (path) => { if (!await wt.hasFile(path)) throw new Error(`Source file not found: ${path}`); },
+      onChange: (snapshot) => changes.push(snapshot),
+    });
     cleanup.push(() => pool.close());
     return pool;
   }
-  return { agent, repo, wt, author, tools, requests, changes, makePool };
+  return { agent, repo, wt, author, tools, requests, changes, makePool, acl, users };
 }
 
 async function invoke<T = Record<string, unknown>>(tools: AgentTool[], name: string, args: Record<string, unknown>): Promise<T> {
@@ -188,6 +193,31 @@ describe('subagent lifecycle failure containment', () => {
     const status = await invoke<{ subagents: SubagentSnapshot[] }>(pool.tools(), 'subagent_status', { id: child.id });
     expect(status.subagents[0][field]).toBe(settled[field]);
     if (outcome !== 'callback') expect(changes.at(-1)?.[field]).toBe(settled[field]);
+  });
+});
+
+describe('subagent source assignments', () => {
+  it('normalizes and deduplicates read paths without making shared sources exclusive', async () => {
+    const entered = [gate(), gate()];
+    const release = gate();
+    const { wt, requests, makePool } = await fixture(async (initial) => {
+      entered[initial.name === 'first' ? 0 : 1].resolve();
+      await release.promise;
+      return '공유 원문을 검토했다.';
+    });
+    const nfd = 'raw/한글.md'.normalize('NFD');
+    await wt.write(nfd, '공유 원문이다.\n');
+    const pool = makePool();
+    for (const name of ['first', 'second']) {
+      await invoke(pool.tools(), 'spawn_subagent', {
+        name, task: 'Read the same source', files: [`wiki/${name}.md`],
+        sources: [`./raw//${nfd.slice(4)}`, nfd],
+      });
+    }
+    await Promise.all(entered.map((entry) => entry.promise));
+    expect(requests.map(({ initial }) => initial.sources)).toEqual([[nfd], [nfd]]);
+    release.resolve();
+    expect((await waitFor(pool)).settled.map((child) => child.sources)).toEqual([[nfd], [nfd]]);
   });
 });
 
@@ -538,6 +568,64 @@ describe('write subagent pool', () => {
 });
 
 describe('runWrite subagent integration', () => {
+  it('hands exact raw read assignments to a child separately from its output ownership', async () => {
+    const sources = ['raw/import/extracted/notion/files/CRM.md', 'raw/import/extracted/notion/files/계약.md'];
+    const { agent, wt, author, requests } = await fixture((initial, turn, body) => {
+      if (initial.jobId) {
+        if (turn === 0) return [call('spawn_subagent', {
+          name: 'crm', task: 'Read both assigned sources and combine their knowledge.',
+          files: ['wiki/crm.md'], sources,
+        })];
+        if (turn === 1) return [call('wait_subagents', { ids: [output(body, 'spawn_subagent').id], timeoutSeconds: 5 })];
+        return 'CRM 원문 두 개를 통합했다.';
+      }
+      if (turn === 0) return (initial.sources ?? []).map((path, index) => call('read_file', { path }, `source-${index}`));
+      if (turn === 1) return [call('write_file', {
+        path: initial.files![0], content: `${output(body, 'source-0').content}${output(body, 'source-1').content}`,
+      })];
+      return '두 원문을 wiki/crm.md에 통합했다.';
+    });
+    await wt.write(sources[0], '# CRM\n고객 관계를 유지한다.\n');
+    await wt.write(sources[1], '# 계약\n계약 갱신일을 관리한다.\n');
+    const phases: Record<string, unknown>[] = [];
+    wt.onPhase = (_phase, detail) => { if (detail.subagent) phases.push(detail.subagent as Record<string, unknown>); };
+    await expect(agent.runWrite(job, wt, author)).resolves.toEqual({ summary: 'CRM 원문 두 개를 통합했다.' });
+    expect(requests.find((entry) => entry.initial.name === 'crm' && entry.turn === 0)?.initial).toMatchObject({
+      files: ['wiki/crm.md'], sources,
+    });
+    expect(await wt.read('wiki/crm.md')).toBe('# CRM\n고객 관계를 유지한다.\n# 계약\n계약 갱신일을 관리한다.\n');
+    expect(phases).toEqual([
+      expect.objectContaining({ status: 'running', files: ['wiki/crm.md'], sources }),
+      expect.objectContaining({ status: 'completed', files: ['wiki/crm.md'], sources }),
+    ]);
+  });
+
+  it('returns source validation errors to the parent without launching children or granting read access', async () => {
+    const invalidSources = [
+      ['raw/../private/source.md'], ['/raw/source.md'], ['.git/config'], ['raw/\uD800.md'],
+      ['raw/missing.md'], ['raw/'], ['private/source.md'],
+      Array.from({ length: 201 }, () => 'raw/allowed.md'),
+    ];
+    const { agent, wt, author, requests, acl, users } = await fixture((initial, turn, body) => {
+      if (!initial.jobId) throw new Error('Invalid source launched a child');
+      if (turn === 0) return invalidSources.map((sources, index) => call('spawn_subagent', {
+        name: `invalid-${index}`, task: 'Read assigned source', files: [`wiki/invalid-${index}.md`], sources,
+      }, `invalid-${index}`));
+      for (let index = 0; index < invalidSources.length; index++) {
+        expect(output(body, `invalid-${index}`)).toMatchObject({ error: expect.any(String) });
+      }
+      return '읽을 수 없는 원문 위임을 거절했다.';
+    });
+    const admin = users.create({ email: 'admin@example.com', role: 'admin' });
+    const editor = users.create({ email: 'editor@example.com', role: 'editor' });
+    acl.create({ prefix: 'private/', subjectType: 'everyone', access: 'none' }, admin);
+    await wt.write('private/source.md', 'Restricted source.\n');
+    await wt.write('raw/allowed.md', 'Readable source.\n');
+    await expect(agent.runWrite(job, wt, author, editor)).resolves.toEqual({ summary: '읽을 수 없는 원문 위임을 거절했다.' });
+    expect(requests.every((entry) => entry.initial.jobId === job.id)).toBe(true);
+    await expect(invoke(agent.worktreeTools(wt, author, editor), 'read_file', { path: 'private/source.md' })).rejects.toMatchObject({ status: 404 });
+  });
+
   it('waits for both delegated writes, emits lifecycle phases, and commits their real worktree changes', async () => {
     const { agent, wt, repo, author } = await fixture((initial, turn, body) => {
       if (initial.jobId) {

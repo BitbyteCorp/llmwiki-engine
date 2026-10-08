@@ -8,6 +8,7 @@ import type { AclService, AclUser } from '../acl/acl.service.js';
 import { visibleLog } from '../api/acl-history.js';
 import { SubagentPool } from './subagents.js';
 import { readPageArgs, readPageParameters } from './worktree.js';
+import { ReadCoverage } from './read-coverage.js';
 
 const writeInstructions = `
 지식 쓰기 작업을 작업 워크트리에서 완수한다. 기본 작성 규칙과 다음 절차를 모두 따른다.
@@ -26,7 +27,7 @@ const writeInstructions = `
 read_file은 전체 파일이 아니라 페이지 JSON을 반환한다. offset은 0부터 시작하는 줄 위치이며 truncated이면 nextOffset과 nextCharOffset(있을 때)을 그대로 사용해 이어 읽는다. 페이지의 content를 순서대로 연결하면 줄바꿈까지 원문을 보존한다. 기존 파일을 교체하기 전에 필요한 모든 페이지를 읽고 유지할 내용을 포함한 전체 결과를 write_file로 저장한다. 첫 페이지만으로 나머지 내용을 지우지 않는다. list_files도 최대 500개이므로 같은 prefix와 nextOffset으로 이어 조회하거나 폴더를 좁힌다.
 
 ## 위임
-독립적으로 수정할 대상 파일이 3개 이상이거나 작업이 크면 지식 단위와 의존성을 먼저 계획한 뒤 파일 소유권을 나누어 spawn_subagent로 병렬 위임한다. 단순한 단일 노트 쓰기는 직접 처리한다. 서브에이전트는 한 작업에서 최대 4개까지 생성하고 동시에 최대 2개만 실행할 수 있다. files에는 정확한 저장소 상대 경로나 /로 끝나는 폴더 접두사를 주며 실행 중인 서브에이전트의 소유권을 겹치지 않는다. index.md, MEMORY.md, AGENTS.md, raw/는 위임할 수 없다. 공용 허브·색인 링크와 메모리, 전체 결과 검증 및 모든 커밋은 부모가 맡는다.
+독립적으로 수정할 대상 파일이 3개 이상이거나 작업이 크면 지식 단위와 의존성을 먼저 계획한 뒤 파일 소유권을 나누어 spawn_subagent로 병렬 위임한다. 단순한 단일 노트 쓰기는 직접 처리한다. 서브에이전트는 한 작업에서 최대 4개까지 생성하고 동시에 최대 2개만 실행할 수 있다. files에는 정확한 저장소 상대 경로나 /로 끝나는 폴더 접두사를 주며 실행 중인 서브에이전트의 소유권을 겹치지 않는다. index.md, MEMORY.md, AGENTS.md, raw/의 쓰기 소유권은 위임할 수 없다. 읽어야 할 원문의 정확한 저장소 상대 경로는 별도의 sources에 전달하며 raw/도 읽기 배정할 수 있고 자식끼리 같은 원문을 읽어도 된다. sources는 파일 수만 적은 작업 설명이나 files로 대신하지 않는다. 공용 허브·색인 링크와 메모리, 전체 결과 검증 및 모든 커밋은 부모가 맡는다.
 spawn_subagent는 실행만 시작한다. subagent_status로 즉시 상태를 확인하고 wait_subagents로 결과를 기다린다. 필요하면 message_subagent로 다음 턴의 방향을 수정하거나 cancel_subagent로 취소한다. 서브에이전트는 커밋하거나 재위임할 수 없으며 실패해도 부모 작업은 계속된다. 완료 요약만 믿지 말고 read_file로 실제 파일을 검증·수정한다. 실행 중인 소유 경로는 부모도 수정·삭제·이동할 수 없고 모든 서브에이전트가 끝나기 전에는 커밋할 수 없다. 끝내기 전에 필요한 응답을 모두 기다린다. 부모가 종료하면 아직 실행 중인 서브에이전트는 취소되므로 미완료 작업을 완료로 설명하지 않는다.
 `;
 
@@ -37,14 +38,25 @@ export async function runWrite(
   author: { name: string; email: string },
   user?: AclUser,
   log?: Pick<Logger, 'error'>,
-  options: Pick<RunAgentOptions, 'resume' | 'onCheckpoint' | 'onUsage'> = {},
+  options: Pick<RunAgentOptions, 'resume' | 'onCheckpoint' | 'onUsage'> & { requiredReads?: string[] } = {},
 ): Promise<{ summary: string }> {
   const instructions = `${await agent.baseInstructions(user, user ? (path) => wt.onPhase?.('editing', { sourcePath: path }) : undefined)}\n\n${writeInstructions}`;
   let resumeNote = options.resume ? `중단된 부모 실행을 이어간다. 이번 작업 ID는 ${job.id}다. 이전 실행의 서브에이전트는 재개되지 않으며 이전 자식 ID는 현재 풀에서 unknown이다. 워크트리에 보존된 실제 파일을 확인하고 필요한 작업만 새 자식에 위임한다. 이번 커밋과 결과는 현재 작업 ID로 기록한다.` : undefined;
+  const { requiredReads, ...runOptions } = options;
+  const coverage = new ReadCoverage(requiredReads ?? []);
+  const runningChildren = new Set<string>();
+  let rejectedFinishes = 0;
+  const unreadError = (unread: string[]) => new Error(`unread assigned sources: ${unread.length}/${coverage.total} (${unread.slice(0, 5).join(', ')}${unread.length > 5 ? ', ...' : ''})`);
   const pool = new SubagentPool({
-    agent, instructions, tools: agent.worktreeTools(wt, author, user), wt, log,
+    agent, instructions, tools: agent.worktreeTools(wt, author, user, coverage.total ? (path, source, page, readOptions) => coverage.record(path, source, page, readOptions) : undefined), wt, log,
+    validateSource: async (path) => {
+      agent.assertRead(path, user);
+      if (!await wt.hasFile(path)) throw new Error(`Source file not found: ${path}`);
+    },
     onUsage: options.onUsage,
     onChange: (snapshot) => {
+      if (snapshot.status === 'running') runningChildren.add(snapshot.id);
+      else runningChildren.delete(snapshot.id);
       // Task text never enters job events; result/error use the job's input visibility.
       const { startedAt: _startedAt, finishedAt: _finishedAt, ...subagent } = snapshot;
       wt.onPhase?.('editing', { subagent });
@@ -57,7 +69,23 @@ export async function runWrite(
       input: JSON.stringify({ jobId: job.id, source: job.source, request: job.input }),
       tools: [...pool.parentTools(), ...pool.tools()],
       maxTurns: 96,
-      ...options,
+      ...runOptions,
+      beforeFinish: () => {
+        const unread = coverage.unread();
+        if (!unread.length) return undefined;
+        if (++rejectedFinishes >= 3) throw unreadError(unread);
+        return [
+          `완료 응답을 수락할 수 없다. 이번 실행에서 끝까지 읽지 않은 담당 원문: ${unread.length}/${coverage.total}.`,
+          ...unread.slice(0, 20).map((path) => `- ${JSON.stringify(path)}`),
+          ...(unread.length > 20 ? [`나머지 ${unread.length - 20}개 경로는 원래 담당 목록을 확인한다.`] : []),
+          '모든 담당 경로를 read_file로 끝까지 읽고 nextOffset/nextCharOffset으로 빠진 페이지를 이어 읽는다. 위임할 때는 정확한 raw 경로를 spawn_subagent.sources에 전달한다. 읽기 배정은 files의 쓰기 소유권과 다르다.',
+          `실행 중인 자식: ${runningChildren.size}. wait_subagents로 실행 중인 자식의 종료를 기다리고 실제 결과를 확인한 뒤 완료한다.`,
+        ].join('\n');
+      },
+      onTurnLimit: () => {
+        const unread = coverage.unread();
+        if (unread.length) throw unreadError(unread);
+      },
       // Resume ignores input; append the current job note once to the saved conversation.
       beforeTurn: () => {
         if (!resumeNote) return [];

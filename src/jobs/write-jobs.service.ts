@@ -47,8 +47,9 @@ export class WriteJobsService implements OnApplicationShutdown {
 
   private enqueue(input: SubmitWriteJob, retryOf?: string): WriteJob {
     const id = newId();
-    const detail = { sourceProvenanceComplete: true, ...(input.sourcePaths?.length ? { sourcePaths: input.sourcePaths } : {}), ...(retryOf ? { retryOf } : {}) };
-    this.repository.enqueue(id, input.userId, input.input, new Date().toISOString(), input.source, input.client, 'agent', input.dedupeKey, retryOf, detail);
+    const sourcePaths = [...new Set([...(input.sourcePaths ?? []), ...(input.requiredReads ?? [])])];
+    const detail = { sourceProvenanceComplete: true, ...(sourcePaths.length ? { sourcePaths } : {}), ...(retryOf ? { retryOf } : {}) };
+    this.repository.enqueue(id, input.userId, input.input, new Date().toISOString(), input.source, input.client, 'agent', input.dedupeKey, retryOf, detail, input.requiredReads);
     this.publishPhase(id, 'queued');
     const job = this.get(id)!;
     this.kick();
@@ -68,7 +69,7 @@ export class WriteJobsService implements OnApplicationShutdown {
     if (requester.role !== 'admin' && this.acl.list().length && !this.repository.events(job.id).some(event => event.phase === 'queued' && event.detail?.sourceProvenanceComplete === true)) {
       throw new ApiError(404, 'not_found', 'Legacy job source permissions cannot be verified; submit a new request');
     }
-    return this.enqueue({ userId: job.userId, input: job.input, source: job.source, sourcePaths: this.sourcePaths(job.id), ...(job.client === null ? {} : { client: job.client }) }, job.id);
+    return this.enqueue({ userId: job.userId, input: job.input, source: job.source, sourcePaths: this.sourcePaths(job.id), requiredReads: this.repository.getRequiredReads(job.id), ...(job.client === null ? {} : { client: job.client }) }, job.id);
   }
 
   cancel(id: string): WriteJob {
@@ -287,6 +288,7 @@ export class WriteJobsService implements OnApplicationShutdown {
       wt.onPhase = (phase, detail) => this.phase(job.id, phase, detail);
       this.phase(job.id, 'editing');
       const { summary } = await agent.runWrite(this.get(job.id)!, wt, author, user, {
+        requiredReads: repository.getRequiredReads(job.id),
         resume: repository.checkpoints.get(`job:${job.id}`),
         onCheckpoint: checkpoint => repository.checkpoints.save(`job:${job.id}`, checkpoint),
         onUsage,

@@ -62,7 +62,7 @@ async function fixture(responder: FakeResponder) {
     return { agent, jobs };
   }
   const repo = await KnowledgeRepo.open(config, log);
-  return { dir, db, fake, config, log, logs, repo, repository, checkpoints, users, services, ...services(repo) };
+  return { dir, db, fake, config, log, logs, repo, repository, checkpoints, users, acl, services, ...services(repo) };
 }
 
 async function settled(jobs: WriteJobsService, id: string) {
@@ -77,7 +77,250 @@ function output(request: FakeRequest, callId: string) {
   return JSON.parse(item!.output!);
 }
 
+
+async function seedSources(repo: KnowledgeRepo, sources: Record<string, string>) {
+  const wt = await repo.createWorktree('assigned-sources');
+  try {
+    for (const [path, content] of Object.entries(sources)) await wt.write(path, content);
+    await wt.commit('Preserve assigned source material', author);
+    await repo.withMergeLock(() => wt.fastForwardMain());
+  } finally {
+    await wt.dispose();
+  }
+}
+
+function lastUserMessage(request: FakeRequest) {
+  const messages = request.body.input as Array<{ role?: string; content?: unknown }>;
+  return String(messages.filter(item => item.role === 'user').at(-1)?.content);
+}
 describe('write job continuation with real Dony and git', () => {
+  it('rejects premature assigned-source finals until out-of-order pages cover the whole file', async () => {
+    const path = 'raw/import/batch.md';
+    const content = 'first fact\nsecond fact\nthird fact\nlast fact\n';
+    const published = 'wiki/imported.md';
+    const f = await fixture((request, turn) => {
+      if (turn === 0) return { name: 'write_file', arguments: { path: published, content: '# Imported facts\nAll four facts are preserved.\n' } };
+      if (turn === 1) return 'PREMATURE_FIRST_SUMMARY';
+      if (turn === 2) {
+        expect(lastUserMessage(request)).toContain(path);
+        expect(lastUserMessage(request)).toContain('read_file');
+        expect(lastUserMessage(request)).toContain('sources');
+        expect(lastUserMessage(request)).toContain('wait_subagents');
+        return { name: 'read_file', arguments: { path, offset: 2, limit: 2 }, call_id: 'source-tail' };
+      }
+      if (turn === 3) {
+        expect(output(request, 'source-tail')).toMatchObject({ content: 'third fact\nlast fact\n', truncated: false });
+        return 'PREMATURE_TAIL_ONLY_SUMMARY';
+      }
+      if (turn === 4) {
+        expect(lastUserMessage(request)).toContain(path);
+        return { name: 'read_file', arguments: { path, offset: 0, limit: 2 }, call_id: 'source-head' };
+      }
+      expect(output(request, 'source-head')).toMatchObject({ content: 'first fact\nsecond fact\n', nextOffset: 2, truncated: true });
+      return 'Publish all four imported facts';
+    });
+    await seedSources(f.repo, { [path]: content });
+    f.jobs.start();
+    const job = f.jobs.submit({ userId: 1, source: 'import', input: 'Integrate every assigned fact', requiredReads: [path] });
+    const result = await settled(f.jobs, job.id);
+    expect(result).toMatchObject({ status: 'succeeded', summary: 'Publish all four imported facts' });
+    expect(await f.repo.readFile(published)).toBe('# Imported facts\nAll four facts are preserved.\n');
+    expect(await f.repo.readFile(path)).toBe(content);
+    expect(f.checkpoints.get(`job:${job.id}`)).toBeUndefined();
+  }, 20000);
+
+  it('fails the third unfinished final without merging any unreviewed work', async () => {
+    const read = 'raw/import/read.md';
+    const unread = 'raw/import/unread.md';
+    const published = 'wiki/unreviewed.md';
+    let finalAttempts = 0;
+    const f = await fixture((request, turn) => {
+      if (turn === 0) return { functionCalls: [
+        { name: 'read_file', arguments: { path: read }, call_id: 'read-source' },
+        { name: 'write_file', arguments: { path: published, content: 'This must remain unpublished.\n' } },
+      ] };
+      if (turn === 1) expect(output(request, 'read-source')).toMatchObject({ content: 'Known fact\n', truncated: false });
+      else {
+        expect(lastUserMessage(request)).toContain(unread);
+        expect(lastUserMessage(request)).not.toContain(read);
+      }
+      return `Unfinished final ${++finalAttempts}`;
+    });
+    await seedSources(f.repo, { [read]: 'Known fact\n', [unread]: 'Unread fact\n' });
+    const mainBefore = await f.repo.headSha();
+    f.jobs.start();
+    const job = f.jobs.submit({ userId: 1, source: 'import', input: 'Integrate both sources', requiredReads: [read, unread] });
+    const result = await settled(f.jobs, job.id);
+    expect(result).toMatchObject({
+      status: 'failed', summary: null, mergeSha: null,
+      error: `unread assigned sources: 1/2 (${unread})`,
+    });
+    expect(finalAttempts).toBe(3);
+    expect(await f.repo.headSha()).toBe(mainBefore);
+    expect(await f.repo.readFile(published)).toBeNull();
+  }, 20000);
+
+  it('preserves a rejected-final follow-up on provider failure and requires fresh reads on retry', async () => {
+    const first = 'raw/import/first.md';
+    const second = 'raw/import/second.md';
+    const published = 'wiki/resumed-import.md';
+    let retrying = false;
+    let retryTurn = 0;
+    const f = await fixture((request, turn) => {
+      if (!retrying) {
+        if (turn === 0) return { functionCalls: [
+          { name: 'read_file', arguments: { path: first }, call_id: 'original-source-read' },
+          { name: 'write_file', arguments: { path: published, content: '# Imported knowledge\nBoth assigned facts.\n' }, call_id: 'preserved-import-write' },
+        ] };
+        if (turn === 1) return 'REJECTED_BEFORE_PROVIDER_FAILURE';
+        expect(lastUserMessage(request)).toContain(second);
+        throw new Error('provider failed after rejected final');
+      }
+      const resumedTurn = retryTurn++;
+      if (resumedTurn === 0) {
+        expect(output(request, 'original-source-read')).toMatchObject({ content: 'First fact\n' });
+        expect(output(request, 'preserved-import-write')).toMatchObject({ path: published, written: true });
+        expect(JSON.stringify(request.body.input)).toContain('REJECTED_BEFORE_PROVIDER_FAILURE');
+        expect(JSON.stringify(request.body.input)).toContain(savedFollowUp);
+        return 'REJECTED_RETRY_WITH_STALE_READS';
+      }
+      if (resumedTurn === 1) {
+        expect(lastUserMessage(request)).toContain(first);
+        expect(lastUserMessage(request)).toContain(second);
+        return { name: 'read_file', arguments: { path: second }, call_id: 'fresh-second' };
+      }
+      if (resumedTurn === 2) {
+        expect(output(request, 'fresh-second')).toMatchObject({ content: 'Second fact\n' });
+        return 'REJECTED_RETRY_WITH_ONLY_SECOND';
+      }
+      if (resumedTurn === 3) {
+        expect(lastUserMessage(request)).toContain(first);
+        expect(lastUserMessage(request)).not.toContain(second);
+        return { name: 'read_file', arguments: { path: first }, call_id: 'fresh-first' };
+      }
+      expect(output(request, 'fresh-first')).toMatchObject({ content: 'First fact\n' });
+      return 'Publish freshly reviewed resumed import';
+    });
+    await seedSources(f.repo, { [first]: 'First fact\n', [second]: 'Second fact\n' });
+    f.jobs.start();
+    const original = f.jobs.submit({ userId: 1, source: 'import', input: 'Integrate both assigned facts', requiredReads: [first, second] });
+    const failed = await settled(f.jobs, original.id);
+    expect(failed).toMatchObject({ status: 'failed', summary: null, error: expect.stringContaining('provider failed after rejected final') });
+    expect(await f.repo.readFile(published)).toBeNull();
+    const checkpoint = f.checkpoints.get(`job:${original.id}`)!;
+    expect(checkpoint.text).not.toContain('REJECTED_BEFORE_PROVIDER_FAILURE');
+    expect(checkpoint.input).toContainEqual(expect.objectContaining({
+      role: 'assistant', content: expect.arrayContaining([expect.objectContaining({ text: 'REJECTED_BEFORE_PROVIDER_FAILURE' })]),
+    }));
+    const followUp = checkpoint.input.at(-1);
+    expect(followUp).toMatchObject({ role: 'user', content: expect.stringContaining(second) });
+    const savedFollowUp = JSON.stringify(followUp);
+    retrying = true;
+    const retry = f.jobs.retry(original.id);
+    expect(f.checkpoints.get(`job:${original.id}`)).toBeUndefined();
+    expect(f.checkpoints.get(`job:${retry.id}`)).toEqual(checkpoint);
+    f.jobs.start();
+    const succeeded = await settled(f.jobs, retry.id);
+    expect(succeeded).toMatchObject({ status: 'succeeded', summary: 'Publish freshly reviewed resumed import' });
+    expect(await f.repo.readFile(published)).toBe('# Imported knowledge\nBoth assigned facts.\n');
+    expect(f.jobs.get(original.id)).toEqual(failed);
+    expect(f.checkpoints.get(`job:${retry.id}`)).toBeUndefined();
+  }, 20000);
+
+  it('credits a child reading exact assigned sources without requiring parent duplicate reads', async () => {
+    const path = 'raw/import/delegated.md';
+    const published = 'wiki/delegated-import.md';
+    let parentTurn = 0;
+    let childTurn = 0;
+    const f = await fixture((request) => {
+      if (String(request.body.prompt_cache_key).includes(':subagent:')) {
+        const turn = childTurn++;
+        if (turn === 0) return { name: 'read_file', arguments: { path, offset: 2, limit: 2 }, call_id: 'child-tail' };
+        if (turn === 1) {
+          expect(output(request, 'child-tail')).toMatchObject({ content: 'Third fact\nFourth fact\n', truncated: false });
+          return { name: 'read_file', arguments: { path, offset: 0, limit: 2 }, call_id: 'child-head' };
+        }
+        if (turn === 2) {
+          expect(output(request, 'child-head')).toMatchObject({ content: 'First fact\nSecond fact\n', nextOffset: 2 });
+          return { name: 'write_file', arguments: { path: published, content: '# Delegated facts\nAll four source facts.\n' } };
+        }
+        return 'Reviewed and recorded all delegated facts';
+      }
+      const turn = parentTurn++;
+      if (turn === 0) return { name: 'spawn_subagent', arguments: {
+        name: 'Source reviewer', task: 'Read every assigned source page and record its facts',
+        files: [published], sources: [path],
+      }, call_id: 'source-child' };
+      if (turn === 1) {
+        expect(output(request, 'source-child')).not.toHaveProperty('error');
+        return { name: 'wait_subagents', arguments: {}, call_id: 'source-child-wait' };
+      }
+      expect(output(request, 'source-child-wait')).toMatchObject({
+        settled: [expect.objectContaining({ status: 'completed', sources: [path] })], running: [], timedOut: false,
+      });
+      return 'Publish delegated import';
+    });
+    await seedSources(f.repo, { [path]: 'First fact\nSecond fact\nThird fact\nFourth fact\n' });
+    f.jobs.start();
+    const job = f.jobs.submit({ userId: 1, source: 'import', input: 'Delegate assigned source review', requiredReads: [path] });
+    const result = await settled(f.jobs, job.id);
+    expect(result).toMatchObject({ status: 'succeeded', summary: 'Publish delegated import' });
+    expect(await f.repo.readFile(published)).toBe('# Delegated facts\nAll four source facts.\n');
+    expect(f.checkpoints.get(`job:${job.id}`)).toBeUndefined();
+  }, 20000);
+
+  it('reports unread assigned sources when the write attempt exhausts its turn budget', async () => {
+    const path = 'raw/import/never-read.md';
+    let turns = 0;
+    const f = await fixture(() => {
+      turns++;
+      return { name: 'list_files', arguments: { prefix: 'raw/import/' } };
+    });
+    await seedSources(f.repo, { [path]: 'A fact that must be reviewed.\n' });
+    const mainBefore = await f.repo.headSha();
+    f.jobs.start();
+    const job = f.jobs.submit({ userId: 1, source: 'import', input: 'Read the assigned source', requiredReads: [path] });
+    const result = await settled(f.jobs, job.id);
+    expect(result).toMatchObject({ status: 'failed', summary: null, mergeSha: null, error: `unread assigned sources: 1/1 (${path})` });
+    expect(turns).toBe(96);
+    expect(await f.repo.headSha()).toBe(mainBefore);
+  }, 20000);
+
+  it.each(['missing', 'denied'] as const)('does not credit a %s read_file result as assigned-source coverage', async (kind) => {
+    const path = `raw/import/${kind}.md`;
+    const published = 'wiki/unread-import.md';
+    const f = await fixture((request, turn) => {
+      if (turn === 0) {
+        if (kind === 'denied') {
+          const admin = f.users.create({ email: 'coverage-admin@example.test', role: 'admin' });
+          f.acl.create({ prefix: path, subjectType: 'everyone', subject: '', access: 'none' }, admin);
+        }
+        return { functionCalls: [
+          { name: 'read_file', arguments: { path }, call_id: 'failed-source-read' },
+          { name: 'write_file', arguments: { path: published, content: 'Unreviewed facts must not merge.\n' } },
+        ] };
+      }
+      if (turn === 1) {
+        if (kind === 'missing') expect(output(request, 'failed-source-read')).toMatchObject({ content: null });
+        else {
+          expect(output(request, 'failed-source-read')).toHaveProperty('error');
+          expect(JSON.stringify(request.body.input)).not.toContain('HIDDEN_ASSIGNED_FACT');
+        }
+      }
+      return 'Publish without a successful source read';
+    });
+    if (kind === 'denied') {
+      await seedSources(f.repo, { [path]: 'HIDDEN_ASSIGNED_FACT\n' });
+    }
+    const mainBefore = await f.repo.headSha();
+    f.jobs.start();
+    const job = f.jobs.submit({ userId: 1, source: 'import', input: 'Review the assigned source', requiredReads: [path] });
+    const result = await settled(f.jobs, job.id);
+    expect(result).toMatchObject({ status: 'failed', summary: null, mergeSha: null, error: `unread assigned sources: 1/1 (${path})` });
+    expect(await f.repo.readFile(published)).toBeNull();
+    expect(await f.repo.headSha()).toBe(mainBefore);
+  }, 20000);
+
   it.each(['none', 'child', 'conflict'] as const)('records parent, child and conflict usage with %s failing', async (failure) => {
     let parentTurn = 0;
     let childTurn = 0;

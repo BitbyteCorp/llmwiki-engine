@@ -115,7 +115,7 @@ describe('core database', () => {
       const foreignKeys = db.pragma('foreign_key_list(write_job_events)');
       runMigrations(db);
       expect(db.prepare('SELECT rowid, * FROM write_jobs ORDER BY rowid').all()).toEqual(jobs.map((job) => ({
-        ...job, dedupe_key: null, kind: job.kind === historicalJobKind ? 'agent' : job.kind,
+        ...job, dedupe_key: null, required_reads: '[]', kind: job.kind === historicalJobKind ? 'agent' : job.kind,
       })));
       expect(db.prepare('SELECT * FROM write_job_events').all()).toEqual(events);
       expect(db.prepare('SELECT rowid, * FROM imports ORDER BY rowid').all()).toEqual(imports.map(({ job_id: _jobId, ...row }) => row));

@@ -218,6 +218,7 @@ it('preserves legacy rows through history and agent migrations and accepts legac
     db.exec(await readFile(new URL('../db/migrations/016_agent_job_kind.sql', import.meta.url), 'utf8'));
     db.exec(await readFile(new URL('../db/migrations/017_write_job_dedupe.sql', import.meta.url), 'utf8'));
     db.exec(await readFile(new URL('../db/migrations/019_agent_checkpoints.sql', import.meta.url), 'utf8'));
+    db.exec(await readFile(new URL('../db/migrations/022_write_job_required_reads.sql', import.meta.url), 'utf8'));
     const repository = new WriteJobsRepository(db);
     expect(repository.get(legacyId)).toMatchObject({ userId: 99, kind: 'agent', source: 'mcp', client: null, input: 'original input', status: 'failed', summary: 'original summary', commits: ['abc'], conflicts: [], error: 'original error' });
     repository.enqueue(newId(), 99, 'new input', '2026-02-01T00:00:00.000Z', 'web');

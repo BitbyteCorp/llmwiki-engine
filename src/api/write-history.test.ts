@@ -189,14 +189,15 @@ describe('write and history HTTP acceptance with real Git and SQLite', () => {
     expect(legacyLink.commits).toMatchObject([{ sha, trailers: { 'Wiki-Job': id } }]);
   });
 
-  it('redacts unreadable child claims and results without treating refused claims as accessed sources', async () => {
+  it.each(['files', 'sources'] as const)('redacts unreadable child %s and results without treating assignments as accessed sources', async (hiddenField) => {
     app.get(AclService).create({ prefix: 'secret/', subjectType: 'everyone', subject: '', access: 'none' }, admin);
     const submitted = jobs.submit({ userId: editor.id, input: 'Public request', source: 'chat' });
     repository.markMerging(submitted.id, 'Public summary', []);
     const childId = newId();
     const publicChildId = newId();
     jobs.phase(submitted.id, 'editing', { subagent: {
-      id: childId, name: 'Writer', status: 'failed', files: ['wiki/public.md', 'secret/plan.md'],
+      id: childId, name: 'Writer', status: 'failed', files: ['wiki/public.md'],
+      sources: ['raw/public.md'], [hiddenField]: hiddenField === 'files' ? ['wiki/public.md', 'secret/plan.md'] : ['raw/public.md', 'secret/plan.md'],
       toolCalls: 1, startedAt: submitted.createdAt, result: 'secret/plan.md detail', error: 'Denied secret/plan.md',
     } });
     jobs.phase(submitted.id, 'editing', { subagent: {
@@ -205,13 +206,14 @@ describe('write and history HTTP acceptance with real Git and SQLite', () => {
     const detail = await json<JobDetail>(await request(`/jobs/${submitted.id}`));
     expect(detail.job).toMatchObject({ input: 'Public request', summary: 'Public summary' });
     expect(detail.events.find(event => (event.detail?.subagent as { id?: string } | undefined)?.id === childId)?.detail?.subagent).toMatchObject({
-      id: childId, files: ['wiki/public.md'], status: 'failed', toolCalls: 1,
+      id: childId, files: ['wiki/public.md'], sources: ['raw/public.md'], status: 'failed', toolCalls: 1,
     });
     expect(JSON.stringify(detail)).not.toContain('secret/plan.md');
-    expect(detail.events.find(event => (event.detail?.subagent as { id?: string } | undefined)?.id === publicChildId)?.detail?.subagent).toMatchObject({ result: 'Public result' });
+    expect(detail.events.find(event => (event.detail?.subagent as { id?: string } | undefined)?.id === publicChildId)?.detail?.subagent).toMatchObject({ sources: [], result: 'Public result' });
     const unrestricted = await json<JobDetail>(await request(`/jobs/${submitted.id}`, {}, admin));
     expect(unrestricted.events.find(event => (event.detail?.subagent as { id?: string } | undefined)?.id === childId)?.detail?.subagent).toMatchObject({
-      files: ['wiki/public.md', 'secret/plan.md'], error: 'Denied secret/plan.md', result: 'secret/plan.md detail',
+      [hiddenField]: hiddenField === 'files' ? ['wiki/public.md', 'secret/plan.md'] : ['raw/public.md', 'secret/plan.md'],
+      error: 'Denied secret/plan.md', result: 'secret/plan.md detail',
     });
   });
 

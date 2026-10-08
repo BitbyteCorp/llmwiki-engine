@@ -3,7 +3,7 @@ import type { Worktree } from '../knowledge/repo.js';
 import type { SearchService } from '../rag/search.service.js';
 import type { AgentTool } from './agent.types.js';
 import type { AclService, AclUser } from '../acl/acl.service.js';
-import { pageContent, PAGE_MAX_CHARS, PAGE_MAX_LINES } from './output.js';
+import { pageContent, PAGE_MAX_CHARS, PAGE_MAX_LINES, type ContentPage } from './output.js';
 
 export const LIST_MAX_FILES = 500;
 export const SEARCH_MAX_RESULTS = 30;
@@ -26,12 +26,15 @@ const writeArgs = z.object({ path: z.string().min(1), content: z.string() }).str
 const moveArgs = z.object({ from: z.string().min(1), to: z.string().min(1) }).strict();
 const commitArgs = z.object({ message: z.string().trim().min(1) }).strict();
 
+export type WorktreeReadObserver = (path: string, source: string, page: ContentPage, options: { offset?: number; charOffset?: number }) => void;
+
 export function makeWorktreeTools(
   search: SearchService,
   wt: Worktree,
   author: { name: string; email: string },
   acl: AclService,
   user?: AclUser,
+  onRead?: WorktreeReadObserver,
 ): AgentTool[] {
   return [
     {
@@ -81,9 +84,10 @@ export function makeWorktreeTools(
         if (user) acl.assertRead(user, path);
         if (user) wt.onPhase?.('editing', { sourcePath: path });
         const content = await wt.read(path);
-        return JSON.stringify({ path, ...(content === null
-          ? { content: null, totalLines: 0, nextOffset: null, truncated: false }
-          : pageContent(content, offset, limit, charOffset)) });
+        if (content === null) return JSON.stringify({ path, content: null, totalLines: 0, nextOffset: null, truncated: false });
+        const page = pageContent(content, offset, limit, charOffset);
+        onRead?.(path, content, page, { offset, charOffset });
+        return JSON.stringify({ path, ...page });
       },
     },
     {

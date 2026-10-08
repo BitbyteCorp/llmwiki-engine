@@ -15,7 +15,7 @@ import type { Logger } from '../log.js';
 import { SearchService } from '../rag/search.service.js';
 import type { WriteJob } from '../jobs/write-job.types.js';
 import type { AgentTool, AnswerOptions, ChatMessage, Citation, RunAgentOptions, TokenUsage } from './agent.types.js';
-import { makeWorktreeTools } from './worktree.js';
+import { makeWorktreeTools, type WorktreeReadObserver } from './worktree.js';
 import { runWrite, resolveConflicts } from './writes.js';
 import { AclService } from '../acl/acl.service.js';
 import type { User } from '../auth/users.types.js';
@@ -226,13 +226,30 @@ export class AgentService {
       }
       opts.signal?.throwIfAborted();
       if (response.status !== 'completed') throw new Error(`Dony response ${response.status}: ${response.error?.message ?? response.incomplete_details?.reason ?? 'unknown error'}`);
-      text += responseText(response);
+      const turnText = responseText(response);
       const calls = response.output.filter((item) => item.type === 'function_call');
       if (!calls.length) {
-        if (usage) opts.onEvent?.('usage', usage);
+        const followUp = await opts.beforeFinish?.(text + turnText);
         opts.signal?.throwIfAborted();
-        return { text, toolCalls };
+        if (followUp === undefined) {
+          text += turnText;
+          if (usage) opts.onEvent?.('usage', usage);
+          return { text, toolCalls };
+        }
+        for (const item of response.output) {
+          if (item.type === 'message' || item.type === 'reasoning' || item.type === 'compaction') input.push(item);
+        }
+        for (let index = input.length - 1; index >= 0; index--) {
+          if (input[index]?.type === 'compaction') {
+            input.splice(0, index);
+            break;
+          }
+        }
+        input.push({ role: 'user', content: followUp });
+        opts.onCheckpoint?.(JSON.parse(JSON.stringify({ input, text, toolCalls, ...(usage ? { usage } : {}) })));
+        continue;
       }
+      text += turnText;
       for (const item of response.output) {
         if (item.type === 'message' || item.type === 'function_call' || item.type === 'reasoning' || item.type === 'compaction') input.push(item);
       }
@@ -278,6 +295,7 @@ export class AgentService {
       }
       opts.onCheckpoint?.(JSON.parse(JSON.stringify({ input, text, toolCalls, ...(usage ? { usage } : {}) })));
     }
+    opts.onTurnLimit?.();
     throw new Error(`Dony exceeded maxTurns (${maxTurns}) before finishing`);
   }
 
@@ -297,11 +315,15 @@ export class AgentService {
     ].join('\n\n');
   }
 
-  worktreeTools(wt: Worktree, author: { name: string; email: string }, user?: Pick<User, 'id' | 'role'>): AgentTool[] {
-    return makeWorktreeTools(this.search, wt, author, this.acl, user);
+  assertRead(path: string, user?: Pick<User, 'id' | 'role'>): void {
+    if (user) this.acl.assertRead(user, path);
   }
 
-  async runWrite(job: WriteJob, wt: Worktree, author: { name: string; email: string }, user?: Pick<User, 'id' | 'role'>, options: Pick<RunAgentOptions, 'resume' | 'onCheckpoint' | 'onUsage'> = {}): Promise<{ summary: string }> {
+  worktreeTools(wt: Worktree, author: { name: string; email: string }, user?: Pick<User, 'id' | 'role'>, onRead?: WorktreeReadObserver): AgentTool[] {
+    return makeWorktreeTools(this.search, wt, author, this.acl, user, onRead);
+  }
+
+  async runWrite(job: WriteJob, wt: Worktree, author: { name: string; email: string }, user?: Pick<User, 'id' | 'role'>, options: Pick<RunAgentOptions, 'resume' | 'onCheckpoint' | 'onUsage'> & { requiredReads?: string[] } = {}): Promise<{ summary: string }> {
     return runWrite(this, job, wt, author, user, this.log, options);
   }
 

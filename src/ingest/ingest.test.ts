@@ -206,15 +206,14 @@ describe('IngestService with real uploads, SQLite and git', () => {
     expect(new Set(owned.flat()).size).toBe(pages.length);
     let failSecond = true;
     const consumed: string[] = [];
-    vi.mocked(ctx.agent.runWrite).mockImplementation(async (job, wt) => {
+    vi.mocked(ctx.agent.runWrite).mockImplementation(async (job, wt, _author, _user, options) => {
       const batch = Number(job.input.match(/Batch (\d+) of 3/)![1]) - 1;
       if (batch === 1 && failSecond) {
         failSecond = false;
         throw new Error('Second batch failed');
       }
       if (batch === 2) expect(await wt.read('wiki/batch-0.md')).toContain('Durable fact 0');
-      const paths = [...job.input.matchAll(/^- ("raw\/.*")$/gm)].map((match) => JSON.parse(match[1]!) as string);
-      expect(paths).toEqual(owned[batch]);
+      const paths = options!.requiredReads!;
       const facts = await Promise.all(paths.map((path) => wt.read(path)));
       consumed.push(...paths);
       await wt.write(`wiki/batch-${batch}.md`, `# Batch knowledge\n${facts.join('\n')}\n`);

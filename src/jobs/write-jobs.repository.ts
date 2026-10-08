@@ -31,12 +31,12 @@ export class WriteJobsRepository {
     this.checkpoints = new AgentCheckpointsRepository(db);
   }
 
-  enqueue(id: string, userId: number, input: string, createdAt: string, source: JobSource, client?: string, kind: JobKind = 'agent', dedupeKey?: string, resumeFrom?: string, queuedDetail?: Record<string, unknown>): boolean {
+  enqueue(id: string, userId: number, input: string, createdAt: string, source: JobSource, client?: string, kind: JobKind = 'agent', dedupeKey?: string, resumeFrom?: string, queuedDetail?: Record<string, unknown>, requiredReads: string[] = []): boolean {
     return this.db.transaction(() => {
       this.db.prepare(`
-        INSERT INTO write_jobs (id, user_id, kind, source, client, input, status, created_at, dedupe_key)
-        VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)
-      `).run(toStorageId(id), userId, kind, source, client ?? null, input, createdAt, dedupeKey ?? null);
+        INSERT INTO write_jobs (id, user_id, kind, source, client, input, status, created_at, dedupe_key, required_reads)
+        VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?)
+      `).run(toStorageId(id), userId, kind, source, client ?? null, input, createdAt, dedupeKey ?? null, JSON.stringify(requiredReads));
       const resumed = resumeFrom !== undefined && this.checkpoints.copy(`job:${resumeFrom}`, `job:${id}`);
       if (resumed) this.checkpoints.delete(`job:${resumeFrom}`);
       if (queuedDetail) this.addEvent(id, 'queued', { ...queuedDetail, ...(resumed ? { resumedFrom: resumeFrom } : {}) }, createdAt);
@@ -47,6 +47,11 @@ export class WriteJobsRepository {
   getByDedupeKey(key: string): WriteJob | null {
     const row = this.db.prepare("SELECT * FROM write_jobs WHERE dedupe_key = ? AND status <> 'failed'").get(key) as JobRow | undefined;
     return row ? toJob(row) : null;
+  }
+
+  getRequiredReads(id: string): string[] {
+    const row = this.db.prepare('SELECT required_reads FROM write_jobs WHERE id = ?').get(toStorageId(id)) as { required_reads: string } | undefined;
+    return row ? JSON.parse(row.required_reads) as string[] : [];
   }
 
   addEvent(id: string, phase: JobPhase, detail: Record<string, unknown> | null = null, at = new Date().toISOString()): void {

@@ -19,6 +19,7 @@ export interface SubmitWriteJob {
   source: JobSource;
   client?: string;
   sourcePaths?: string[];
+  requiredReads?: string[];
   dedupeKey?: string;
 }
 export type SubmittedWriteJob = WriteJob & { reused: boolean };
