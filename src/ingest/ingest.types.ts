@@ -16,9 +16,14 @@ export const ingestSchema = z.object({
   if (value.kind === 'pdf' && !value.url && !value.uploadId) ctx.addIssue({ code: 'custom', message: 'PDF import requires url or uploadId' });
 });
 export type IngestInput = z.infer<typeof ingestSchema> & { userId: number };
+export interface ImportJob {
+  batch: number; jobId: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+  error: string | null; files: number;
+}
 export interface ImportRecord {
   id: string; userId: number; kind: ImportKind; source: string; sha: string | null;
   status: 'extracting' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
-  rawPaths: string[]; jobId: string | null; error: string | null;
+  rawPaths: string[]; jobs: ImportJob[]; error: string | null;
   createdAt: string; updatedAt: string; finishedAt: string | null;
 }

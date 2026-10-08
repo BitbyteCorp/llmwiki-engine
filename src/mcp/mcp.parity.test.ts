@@ -246,9 +246,12 @@ describe('MCP knowledge parity', () => {
     expect((await call(adminClient, 'get_write_status', { jobId })).structuredContent).toMatchObject({ job: { id: jobId } });
     const imported = await call(editorClient, 'ingest_source', { kind: 'text', text: 'Imported source knowledge.', filename: 'source.txt' });
     expect(imported.isError).not.toBe(true);
-    expect((await call(editorClient, 'get_write_status', { jobId: imported.structuredContent?.jobId })).structuredContent).toMatchObject({
-      job: { userId: editor.id, source: 'import', status: 'queued', input: expect.stringContaining('raw/') },
-    });
+    const importJobIds = z.array(z.string()).length(1).parse(imported.structuredContent?.jobIds);
+    for (const jobId of importJobIds) {
+      expect((await call(editorClient, 'get_write_status', { jobId })).structuredContent).toMatchObject({
+        job: { userId: editor.id, source: 'import', status: 'queued', input: expect.stringContaining('raw/') },
+      });
+    }
     const importId = z.string().parse(imported.structuredContent?.importId);
     const source = module.get(IngestService).get(importId, editor.id);
     const original = source.rawPaths.find(path => path.endsWith('/original/source.txt'))!;

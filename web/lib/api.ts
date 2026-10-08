@@ -165,7 +165,14 @@ export type ImportKind = 'url' | 'pdf' | 'text' | 'file' | 'obsidian' | 'notion'
 export type ImportStatus = 'extracting' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
 export interface ImportRecord {
   id: string; userId: number; kind: ImportKind; source: string; sha: string | null
-  status: ImportStatus; rawPaths: string[]; jobId: string | null; error: string | null
+export interface ImportJob {
+  batch: number // 0-based batch index
+  jobId: string
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
+  error: string | null
+  files: number // Count of assigned extracted Markdown files.
+}
+  status: ImportStatus; rawPaths: string[]; jobs: ImportJob[]; error: string | null
   createdAt: string; updatedAt: string; finishedAt: string | null
 }
 export interface ImportInput { kind: ImportKind; url?: string; text?: string; uploadId?: string; filename?: string; instructions?: string }
@@ -210,7 +217,7 @@ function uploadImport(file: File, options: { signal?: AbortSignal; onProgress?: 
 export const importsApi = {
   list: (before?: string, limit = 30, signal?: AbortSignal) => request<{ imports: ImportRecord[] }>(`/api/imports${query({ before, limit })}`, { signal }),
   detail: (id: string, signal?: AbortSignal) => request<ImportRecord>(`/api/imports/${encodeURIComponent(id)}`, { signal }),
-  create: (input: ImportInput) => request<{ importId: string; jobId: string }>('/api/imports', { method: 'POST', body: JSON.stringify(input) }),
+  create: (input: ImportInput) => request<{ importId: string; jobIds: string[] }>('/api/imports', { method: 'POST', body: JSON.stringify(input) }),
   upload: uploadImport,
 }
 // END imports client contracts

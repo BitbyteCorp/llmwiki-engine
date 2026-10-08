@@ -136,8 +136,11 @@ it('uses token user for write/ingest and hides job sources, commits, conflicts a
   expect(JSON.stringify(status)).not.toContain('HIDDEN_JOB_CONTENT');
   const imported = await call(editor, 'ingest_source', { kind: 'text', text: 'Restricted raw imported source', filename: 'source.md' });
   expect(imported.isError).not.toBe(true);
-  const importId = imported.structuredContent?.jobId as string;
-  const importStatus = await call(editor, 'get_write_status', { jobId: importId });
-  expect(importStatus.structuredContent?.job).toMatchObject({ userId: f.editor.id, input: '', commits: [], summary: null });
-  expect(JSON.stringify(importStatus)).not.toContain('raw/');
+  const importJobIds = imported.structuredContent?.jobIds as string[];
+  expect(importJobIds).toEqual([expect.any(String)]);
+  for (const jobId of importJobIds) {
+    const importStatus = await call(editor, 'get_write_status', { jobId });
+    expect(importStatus.structuredContent?.job).toMatchObject({ userId: f.editor.id, input: '', commits: [], summary: null });
+    expect(JSON.stringify(importStatus)).not.toContain('raw/');
+  }
 });

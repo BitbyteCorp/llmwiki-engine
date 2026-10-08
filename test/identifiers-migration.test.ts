@@ -6,7 +6,6 @@ import { fromStorageId, legacyUuidToApi, legacyUuidToStorage } from '../src/comm
 import { openDb, runMigrations, type Db } from '../src/db/index.js';
 
 const migrationsDirectory = fileURLToPath(new URL('../src/db/migrations/', import.meta.url));
-const identifierMigrationSql = readFileSync(join(migrationsDirectory, '018_base62_ids.sql'), 'utf8');
 const at = '2026-01-01T00:00:00.000Z';
 const ids = {
   job: '01234567-89ab-4cde-8f01-23456789abcd',
@@ -188,7 +187,8 @@ const idInventory: IdInventory[] = [
   { table: 'generation_frames', columns: ['generation_id'], rows: [[ids.generation]] },
   { table: 'api_tokens', columns: ['id'], rows: [[ids.apiToken]] },
   { table: 'dream_runs', columns: ['id'], rows: [[ids.dream]] },
-  { table: 'imports', columns: ['id', 'job_id'], rows: [[ids.import, ids.job], [ids.nullableImport, null], [ids.opaqueImport, null]] },
+  { table: 'imports', columns: ['id'], rows: [[ids.import], [ids.nullableImport], [ids.opaqueImport]] },
+  { table: 'import_jobs', columns: ['import_id', 'job_id'], rows: [[ids.import, ids.job]] },
 ];
 
 const preservedQueries = [
@@ -298,16 +298,12 @@ describe('identifier database migration', () => {
       const migrated = migratedSnapshot(db);
       runMigrations(db);
       expect(migratedSnapshot(db)).toEqual(migrated);
-      // Bypass the ledger to prove the SQL itself tolerates storage/API values and NULLs.
-      db.transaction(() => db.exec(identifierMigrationSql))();
-      expect(migratedSnapshot(db)).toEqual(migrated);
-      assertMigratedIds(db);
     } finally {
       db.close();
     }
   });
 
-  it('migrates an empty database and safely reapplies the identifier SQL', () => {
+  it('migrates an empty database and safely reruns the migration ledger', () => {
     const db = openDb(':memory:');
     try {
       runMigrations(db);
@@ -316,7 +312,6 @@ describe('identifier database migration', () => {
       }
       expect(db.prepare('SELECT * FROM audit_events').all()).toEqual([]);
       const migrated = migratedSnapshot(db);
-      db.transaction(() => db.exec(identifierMigrationSql))();
       runMigrations(db);
       expect(migratedSnapshot(db)).toEqual(migrated);
       expect(db.pragma('foreign_keys', { simple: true })).toBe(1);

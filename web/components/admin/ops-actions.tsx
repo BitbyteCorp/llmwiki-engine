@@ -78,10 +78,11 @@ export function useOpsActions(openImport?: () => void) {
     if (!client.isMutating({ mutationKey: opsMutationKey, exact: true })) operation.mutate(command)
   }
 
-  function importCreated({ jobId }: { importId: string; jobId: string }) {
+  function importCreated({ jobIds }: { importId: string; jobIds: string[] }) {
     void client.invalidateQueries({ queryKey: importKeys.lists })
     void client.invalidateQueries({ queryKey: ['ops'] })
-    notify({ tone: 'success', title: '원문 가져오기 작업을 등록했습니다.', action: { label: '통합 작업 보기', href: `/jobs/${encodeURIComponent(jobId)}` } })
+    const label = jobIds.length === 1 ? '통합 작업 보기' : `통합 작업 보기 (${jobIds.length}개 배치)`
+    notify({ tone: 'success', title: '원문 가져오기 작업을 등록했습니다.', action: { label, href: `/jobs/${encodeURIComponent(jobIds[0])}` } })
   }
 
   function importFailed() {

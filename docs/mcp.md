@@ -42,7 +42,7 @@ MCP와 REST 가져오기(`/api/imports`)의 JSON 요청 본문 상한은 21 MiB�
 | `blame` | `path`, 선택 `ref` | `{ ref, ranges }` | 모든 역할이 줄 범위별 원래 커밋, 작성자, 날짜, 요약과 `jobId`·`source` 출처를 조회한다. |
 | `note_links` | `path` | `{ outgoing, backlinks, unresolved }` | 모든 역할이 연결된 노트의 경로·제목과 해결되지 않은 링크를 조회한다. |
 | `similar_notes` | `path`, 선택 `limit` | `{ notes: [{ path, title, score }] }` | 모든 역할이 인덱스 임베딩 기반 이웃을 조회한다. 호환되는 벡터가 없으면 빈 배열이다. |
-| `ingest_source` | `kind: "url"\|"pdf"\|"text"\|"obsidian"\|"notion"\|"file"`, 선택 `url`, `uploadId`, `text`, `filename`, `instructions` | `{ importId, jobId }` | `editor`, `admin`만 공유 수집 파이프라인을 호출한다. 입력은 `url`, `uploadId`, `text` 중 하나다. `url` 종류는 URL, `text` 종류는 원문, 파일·vault 종류는 업로드 ID를 사용한다. PDF는 URL 또는 업로드 ID를 사용한다. 원본 저장 뒤 도니 통합 작업이 대기열에 들어가므로 `get_write_status`로 완료를 확인한다. |
+| `ingest_source` | `kind: "url"\|"pdf"\|"text"\|"obsidian"\|"notion"\|"file"`, 선택 `url`, `uploadId`, `text`, `filename`, `instructions` | `{ importId: string, jobIds: string[] }` | `editor`, `admin`만 공유 수집 파이프라인을 호출한다. 입력은 `url`, `uploadId`, `text` 중 하나다. `url` 종류는 URL, `text` 종류는 원문, 파일·vault 종류는 업로드 ID를 사용한다. PDF는 URL 또는 업로드 ID를 사용한다. 원본 저장 뒤 도니 통합 작업들이 대기열에 들어가므로 반환된 `jobIds`의 모든 작업을 `get_write_status`로 조회하고 전부 `succeeded`인지 확인해야 통합 완료로 안내한다. |
 | `write` | `content: string`은 공백만 있는 문자열을 허용하지 않는다. 자연어 편집 지시나 원문을 전달하며, 입력 원문은 그대로 작업에 제출한다. | `{ jobId: string, status: "queued" }` | `editor`, `admin`만 제출할 수 있다. 작업 큐에 등록한 뒤 즉시 반환하며, 저장 완료를 뜻하지 않는다. |
 | `get_write_status` | `jobId: string`은 [식별자](identifiers.md) 규칙을 따르는 작업 ID다. | `{ job: WriteJob }` | 모든 역할이 자기 작업만 조회할 수 있으며, `admin`은 모든 사용자의 작업을 조회할 수 있다. 존재하지 않거나 조회 권한이 없는 작업은 같은 도구 오류를 반환한다. |
 

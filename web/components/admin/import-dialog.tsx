@@ -17,7 +17,7 @@ const tabs = [
 type ImportTab = typeof tabs[number]['id']
 const MiB = 1024 * 1024
 
-export function ImportDialog({ onClose, onCreated, onFailure }: { onClose: () => void; onCreated: (result: { importId: string; jobId: string }) => void; onFailure: () => void }) {
+export function ImportDialog({ onClose, onCreated, onFailure }: { onClose: () => void; onCreated: (result: { importId: string; jobIds: string[] }) => void; onFailure: () => void }) {
   const [tab, setTab] = useState<ImportTab>('url')
   const [url, setUrl] = useState('')
   const [text, setText] = useState('')

@@ -86,6 +86,14 @@ describe('core database', () => {
         INSERT INTO write_job_events (job_id, phase, at, detail) VALUES ('historical', 'queued', '2026-01-01', '{"retryOf":"earlier"}');
         INSERT INTO imports (id, user_id, kind, source, status, job_id, created_at, updated_at)
           VALUES ('import', 1, 'text', 'source', 'failed', 'historical', '2026-01-01', '2026-01-03');
+        INSERT INTO imports (id, user_id, kind, source, sha, status, raw_paths, error, created_at, updated_at, finished_at)
+          VALUES ('unlinked', 1, 'text', 'other', 'hash', 'failed', '["raw/source.md"]', 'extraction failed', '2026-01-01', '2026-01-03', '2026-01-03');
+        UPDATE imports SET rowid = 42 WHERE id = 'unlinked';
+        CREATE INDEX imports_status_probe ON imports(status);
+        CREATE TABLE import_update_probe (id TEXT);
+        CREATE TRIGGER imports_update_probe AFTER UPDATE ON imports BEGIN
+          INSERT INTO import_update_probe (id) VALUES (new.id);
+        END;
         CREATE INDEX write_jobs_summary ON write_jobs(summary);
         CREATE TABLE job_update_probe (id TEXT);
         CREATE TRIGGER write_jobs_update_probe AFTER UPDATE ON write_jobs BEGIN
@@ -94,24 +102,40 @@ describe('core database', () => {
       `);
       const jobs = db.prepare('SELECT rowid, * FROM write_jobs ORDER BY rowid').all() as Array<{ kind: string }>;
       const events = db.prepare('SELECT * FROM write_job_events').all();
-      const imports = db.prepare('SELECT * FROM imports').all();
+      const imports = db.prepare('SELECT rowid, * FROM imports ORDER BY rowid').all() as Array<{ job_id: string | null }>;
+      const importColumns = db.pragma('table_info(imports)') as Array<{ cid: number; name: string }>;
       const schemaSql = db.prepare("SELECT name, sql FROM sqlite_schema WHERE type IN ('index', 'trigger') ORDER BY name");
       const schema = schemaSql.all();
-      const expectedSchema = [...schema, {
+      const expectedSchema = [...schema.filter((entry) => entry.name !== 'imports_job'), {
         name: 'write_jobs_dedupe_key_active',
         sql: `CREATE UNIQUE INDEX write_jobs_dedupe_key_active
   ON write_jobs(dedupe_key)
   WHERE dedupe_key IS NOT NULL AND status <> 'failed'`,
       }].sort((left, right) => String(left.name) < String(right.name) ? -1 : String(left.name) > String(right.name) ? 1 : 0);
-      const foreignKeys = db.prepare("SELECT * FROM pragma_foreign_key_list('imports') UNION ALL SELECT * FROM pragma_foreign_key_list('write_job_events')").all();
+      const foreignKeys = db.pragma('foreign_key_list(write_job_events)');
       runMigrations(db);
       expect(db.prepare('SELECT rowid, * FROM write_jobs ORDER BY rowid').all()).toEqual(jobs.map((job) => ({
         ...job, dedupe_key: null, kind: job.kind === historicalJobKind ? 'agent' : job.kind,
       })));
       expect(db.prepare('SELECT * FROM write_job_events').all()).toEqual(events);
-      expect(db.prepare('SELECT * FROM imports').all()).toEqual(imports);
+      expect(db.prepare('SELECT rowid, * FROM imports ORDER BY rowid').all()).toEqual(imports.map(({ job_id: _jobId, ...row }) => row));
+      expect(db.pragma('table_info(imports)')).toEqual(importColumns.filter((column) => column.name !== 'job_id')
+        .map((column, cid) => ({ ...column, cid })));
+      expect(db.prepare('SELECT * FROM import_jobs').all()).toEqual([{ import_id: 'import', batch: 0, job_id: 'historical', files: '[]' }]);
       expect(schemaSql.all()).toEqual(expect.arrayContaining(expectedSchema));
-      expect(db.prepare("SELECT * FROM pragma_foreign_key_list('imports') UNION ALL SELECT * FROM pragma_foreign_key_list('write_job_events')").all()).toEqual(foreignKeys);
+      expect(db.prepare("SELECT name FROM sqlite_schema WHERE name = 'imports_job'").get()).toBeUndefined();
+      expect(db.pragma('index_info(import_jobs_job)')).toEqual([{ seqno: 0, cid: 2, name: 'job_id' }]);
+      expect(db.pragma('foreign_key_list(write_job_events)')).toEqual(foreignKeys);
+      expect(db.pragma('foreign_key_list(imports)')).toEqual([
+        { id: 0, seq: 0, table: 'users', from: 'user_id', to: 'id', on_update: 'NO ACTION', on_delete: 'NO ACTION', match: 'NONE' },
+      ]);
+      expect(db.pragma('foreign_key_list(import_jobs)')).toEqual([
+        { id: 0, seq: 0, table: 'imports', from: 'import_id', to: 'id', on_update: 'NO ACTION', on_delete: 'CASCADE', match: 'NONE' },
+      ]);
+      expect(() => db.exec("INSERT INTO import_jobs VALUES ('import', 0, 'duplicate', '[]')")).toThrow(/UNIQUE/);
+      expect(() => db.exec("INSERT INTO import_jobs VALUES ('missing', 0, 'historical', '[]')")).toThrow(/FOREIGN KEY/);
+      db.exec("UPDATE imports SET error = 'updated' WHERE id = 'import'");
+      expect(db.prepare('SELECT * FROM import_update_probe').all()).toEqual([{ id: 'import' }]);
       expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
       expect(db.pragma('foreign_key_check')).toEqual([]);
       db.exec("UPDATE write_jobs SET summary = 'updated' WHERE id = 'historical'");
@@ -120,8 +144,10 @@ describe('core database', () => {
       expect(db.prepare("SELECT kind FROM write_jobs WHERE id = 'default'").get()).toEqual({ kind: 'agent' });
       expect(() => insert.run('obsolete', historicalJobKind)).toThrow();
       expect(() => db.exec("INSERT INTO write_job_events (job_id, phase, at) VALUES ('missing', 'queued', '2026-01-04')")).toThrow();
-      expect(() => db.exec("DELETE FROM write_jobs WHERE id = 'historical'")).toThrow();
-      db.exec("DELETE FROM imports WHERE id = 'import'; DELETE FROM write_jobs WHERE id = 'historical'");
+      db.exec("DELETE FROM write_jobs WHERE id = 'historical'");
+      expect(db.prepare('SELECT * FROM import_jobs').all()).toEqual([{ import_id: 'import', batch: 0, job_id: 'historical', files: '[]' }]);
+      db.exec("DELETE FROM imports WHERE id = 'import'");
+      expect(db.prepare('SELECT * FROM import_jobs').all()).toEqual([]);
       expect(db.prepare('SELECT * FROM write_job_events').all()).toEqual([]);
       runMigrations(db);
     } finally {
@@ -143,6 +169,31 @@ describe('core database', () => {
       db.exec("DELETE FROM write_job_events WHERE job_id = 'missing'");
       runMigrations(db);
       expect(db.prepare("SELECT kind FROM write_jobs WHERE id = 'job'").get()).toEqual({ kind: 'agent' });
+    } finally {
+      db.close();
+    }
+  });
+  it.each(['ON', 'OFF'])('rolls back an invalid import rebuild and restores foreign_keys = %s', (enforcement) => {
+    const db = openDb(':memory:');
+    try {
+      runMigrations(db);
+      db.exec('DROP TABLE import_jobs; DROP TABLE imports');
+      db.exec(readFileSync(fileURLToPath(new URL('../src/db/migrations/012_ingest.sql', import.meta.url)), 'utf8'));
+      db.prepare('DELETE FROM schema_migrations WHERE name = ?').run('020_import_jobs.sql');
+      db.pragma('foreign_keys = OFF');
+      db.exec(`INSERT INTO imports (id, user_id, kind, source, status, created_at, updated_at)
+        VALUES ('orphan', 999, 'text', 'source', 'failed', '2026-01-01', '2026-01-01')`);
+      db.pragma(`foreign_keys = ${enforcement}`);
+      expect(() => runMigrations(db)).toThrow(/Foreign key violations after migration 020_import_jobs.sql/);
+      expect(db.pragma('foreign_keys', { simple: true })).toBe(enforcement === 'ON' ? 1 : 0);
+      expect(db.prepare("SELECT job_id FROM imports WHERE id = 'orphan'").get()).toEqual({ job_id: null });
+      expect(db.prepare("SELECT name FROM sqlite_schema WHERE name = 'imports_job'").get()).toEqual({ name: 'imports_job' });
+      expect(db.prepare("SELECT name FROM sqlite_schema WHERE name = 'import_jobs'").get()).toBeUndefined();
+      expect(db.prepare("SELECT name FROM schema_migrations WHERE name = '020_import_jobs.sql'").get()).toBeUndefined();
+      db.exec("DELETE FROM imports WHERE id = 'orphan'");
+      runMigrations(db);
+      expect(db.pragma('foreign_key_check')).toEqual([]);
+      expect(db.pragma('foreign_keys', { simple: true })).toBe(enforcement === 'ON' ? 1 : 0);
     } finally {
       db.close();
     }

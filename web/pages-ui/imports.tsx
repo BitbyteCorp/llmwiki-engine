@@ -49,7 +49,7 @@ function ImportsList({ user }: { user: User }) {
     })
   }, [list.data])
   useEffect(() => onLiveEvent('job.updated', (event) => {
-    if (records.some((record) => record.jobId === event.jobId)) void client.invalidateQueries({ queryKey: importKeys.lists })
+    if (records.some((record) => record.jobs.some((job) => job.jobId === event.jobId))) void client.invalidateQueries({ queryKey: importKeys.lists })
   }), [client, records])
   return <div className="space-y-4">
     <PageHeader title="원문 가져오기" description={user.role === 'admin' ? '전체 사용자의 수집 기록과 도니 통합 진행 상태를 확인합니다.' : '내가 가져온 원문과 도니 통합 진행 상태를 확인합니다.'} actions={<>

@@ -65,7 +65,7 @@ describe('IngestService with real uploads, SQLite and git', () => {
     const before = await ctx.repo.headSha();
     const result = await ctx.ingest.ingest({ userId: ctx.owner.id, kind: 'text', text: '# Source\nDurable knowledge', filename: 'knowledge.md', instructions: 'Explain the key idea' });
     expect(result.importId).toMatch(/^[0-9A-Za-z]{22}$/);
-    expect(result.jobId).toMatch(/^[0-9A-Za-z]{22}$/);
+    expect(result.jobIds).toEqual([expect.stringMatching(/^[0-9A-Za-z]{22}$/)]);
     const item = ctx.ingest.get(result.importId, ctx.owner.id);
     const sha = createHash('sha256').update('# Source\nDurable knowledge').digest('hex');
     expect(item.sha).toBe(sha);
@@ -79,7 +79,7 @@ describe('IngestService with real uploads, SQLite and git', () => {
     expect(commits[0]!.trailers['Wiki-Requester']).toBe('editor@example.com');
     const { stdout } = await git('git', ['rev-list', '--count', `${before}..main`], { cwd: join(ctx.dir, 'knowledge') });
     expect(stdout.trim()).toBe('1');
-    const queued = ctx.jobs.get(result.jobId)!;
+    const queued = ctx.jobs.get(result.jobIds[0]!)!;
     expect(queued.kind).toBe('agent');
     expect(queued.source).toBe('import');
     expect(queued.input).toContain(item.rawPaths[1]);
@@ -97,22 +97,22 @@ describe('IngestService with real uploads, SQLite and git', () => {
     const result = await ctx.ingest.ingest({ userId: ctx.owner.id, kind: 'text', text: 'Retryable source' });
     const original = ctx.ingest.get(result.importId, ctx.owner.id);
     ctx.jobs.start();
-    await vi.waitFor(() => expect(ctx.ingest.get(result.importId, ctx.owner.id)).toMatchObject({ jobId: result.jobId, status: 'failed', error: 'First integration failed' }), { timeout: 10_000 });
+    await vi.waitFor(() => expect(ctx.ingest.get(result.importId, ctx.owner.id)).toMatchObject({ jobs: [{ jobId: result.jobIds[0], status: 'failed' }], status: 'failed', error: 'batch 1/1: First integration failed' }), { timeout: 10_000 });
     await ctx.jobs.stop();
     expect(ctx.ingest.get(result.importId, ctx.owner.id).finishedAt).not.toBeNull();
 
-    const retry = ctx.jobs.retry(result.jobId);
-    expect(ctx.imports.get(result.importId)).toMatchObject({ jobId: retry.id, status: 'queued', error: null, finishedAt: null });
-    expect(ctx.ingest.list(ctx.owner.id)[0]).toMatchObject({ jobId: retry.id, status: 'queued', rawPaths: original.rawPaths, sha: original.sha });
+    const retry = ctx.jobs.retry(result.jobIds[0]!);
+    expect(ctx.imports.get(result.importId)).toMatchObject({ jobs: [{ jobId: retry.id }], status: 'queued', error: null, finishedAt: null });
+    expect(ctx.ingest.list(ctx.owner.id)[0]).toMatchObject({ jobs: [{ jobId: retry.id }], status: 'queued', rawPaths: original.rawPaths, sha: original.sha });
     ctx.jobs.start();
-    await vi.waitFor(() => expect(ctx.ingest.get(result.importId, ctx.owner.id)).toMatchObject({ jobId: retry.id, status: 'failed', error: 'Second integration failed' }), { timeout: 10_000 });
+    await vi.waitFor(() => expect(ctx.ingest.get(result.importId, ctx.owner.id)).toMatchObject({ jobs: [{ jobId: retry.id }], status: 'failed', error: 'batch 1/1: Second integration failed' }), { timeout: 10_000 });
     await ctx.jobs.stop();
 
     const nextRetry = ctx.jobs.retry(retry.id);
-    expect(ctx.imports.get(result.importId)).toMatchObject({ jobId: nextRetry.id, status: 'queued', error: null, finishedAt: null });
+    expect(ctx.imports.get(result.importId)).toMatchObject({ jobs: [{ jobId: nextRetry.id }], status: 'queued', error: null, finishedAt: null });
     ctx.jobs.start();
-    await vi.waitFor(() => expect(ctx.ingest.get(result.importId, ctx.owner.id)).toMatchObject({ jobId: nextRetry.id, status: 'succeeded', error: null }), { timeout: 10_000 });
-    expect(ctx.jobs.get(result.jobId)!.status).toBe('failed');
+    await vi.waitFor(() => expect(ctx.ingest.get(result.importId, ctx.owner.id)).toMatchObject({ jobs: [{ jobId: nextRetry.id }], status: 'succeeded', error: null }), { timeout: 10_000 });
+    expect(ctx.jobs.get(result.jobIds[0]!)!.status).toBe('failed');
     expect(ctx.jobs.get(retry.id)!.status).toBe('failed');
     expect(await ctx.repo.readFile('wiki/imported.md')).toContain(original.rawPaths[1]);
   });
@@ -125,21 +125,21 @@ describe('IngestService with real uploads, SQLite and git', () => {
     await ctx.jobs.stop();
     ctx.ingest.onModuleDestroy();
 
-    const retry = ctx.jobs.retry(result.jobId);
+    const retry = ctx.jobs.retry(result.jobIds[0]!);
     ctx.jobs.start();
     await vi.waitFor(() => expect(ctx.jobs.get(retry.id)!.status).toBe('failed'), { timeout: 10_000 });
     await ctx.jobs.stop();
     const nextRetry = ctx.jobs.retry(retry.id);
-    expect(ctx.imports.get(result.importId)).toMatchObject({ jobId: result.jobId, status: 'failed', error: 'Original failed' });
+    expect(ctx.imports.get(result.importId)).toMatchObject({ jobs: [{ jobId: result.jobIds[0] }], status: 'failed', error: 'batch 1/1: Original failed' });
 
     if (recovery === 'startup') {
       ctx.ingest.start();
-      expect(ctx.imports.get(result.importId)).toMatchObject({ jobId: nextRetry.id, status: 'queued', error: null, finishedAt: null });
+      expect(ctx.imports.get(result.importId)).toMatchObject({ jobs: [{ jobId: nextRetry.id }], status: 'queued', error: null, finishedAt: null });
     } else {
-      expect(ctx.ingest.list(ctx.owner.id)[0]).toMatchObject({ jobId: nextRetry.id, status: 'queued', error: null, finishedAt: null });
+      expect(ctx.ingest.list(ctx.owner.id)[0]).toMatchObject({ jobs: [{ jobId: nextRetry.id }], status: 'queued', error: null, finishedAt: null });
     }
     ctx.jobs.start();
-    await vi.waitFor(() => expect(ctx.ingest.get(result.importId, ctx.owner.id)).toMatchObject({ jobId: nextRetry.id, status: 'succeeded', error: null }), { timeout: 10_000 });
+    await vi.waitFor(() => expect(ctx.ingest.get(result.importId, ctx.owner.id)).toMatchObject({ jobs: [{ jobId: nextRetry.id }], status: 'succeeded', error: null }), { timeout: 10_000 });
   });
   it('reuses identical immutable originals without rewriting and preserves each provenance record', async () => {
     const ctx = await fixture();
@@ -164,7 +164,7 @@ describe('IngestService with real uploads, SQLite and git', () => {
     await expect(ctx.ingest.ingest({ userId: ctx.owner.id, kind: 'text', text })).rejects.toMatchObject({ code: 'raw_conflict', status: 409 });
     expect(await ctx.repo.readFile(path)).toBe('Wrong bytes');
     expect(ctx.jobs.list().filter((job) => job.kind === 'agent')).toEqual([]);
-    expect(ctx.ingest.list(ctx.owner.id)[0]).toMatchObject({ status: 'failed', jobId: null });
+    expect(ctx.ingest.list(ctx.owner.id)[0]).toMatchObject({ status: 'failed', jobs: [] });
   });
   it.each(['obsidian', 'notion'] as const)('preserves %s ZIP bytes and extracted attachments in one raw commit', async (kind) => {
     const ctx = await fixture();
@@ -184,6 +184,79 @@ describe('IngestService with real uploads, SQLite and git', () => {
     const count = await git('git', ['rev-list', '--count', `${before}..main`], { cwd: join(ctx.dir, 'knowledge') });
     expect(count.stdout.trim()).toBe('1');
   });
+  it('covers every vault Markdown in disjoint serial batches and retries only the failed batch', async () => {
+    const ctx = await fixture();
+    const pages = Array.from({ length: 81 }, (_, index) => `Page-${String(index).padStart(2, '0')}.md`);
+    const archive = Object.fromEntries(pages.map((path, index) => [path, strToU8(`Durable fact ${index}`)]));
+    archive['asset.png'] = new Uint8Array([137, 80, 78, 71]);
+    const upload = await ctx.uploads.save(ctx.owner.id, { name: 'large.zip', mediaType: 'application/zip', purpose: 'import', buffer: Buffer.from(zipSync(archive)) });
+    const result = await ctx.ingest.ingest({ userId: ctx.owner.id, kind: 'obsidian', uploadId: upload.id });
+    const original = ctx.ingest.get(result.importId, ctx.owner.id);
+    expect(result.jobIds).toHaveLength(3);
+    expect(original.jobs.map((job) => ({ batch: job.batch, files: job.files }))).toEqual([
+      { batch: 0, files: 40 }, { batch: 1, files: 40 }, { batch: 2, files: 1 },
+    ]);
+    const owned = result.jobIds.map((jobId) => {
+      const paths = ctx.jobs.events(jobId).find((event) => event.phase === 'queued')!.detail!.sourcePaths as string[];
+      expect(paths.slice(0, 2)).toEqual(original.rawPaths.slice(0, 2));
+      return paths.slice(2);
+    });
+    const expected = pages.map((path) => `raw/${original.sha}/extracted/obsidian/files/${path}`);
+    expect(owned.flat().sort()).toEqual(expected);
+    expect(new Set(owned.flat()).size).toBe(pages.length);
+    let failSecond = true;
+    const consumed: string[] = [];
+    vi.mocked(ctx.agent.runWrite).mockImplementation(async (job, wt) => {
+      const batch = Number(job.input.match(/Batch (\d+) of 3/)![1]) - 1;
+      if (batch === 1 && failSecond) {
+        failSecond = false;
+        throw new Error('Second batch failed');
+      }
+      if (batch === 2) expect(await wt.read('wiki/batch-0.md')).toContain('Durable fact 0');
+      const paths = [...job.input.matchAll(/^- ("raw\/.*")$/gm)].map((match) => JSON.parse(match[1]!) as string);
+      expect(paths).toEqual(owned[batch]);
+      const facts = await Promise.all(paths.map((path) => wt.read(path)));
+      consumed.push(...paths);
+      await wt.write(`wiki/batch-${batch}.md`, `# Batch knowledge\n${facts.join('\n')}\n`);
+      return { summary: 'Integrate batch knowledge' };
+    });
+    ctx.jobs.start();
+    await vi.waitFor(() => expect(ctx.ingest.get(result.importId, ctx.owner.id)).toMatchObject({
+      status: 'failed', error: 'batch 2/3: Second batch failed',
+      jobs: [{ status: 'succeeded' }, { status: 'failed' }, { status: 'succeeded' }],
+    }), { timeout: 10_000 });
+    await ctx.jobs.stop();
+    const retry = ctx.jobs.retry(result.jobIds[1]!);
+    const retried = ctx.ingest.get(result.importId, ctx.owner.id);
+    expect(retried.jobs.map((job) => job.jobId)).toEqual([result.jobIds[0], retry.id, result.jobIds[2]]);
+    expect(retried).toMatchObject({ status: 'queued', error: null, finishedAt: null, rawPaths: original.rawPaths, sha: original.sha });
+    ctx.jobs.start();
+    await vi.waitFor(() => expect(ctx.ingest.get(result.importId, ctx.owner.id).status).toBe('succeeded'), { timeout: 10_000 });
+    expect(consumed.sort()).toEqual(expected);
+    for (let index = 0; index < 3; index++) {
+      expect(await ctx.repo.readFile(`wiki/batch-${index}.md`)).toContain(`Durable fact ${index * 40}`);
+    }
+    ctx.ingest.get(result.importId, ctx.owner.id);
+    ctx.ingest.list(ctx.owner.id);
+    expect(ctx.db.prepare("SELECT outcome FROM audit_events WHERE action='import.complete' ORDER BY id").all()).toEqual([
+      { outcome: 'failure' }, { outcome: 'success' },
+    ]);
+  });
+  it('keeps unfinished batches non-terminal and reports a canceled retry as a failed batch', async () => {
+    const ctx = await fixture();
+    const archive = Object.fromEntries(Array.from({ length: 41 }, (_, index) => [`${index}.md`, strToU8('Fact')]));
+    const upload = await ctx.uploads.save(ctx.owner.id, { name: 'states.zip', mediaType: 'application/zip', purpose: 'import', buffer: Buffer.from(zipSync(archive)) });
+    const result = await ctx.ingest.ingest({ userId: ctx.owner.id, kind: 'notion', uploadId: upload.id });
+    ctx.repository.markFailed(result.jobIds[0]!, 'Failure', new Date().toISOString());
+    expect(ctx.ingest.get(result.importId, ctx.owner.id)).toMatchObject({ status: 'queued', error: null, finishedAt: null });
+    ctx.repository.markMerging(result.jobIds[1]!, 'Merge', []);
+    expect(ctx.ingest.get(result.importId, ctx.owner.id)).toMatchObject({ status: 'running', finishedAt: null, jobs: [{ status: 'failed' }, { status: 'running' }] });
+    ctx.repository.markSucceeded(result.jobIds[1]!, new Date().toISOString());
+    expect(ctx.ingest.get(result.importId, ctx.owner.id)).toMatchObject({ status: 'failed', error: 'batch 1/2: Failure' });
+    const retry = ctx.jobs.retry(result.jobIds[0]!);
+    ctx.jobs.cancel(retry.id);
+    expect(ctx.ingest.get(result.importId, ctx.owner.id)).toMatchObject({ status: 'failed', error: 'batch 1/2: canceled' });
+  });
   it('hides owner imports and rejects foreign upload IDs while admins can inspect', async () => {
     const ctx = await fixture();
     const result = await ctx.ingest.ingest({ userId: ctx.owner.id, kind: 'text', text: 'Private source' });
@@ -197,19 +270,18 @@ describe('IngestService with real uploads, SQLite and git', () => {
     const ctx = await fixture();
     const result = await ctx.ingest.ingest({ userId: ctx.owner.id, kind: 'text', text: 'Source' });
     ctx.ingest.onModuleDestroy();
-    ctx.repository.markFailed(result.jobId, 'Integration failed', new Date().toISOString());
-    expect(ctx.ingest.get(result.importId, ctx.owner.id)).toMatchObject({ status: 'failed', error: 'Integration failed' });
+    ctx.repository.markFailed(result.jobIds[0]!, 'Integration failed', new Date().toISOString());
+    expect(ctx.ingest.get(result.importId, ctx.owner.id)).toMatchObject({ status: 'failed', error: 'batch 1/1: Integration failed' });
     const interrupted = newId();
     ctx.imports.create(interrupted, ctx.owner.id, 'text', 'text:source.md');
     ctx.ingest.start();
     expect(ctx.ingest.get(interrupted, ctx.owner.id)).toMatchObject({ status: 'failed', error: 'Engine restarted before source import completed' });
   });
-  it('bounds the integration prompt after normalizing requester instructions', async () => {
+  it('normalizes requester instructions and rejects instructions beyond the limit', async () => {
     const ctx = await fixture();
     const result = await ctx.ingest.ingest({ userId: ctx.owner.id, kind: 'text', text: 'Source', instructions: `${' '.repeat(20_000)}Summarize the concept${' '.repeat(20_000)}` });
-    const job = ctx.jobs.get(result.jobId)!;
+    const job = ctx.jobs.get(result.jobIds[0]!)!;
     expect(job.input).toContain('Requester instructions:\nSummarize the concept');
-    expect(job.input.length).toBeLessThan(2000);
     await expect(ctx.ingest.ingest({ userId: ctx.owner.id, kind: 'text', text: 'Source', instructions: 'x'.repeat(10_001) })).rejects.toMatchObject({ code: 'invalid_import' });
   });
   it('rejects contradictory source kinds rather than dispatching silently', async () => {

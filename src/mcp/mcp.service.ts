@@ -167,7 +167,7 @@ export class McpService {
     });
 
     server.registerTool('ingest_source', {
-      description: 'Editor/admin only. Import a URL, uploaded PDF/file/export, or text through the shared ingestion pipeline. Returns importId and asynchronous jobId; poll get_write_status before claiming completion.',
+      description: 'Editor/admin only. Import a URL, uploaded PDF/file/export, or text through the shared ingestion pipeline. Returns { importId, jobIds } for asynchronous integration jobs; poll get_write_status for every jobId until succeeded or failed, and claim completion only after all jobs succeed.',
       inputSchema: {
         kind: z.enum(['url', 'pdf', 'text', 'obsidian', 'notion', 'file']),
         url: z.string().url().optional(),

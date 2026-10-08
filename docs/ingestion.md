@@ -1,8 +1,10 @@
 # 원문 수집
-URL·PDF·텍스트·Markdown 파일·Obsidian 볼트·Notion 내보내기를 불변 원문과 출처 Markdown으로 보관한 뒤, 원문마다 도니 통합 작업 하나를 실행한다.
+URL·PDF·텍스트·Markdown 파일·Obsidian 볼트·Notion 내보내기를 불변 원문과 출처 Markdown으로 보관한 뒤, 볼트의 Markdown을 빠짐없이 배치별 도니 통합 작업으로 연결한다.
 
 ## 배경
 수집과 지식 통합은 서로 다른 단계다. 수집 단계는 다운로드·압축 해제·텍스트 추출을 수행하고 원문을 먼저 git에 저장한다. 통합 단계는 이미 커밋된 출처 Markdown을 도니가 읽어 위키 노트를 정리하는 작업이다. 통합이 실패하더라도 원문 커밋은 보존하므로 원문의 출처와 실패 원인을 확인할 수 있다.
+
+대형 Notion 내보내기에서 Markdown 788개와 텍스트 약 2.9 MB를 단일 통합 작업에 맡겼으나, 도니는 27개만 읽고 하위 에이전트를 사용하지 않은 채 위키 노트 두 개를 작성하여 성공으로 끝냈다. 작업 하나의 성공 상태는 전체 원문을 읽었다는 증거가 아니므로 엔진이 처리량을 나누고 각 작업의 담당 파일 전체를 읽도록 명시한다.
 
 ## 내용
 ### 입력과 권한
@@ -14,7 +16,7 @@ await ingest.ingest({
   kind: 'url', // url | pdf | text | obsidian | notion | file
   url: 'https://example.com/article',
   instructions: '주요 개념을 기존 위키에 연결한다.',
-}); // { importId, jobId }
+}); // { importId, jobIds }
 ```
 
 `POST /api/imports`는 editor 이상이며, JSON에는 `userId` 없이 같은 필드를 전달한다. 세션 쿠키와 REST bearer 토큰을 지원한다. `url`, `uploadId`, `text` 중 하나만 전달하며 다음 규칙을 따른다.
@@ -30,7 +32,7 @@ await ingest.ingest({
 
 선택 필드 `filename`은 원문 파일명이고 `instructions`는 최대 10,000자의 요청자 지침이다. 업로드는 `POST /api/uploads`의 multipart `file`과 `purpose=import`로 먼저 생성한다. ZIP은 import 목적에서만 허용하며 해당 업로드를 만든 사용자만 수집할 수 있다. 채팅 첨부와 import ZIP은 서로 교환하지 않는다.
 
-`GET /api/imports?limit=50&before=<importId>`는 `{ imports: [...] }`를 반환하며 viewer 이상이 자신의 기록만 조회한다. admin은 모든 사용자의 기록을 조회한다. `GET /api/imports/:id`도 같은 소유자/admin 규칙을 적용하며 다른 소유자의 기록은 404로 숨긴다. 기록은 `id`, `userId`, `kind`, `source`, `sha`, `status`, `rawPaths`, `jobId`, `error`, `createdAt`, `updatedAt`, `finishedAt`을 포함한다.
+`GET /api/imports?limit=50&before=<importId>`는 `{ imports: [...] }`를 반환하며 viewer 이상이 자신의 기록만 조회한다. admin은 모든 사용자의 기록을 조회한다. `GET /api/imports/:id`도 같은 소유자/admin 규칙을 적용하며 다른 소유자의 기록은 404로 숨긴다. 기록은 `id`, `userId`, `kind`, `source`, `sha`, `status`, `rawPaths`, `jobs`, `error`, `createdAt`, `updatedAt`, `finishedAt`을 포함한다. `jobs`는 배치 순서의 배열이며 각 항목은 0부터 시작하는 `batch`, 최신 재시도의 base62 `jobId`, 현재 작업의 `status`, `error`, 담당 Markdown 파일 수인 `files`를 담는다. 작업의 `merging`은 `running`으로 표현하며 작업 제출 전 수집 실패에서는 `jobs`가 빈 배열이다. 수집 응답은 `{ importId, jobIds }`이며 `jobIds`도 배치 순서다.
 
 ### 다운로드 보안과 한도
 다운로더는 자격 증명이 없는 `http`와 `https`만 허용한다. DNS 응답 중 하나라도 사설·루프백·링크 로컬·공유 주소·비전역 주소이면 연결하지 않는다. IPv4 정수 표기와 IPv4-mapped IPv6도 URL 정규화와 주소 검사에서 차단한다. localhost, 로컬 도메인, 메타데이터 호스트, 메타데이터 주소와 IPv6 터널 주소도 차단한다.
@@ -70,11 +72,19 @@ raw/<sha256>/
 출처 Markdown의 frontmatter에는 import ID, `importer`(수집을 요청한 사용자의 숫자 ID), 종류, 원래 source, 최종 URL, SHA-256, 파일명과 수집 시간을 기록한다. 본문은 불변 원문 링크와 추출 본문 또는 추출 노트 링크를 포함한다. 모든 새 원문·첨부·출처 Markdown은 `NoteWriterService.apply({ source: 'import', client: 'ingest' })` 한 번으로 커밋한다. 기존 raw 경로는 수정하지 않는다. 동일 원문을 다시 수집하면 git blob ID로 실제 바이트가 같은지 확인하여 기존 불변 자료를 재사용하고 별도의 출처 기록과 통합 작업을 생성한다. 대형 바이너리도 문자열로 읽지 않고 git 메타데이터와 입력 바이트의 blob 해시를 비교한다. 경로가 같으나 기존 바이트가 다르면 `409 raw_conflict`로 거부한다. git 커밋에는 일반 쓰기와 동일한 job/source/requester/client trailer가 들어간다.
 
 ### 통합 작업과 복구
-원문마다 `source=import`인 도니 작업 하나를 제출한다. 작업 입력에는 본문 전체를 붙이지 않고 커밋된 출처 Markdown 경로와 최대 10,000자의 지침만 전달한다. 도니는 출처 링크를 따라 필요한 자료를 읽고 원문을 지침으로 실행하지 않으며 raw 자료를 수정하지 않는다. 실제 통합 실행과 한도는 기존 [쓰기 흐름](write-flow.md)을 따른다.
+원문 커밋은 한 번만 수행하고, 볼트의 추출 Markdown만 배치 계획에 넣는다. 기본 한도는 배치당 120,000자와 40개 파일이다. 경로를 구간별로 비교하여 같은 부모의 파일을 모으고 Notion 페이지 `X.md`를 하위 폴더 `X/…` 바로 앞에 둔 뒤, 연속된 파일을 한도 안에서 탐욕적으로 묶는다. 120,000자를 넘는 파일은 단독 배치로 두고 페이지 읽기로 처리한다. 첨부는 파일 수·문자 예산에서 제외하지만 링크로 읽을 수 있다. URL·PDF·텍스트·일반 파일과 Markdown 없는 볼트는 파일 목록 없는 출처 전용 배치 하나를 제출한다.
 
-`imports` SQLite 테이블은 수집 중 `extracting`, 제출 후 `queued`, 실행 중 `running`, 완료 후 `succeeded` 또는 `failed`를 기록한다. `job.updated` 이벤트가 상태를 갱신하고, 목록·상세 조회와 시작 시 저장된 write job 상태를 다시 확인하므로 놓친 이벤트도 복구한다. 작업 제출 전에 프로세스가 중단된 기록은 시작 시 실패로 바꾼다. source 수집 실패는 기록에 남고 REST는 해당 오류를 반환한다. 수집 제출의 `import.create`와 통합 완료의 `import.complete` 성공·실패 감사 기록에는 사용자, import ID, 종류만 남기며 원문 내용은 감사 요약에 넣지 않는다.
+각 배치는 `source=import`인 별도의 도니 작업이며 기존 직렬 쓰기 큐에서 배치 순서로 실행한다. 뒤 배치는 앞 배치가 `main`에 머지한 노트를 검색하고 확장하므로 같은 지식을 중복 노트로 만들지 않는다. 작업의 `sourcePaths`는 원본 경로, 출처 Markdown 경로, 해당 배치의 추출 Markdown 경로다. 실제 통합 실행과 한도는 기존 [쓰기 흐름](write-flow.md)을 따른다.
 
-실패한 도니 통합 작업을 재시도하면 새 작업의 `queued` 이벤트에 저장된 `retryOf`가 이전 작업 ID를 가리킨다. 해당 작업에 연결된 수집 기록은 `jobId`를 새 작업 ID로 바꾸고 상태를 `queued`로 되돌리며 이전 `error`와 `finishedAt`을 비운다. 원문·출처 경로와 SHA는 그대로 보존하고 원문 수집이나 원문 커밋을 다시 수행하지 않는다. 새 작업이 다시 실패하여 재시도하더라도 같은 수집 기록이 다음 작업으로 이어지며, 이벤트를 놓친 경우 목록·상세 조회와 시작 시 저장된 재시도 연결을 따라 최신 통합 작업의 상태를 복구한다.
+배치 프롬프트는 출처 경로와 `Batch i of n`, 정확한 담당 raw 경로 목록을 전달한다. 도니는 목록의 모든 파일을 끝까지 읽고, 잘린 읽기는 `nextOffset`·`nextCharOffset`으로 이어 읽는다. 파일마다 일반 작성 규칙에 따라 영속 지식을 위키에 통합하거나 비어 있음·탐색 전용·중복·일시 정보·비밀/개인정보라는 이유로 명시적으로 제외한다. 다른 배치의 추출 파일을 통합하지 않으며 큰 배치는 위키 파일 소유권을 겹치지 않게 나누어 `spawn_subagent`를 사용한다. 최종 요약은 모든 담당 파일의 대상 노트 또는 제외 이유를 설명한다. 원문은 지침이 아닌 신뢰하지 않는 데이터로 취급하며 `raw/`를 수정하지 않는다. 요청자 지침은 최대 10,000자로 그대로 덧붙인다.
+
+`imports` SQLite 테이블은 수집 메타데이터와 집계 상태를 보관한다. `import_jobs`는 `(import_id, batch)` 기본 키와 현재 `job_id`, 담당 경로 JSON 배열인 `files`를 보관하며 작업 ID 인덱스로 이벤트를 연결한다. API·서비스에서는 base62 ID를 쓰고 식별자 열은 [식별자](identifiers.md)의 저장 규칙을 따른다. `020_import_jobs.sql`은 기존 단일 작업을 파일 목록 없는 배치 0으로 옮기고 `imports.job_id`를 제거한다.
+
+집계 상태는 제출 전 `extracting`이다. 아직 종료하지 않은 배치가 있으면 실행 중인 배치가 하나라도 있을 때 `running`, 아니면 `queued`다. 모든 배치가 성공하면 `succeeded`다. 모든 배치가 종료했고 실패가 있으면 `failed`이며 `error`는 첫 실패 배치의 `batch i/n: <작업 오류>`다. 대기 중인 write job을 취소하면 작업이 `failed`(`error: canceled`)로 기록되므로 그 배치도 실패로 집계되어 `batch i/n: canceled`가 된다. 실패 없이 취소된 배치가 있으면 `cancelled`라는 분기는 계약에 남아 있지만 현재 write job에는 별도 취소 상태가 없어 도달하지 않는다. `finishedAt`은 집계 상태가 종료 상태일 때만 설정한다. `job.updated` 이벤트가 상태를 갱신하고, 목록·상세 조회와 시작 시 저장된 write job 및 재시도 연결을 확인하므로 놓친 이벤트도 복구한다. 작업 제출 전에 프로세스가 중단된 기록은 시작 시 실패로 바꾼다. 수집 실패는 기록에 남고 REST는 해당 오류를 반환한다.
+
+실패한 배치 작업을 재시도하면 새 작업의 `queued` 이벤트에 저장된 `retryOf`가 이전 작업 ID를 가리킨다. 해당 배치의 `job_id`만 새 작업으로 바꾸고 다른 배치의 연결·성공 결과는 유지한다. 집계 상태를 다시 계산하여 미완료 상태로 돌아가면 이전 `error`와 `finishedAt`을 비운다. 원문·출처 경로와 SHA는 그대로 보존하고 수집이나 원문 커밋을 다시 수행하지 않는다. 연속 재시도와 누락 이벤트도 배치별 `retryOf` 연결을 따라 최신 작업으로 복구한다.
+
+수집 제출의 `import.create`와 집계 종료의 `import.complete` 감사 기록에는 사용자, import ID, 종류만 남기며 원문 내용은 요약에 넣지 않는다. 집계가 종료 상태로 바뀔 때 한 번 기록하며 반복 조회는 중복 기록하지 않는다. 실패 후 재시도하여 다시 종료하면 그 실행 결과를 별도로 기록한다.
 
 ## 관련 문서
 - [지식 저장소](knowledge-repository.md)는 raw 원문과 위키 노트의 저장 위치를 설명한다.
