@@ -18,7 +18,7 @@ import { DreamingService } from '../dreaming/dreaming.service.js';
 import { DreamRunsRepository } from '../dreaming/dream-runs.repository.js';
 import { EventsModule } from '../events/events.module.js';
 import { KnowledgeRepo } from '../knowledge/repo.js';
-import { LunaService } from '../luna/luna.service.js';
+import { AgentService } from '../agent/agent.service.js';
 import { OpsModule } from '../ops/ops.module.js';
 import { JobsModule } from './jobs.module.js';
 import { NoteWriterService, type NoteOp } from './note-writer.service.js';
@@ -114,7 +114,7 @@ it('requires every touched revert path writable, including previews and rename s
   expect(await f.repo.readFile('wiki/private/moved.md')).toBe('public revision');
 });
 
-it('runs the real Luna tools with requester read/write ACLs, never sending hidden context to the provider', async () => {
+it('runs the real Dony tools with requester read/write ACLs, never sending hidden context to the provider', async () => {
   const f = await fixture([
     { functionCalls: [
       { name: 'list_files', arguments: {} },
@@ -139,9 +139,9 @@ it('runs the real Luna tools with requester read/write ACLs, never sending hidde
 
 it('fails unauthorized model changes and enforces current requester role before touching main', async () => {
   const f = await fixture();
-  const luna = f.module.get(LunaService);
+  const agent = f.module.get(AgentService);
   const head = await f.repo.headSha();
-  vi.spyOn(luna, 'runWrite').mockImplementationOnce(async (_job, wt) => {
+  vi.spyOn(agent, 'runWrite').mockImplementationOnce(async (_job, wt) => {
     await wt.write('wiki/private/secret.md', 'unauthorized output');
     return { summary: 'must fail' };
   });
@@ -149,7 +149,7 @@ it('fails unauthorized model changes and enforces current requester role before 
   const failed = await f.completed(f.jobs.submit({ userId: f.editor.id, source: 'import', input: 'Integrate source' }).id);
   expect(failed).toMatchObject({ status: 'failed', error: expect.stringContaining('Write denied') });
   expect(await f.repo.headSha()).toBe(head);
-  vi.spyOn(luna, 'runWrite').mockImplementationOnce(async (_job, wt) => {
+  vi.spyOn(agent, 'runWrite').mockImplementationOnce(async (_job, wt) => {
     await wt.write('wiki/allowed.md', 'downgraded output');
     f.users.update(f.editor.id, { role: 'viewer' });
     return { summary: 'must fail after role change' };
@@ -163,13 +163,13 @@ it('fails unauthorized model changes and enforces current requester role before 
 
 it('rechecks changed policy after conflict resolution and does not reject unrelated upstream private changes', async () => {
   const f = await fixture();
-  const luna = f.module.get(LunaService);
-  vi.spyOn(luna, 'runWrite').mockImplementationOnce(async (_job, wt) => {
+  const agent = f.module.get(AgentService);
+  vi.spyOn(agent, 'runWrite').mockImplementationOnce(async (_job, wt) => {
     await wt.write('wiki/public.md', 'requester edit');
     await f.apply([{ op: 'put', path: 'wiki/public.md', content: 'upstream edit' }], f.admin.id);
     return { summary: 'resolve concurrent edits' };
   });
-  vi.spyOn(luna, 'resolveConflicts').mockImplementationOnce(async (wt) => {
+  vi.spyOn(agent, 'resolveConflicts').mockImplementationOnce(async (wt) => {
     await wt.write('wiki/public.md', 'resolved content');
     f.acl.create({ prefix: 'wiki/public.md', subjectType: 'everyone', subject: '', access: 'read' }, f.admin);
   });
@@ -177,7 +177,7 @@ it('rechecks changed policy after conflict resolution and does not reject unrela
   const denied = await f.completed(f.jobs.submit({ userId: f.editor.id, source: 'mcp', input: 'Edit' }).id);
   expect(denied.status).toBe('failed');
   expect(await f.repo.readFile('wiki/public.md')).toBe('upstream edit');
-  vi.spyOn(luna, 'runWrite').mockImplementationOnce(async (_job, wt) => {
+  vi.spyOn(agent, 'runWrite').mockImplementationOnce(async (_job, wt) => {
     await wt.write('wiki/allowed.md', 'requester knowledge');
     await f.apply([{ op: 'put', path: 'wiki/private/secret.md', content: 'upstream private edit' }], f.admin.id);
     return { summary: 'allowed request' };
@@ -241,10 +241,10 @@ it('keeps imported raw storage internal but rejects integration without requeste
 
 it('rejects sources revoked during generation and fails when the requester disappears', async () => {
   const f = await fixture();
-  const luna = f.module.get(LunaService);
+  const agent = f.module.get(AgentService);
   const head = await f.repo.headSha();
-  vi.spyOn(luna, 'runWrite').mockImplementationOnce(async (_job, wt, author, user) => {
-    const read = luna.worktreeTools(wt, author, user).find(tool => tool.name === 'read_file')!;
+  vi.spyOn(agent, 'runWrite').mockImplementationOnce(async (_job, wt, author, user) => {
+    const read = agent.worktreeTools(wt, author, user).find(tool => tool.name === 'read_file')!;
     const source = JSON.parse(await read.run({ path: 'wiki/public.md' })) as { content: string };
     await wt.write('wiki/copied.md', source.content);
     f.acl.create({ prefix: 'wiki/public.md', subjectType: 'everyone', subject: '', access: 'none' }, f.admin);
@@ -256,7 +256,7 @@ it('rejects sources revoked during generation and fails when the requester disap
   expect(await f.repo.headSha()).toBe(head);
   expect(await f.repo.readFile('wiki/copied.md')).toBeNull();
   expect(await f.jobs.visible(f.editor, revoked)).toMatchObject({ input: '', summary: null, commits: [] });
-  vi.spyOn(luna, 'runWrite').mockImplementationOnce(async (_job, wt) => {
+  vi.spyOn(agent, 'runWrite').mockImplementationOnce(async (_job, wt) => {
     await wt.write('wiki/deleted-requester.md', 'must not land');
     f.users.delete(f.editor.id);
     return { summary: 'Deleted requester' };

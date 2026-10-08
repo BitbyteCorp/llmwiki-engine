@@ -11,8 +11,10 @@ const envSchema = z.object({
   SESSION_SECRET: optionalText,
   OPENAI_API_KEY: optionalText,
   OPENAI_BASE_URL: z.preprocess((value) => value === '' ? undefined : value, z.url().optional()),
-  LUNA_MODEL: z.string().min(1).default('gpt-6-luna'),
-  LUNA_REASONING_EFFORT: z.string().min(1).default('medium'),
+  LLM_MODELS: z.string().default('gpt-6-luna')
+    .transform(value => value.split(',').map(model => model.trim()).filter(Boolean))
+    .pipe(z.array(z.string()).nonempty()),
+  LLM_REASONING_EFFORT: z.string().min(1).default('medium'),
   EMBEDDING_MODEL: z.string().min(1).default('text-embedding-3-small'),
   EMBEDDING_DIMENSIONS: z.coerce.number().int().positive().default(1536),
   SEARCH_RERANK: z.enum(['off', 'llm']).default('off'),
@@ -22,8 +24,8 @@ const envSchema = z.object({
   GOOGLE_CLIENT_SECRET: optionalText,
   KNOWLEDGE_REPO_URL: optionalText,
   GIT_SSH_KEY_PATH: optionalText,
-  GIT_BOT_NAME: z.string().min(1).default('Luna'),
-  GIT_BOT_EMAIL: z.email().default('luna@llmwiki.local'),
+  GIT_BOT_NAME: z.string().min(1).default('도니'),
+  GIT_BOT_EMAIL: z.email().default('dony@llmwiki.local'),
   DREAM_CRON: z.string().min(1).default('0 3 * * *'),
   TZ_DREAM: z.string().min(1).default('Asia/Seoul'),
   SLACK_WEBHOOK_URL: z.preprocess((value) => value === '' ? undefined : value, z.url().optional()),
@@ -45,7 +47,7 @@ export interface Config {
   nodeEnv: 'development' | 'test' | 'production';
   port: number; publicUrl: string; dataDir: string; sessionSecret: string;
   openaiApiKey?: string; openaiBaseUrl?: string;
-  lunaModel: string; lunaReasoningEffort: string;
+  llmModels: string[]; llmModel: string; llmReasoningEffort: string;
   embeddingModel: string; embeddingDimensions: number;
   searchRerank?: 'off' | 'llm'; searchExpand?: 'off' | 'llm'; indexPollSeconds?: number;
   googleClientId?: string; googleClientSecret?: string;
@@ -65,7 +67,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     nodeEnv: parsed.NODE_ENV, port: parsed.PORT, publicUrl: parsed.PUBLIC_URL,
     dataDir: resolve(parsed.DATA_DIR), sessionSecret: parsed.SESSION_SECRET ?? randomBytes(32).toString('hex'),
     openaiApiKey: parsed.OPENAI_API_KEY, openaiBaseUrl: parsed.OPENAI_BASE_URL,
-    lunaModel: parsed.LUNA_MODEL, lunaReasoningEffort: parsed.LUNA_REASONING_EFFORT,
+    llmModels: parsed.LLM_MODELS, llmModel: parsed.LLM_MODELS[0], llmReasoningEffort: parsed.LLM_REASONING_EFFORT,
     embeddingModel: parsed.EMBEDDING_MODEL, embeddingDimensions: parsed.EMBEDDING_DIMENSIONS,
     searchRerank: parsed.SEARCH_RERANK, searchExpand: parsed.SEARCH_EXPAND, indexPollSeconds: parsed.INDEX_POLL_SECONDS,
     googleClientId: parsed.GOOGLE_CLIENT_ID, googleClientSecret: parsed.GOOGLE_CLIENT_SECRET,

@@ -29,7 +29,7 @@ flowchart TB
         sqlite[SQLite 파일 · 상태와 검색 인덱스]
     end
 
-    openai[OpenAI API · Luna와 임베딩]
+    openai[OpenAI API · 도니와 임베딩]
     google[Google OAuth]
     github[GitHub · 백업]
 
@@ -68,7 +68,7 @@ Nest가 Express 어댑터의 HTTP 서버와 수신 포트를 소유한다. `src/
 Next custom server를 선택한 이유는 Nest의 MVC·DI 구조를 사용하면서도 프로세스와 컨테이너를 하나로 유지하기 위해서다. 별도 Next 서버나 개발용 UI 포트를 두지 않으며 Next의 standalone 출력도 사용하지 않는다. 개발 시에도 한 진입점이 Nest와 Next 개발 모드를 함께 실행한다. 빌드·메타데이터 설정과 컨테이너에 필요한 자산은 [개발 환경과 실행](development.md)에 기록한다.
 
 ### 영속 데이터와 SQLite
-영속 데이터는 Docker에서 `/data` 볼륨 하나에 모으며 로컬 실행에서는 `DATA_DIR`를 사용한다. 볼륨에는 지식 저장소 클론, 작업 워크트리, SQLite 파일과 업로드 원본이 들어간다. SQLite 파일은 사용자·설정·폴더 접근 규칙, 세션, OAuth 클라이언트와 토큰, 작업·꿈꾸기·대화·생성 이벤트·수집·업로드·감사 기록, 검색 인덱스를 담는다. 쓰기 작업 상태의 저장 계약은 [쓰기 흐름](write-flow.md#luna-비동기-쓰기)에, 웹 대화 기록의 저장 계약은 [웹 버전](web.md#대화-기록과-학습)에 기록한다.
+영속 데이터는 Docker에서 `/data` 볼륨 하나에 모으며 로컬 실행에서는 `DATA_DIR`를 사용한다. 볼륨에는 지식 저장소 클론, 작업 워크트리, SQLite 파일과 업로드 원본이 들어간다. SQLite 파일은 사용자·설정·폴더 접근 규칙, 세션, OAuth 클라이언트와 토큰, 작업·꿈꾸기·대화·생성 이벤트·수집·업로드·감사 기록, 검색 인덱스를 담는다. 쓰기 작업 상태의 저장 계약은 [쓰기 흐름](write-flow.md#도니-비동기-쓰기)에, 웹 대화 기록의 저장 계약은 [웹 버전](web.md#대화-기록과-학습)에 기록한다.
 
 예를 들어 OAuth 세션과 검색 인덱스는 서로 다른 용도의 데이터지만, 별도 서비스 없이 같은 SQLite에 저장한다. 지식 파일의 배치와 백업 정책은 [지식 저장소](knowledge-repository.md)에서 다룬다.
 
@@ -88,11 +88,11 @@ sqlite-vec는 검토 시점에 1.0 이전 버전인 0.1.9이며, 근사 최근�
 PostgreSQL로 전환할 조건은 엔진을 여러 인스턴스로 띄워야 할 때, 관리형 DB를 이미 운영하고 있을 때, 청크 수가 수십만 이상으로 커져 전수 비교가 느려질 때다.
 
 ### 외부 의존과 git 실행
-OpenAI API는 [Luna](luna.md)와 임베딩에, Google OAuth는 [인증](auth.md)에, GitHub는 [지식 저장소 백업](knowledge-repository.md)에 사용한다. 컨테이너 이미지에는 git CLI를 포함하고, GitHub push 인증은 SSH 배포 키를 기본값으로 한다.
+OpenAI API는 [도니](agent.md)와 임베딩에, Google OAuth는 [인증](auth.md)에, GitHub는 [지식 저장소 백업](knowledge-repository.md)에 사용한다. 컨테이너 이미지에는 git CLI를 포함하고, GitHub push 인증은 SSH 배포 키를 기본값으로 한다.
 
 ## 관련 문서
 - [지식 저장소](knowledge-repository.md)는 엔진이 관리하는 지식 파일과 백업 정책을 설명한다.
-- [Luna](luna.md)는 엔진의 LLM과 함수 도구 경계를 설명한다.
+- [도니](agent.md)는 엔진의 LLM과 함수 도구 경계를 설명한다.
 - [인증](auth.md), [MCP](mcp.md), [웹 버전](web.md)은 외부 접점을 설명한다.
 - [쓰기 흐름](write-flow.md), [꿈꾸기](dreaming.md), [RAG](rag.md)는 작업과 검색의 상세 동작을 설명한다.
 - [개발 환경과 실행](development.md)은 구현 스택, 모듈별 책임, 환경 변수, 로컬 실행과 Docker 이미지의 빌드·영속 볼륨 구성을 설명한다.

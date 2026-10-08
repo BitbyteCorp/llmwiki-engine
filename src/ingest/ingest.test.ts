@@ -19,7 +19,7 @@ import { NoteWriterService } from '../jobs/note-writer.service.js';
 import { WriteJobsRepository } from '../jobs/write-jobs.repository.js';
 import { WriteJobsService } from '../jobs/write-jobs.service.js';
 import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
-import type { LunaService } from '../luna/luna.service.js';
+import type { AgentService } from '../agent/agent.service.js';
 import type { IndexerService } from '../rag/indexer.service.js';
 import { UploadsService } from '../uploads/uploads.service.js';
 import { ImportsRepository } from './imports.repository.js';
@@ -40,26 +40,26 @@ async function fixture() {
   const repository = new WriteJobsRepository(db);
   const indexer = { syncToHead: vi.fn(async () => {}) } as unknown as IndexerService;
   const observed: string[] = [];
-  const luna = { runWrite: vi.fn(async (job: { input: string }, wt: Worktree) => {
+  const agent = { runWrite: vi.fn(async (job: { input: string }, wt: Worktree) => {
     const path = job.input.match(/at (raw\/[^\s]+\.md)\./)![1]!;
     const source = await wt.read(path);
     observed.push(source!);
     await wt.write('wiki/imported.md', `# Integrated knowledge\n[Source](../${path})\n`);
     return { summary: 'Integrate imported knowledge' };
-  }), resolveConflicts: vi.fn() } as unknown as LunaService;
+  }), resolveConflicts: vi.fn() } as unknown as AgentService;
   const acl = new AclService(db, users, new AuditService(db));
   const writer = new NoteWriterService(repository, repo, users, indexer, events, log, acl);
-  const jobs = new WriteJobsService(repository, luna, indexer, repo, users, log, events, acl);
+  const jobs = new WriteJobsService(repository, agent, indexer, repo, users, log, events, acl);
   const uploads = new UploadsService(config, db, writer, log);
   const imports = new ImportsRepository(db);
   const ingest = new IngestService(imports, uploads, writer, jobs, repository, repo, events, new AuditService(db));
   ingest.start();
   fixtures.push({ dir, db, jobs, ingest });
-  return { dir, db, repo, owner, other, jobs, uploads, ingest, imports, repository, luna, observed, events, writer };
+  return { dir, db, repo, owner, other, jobs, uploads, ingest, imports, repository, agent, observed, events, writer };
 }
 
 describe('IngestService with real uploads, SQLite and git', () => {
-  it('commits immutable original and provenance atomically, then integrates once through Luna', async () => {
+  it('commits immutable original and provenance atomically, then integrates once through Dony', async () => {
     const ctx = await fixture();
     const before = await ctx.repo.headSha();
     const result = await ctx.ingest.ingest({ userId: ctx.owner.id, kind: 'text', text: '# Source\nDurable knowledge', filename: 'knowledge.md', instructions: 'Explain the key idea' });
@@ -77,7 +77,7 @@ describe('IngestService with real uploads, SQLite and git', () => {
     const { stdout } = await git('git', ['rev-list', '--count', `${before}..main`], { cwd: join(ctx.dir, 'knowledge') });
     expect(stdout.trim()).toBe('1');
     const queued = ctx.jobs.get(result.jobId)!;
-    expect(queued.kind).toBe('luna');
+    expect(queued.kind).toBe('agent');
     expect(queued.source).toBe('import');
     expect(queued.input).toContain(item.rawPaths[1]);
     expect(queued.input).toContain('Explain the key idea');
@@ -85,8 +85,8 @@ describe('IngestService with real uploads, SQLite and git', () => {
     await vi.waitFor(() => expect(ctx.ingest.get(result.importId, ctx.owner.id).status).toBe('succeeded'), { timeout: 10_000 });
     expect(ctx.observed[0]).toContain('Durable knowledge');
     expect(await ctx.repo.readFile('wiki/imported.md')).toContain(item.rawPaths[1]);
-    expect(ctx.luna.runWrite).toHaveBeenCalledTimes(1);
-    expect(ctx.jobs.list().filter((job) => job.kind === 'luna')).toHaveLength(1);
+    expect(ctx.agent.runWrite).toHaveBeenCalledTimes(1);
+    expect(ctx.jobs.list().filter((job) => job.kind === 'agent')).toHaveLength(1);
   });
   it('reuses identical immutable originals without rewriting and preserves each provenance record', async () => {
     const ctx = await fixture();
@@ -110,7 +110,7 @@ describe('IngestService with real uploads, SQLite and git', () => {
     await ctx.writer.apply({ userId: ctx.owner.id, source: 'import', baseSha: await ctx.repo.headSha(), ops: [{ op: 'put', path, content: 'Wrong bytes', create: true }] });
     await expect(ctx.ingest.ingest({ userId: ctx.owner.id, kind: 'text', text })).rejects.toMatchObject({ code: 'raw_conflict', status: 409 });
     expect(await ctx.repo.readFile(path)).toBe('Wrong bytes');
-    expect(ctx.jobs.list().filter((job) => job.kind === 'luna')).toEqual([]);
+    expect(ctx.jobs.list().filter((job) => job.kind === 'agent')).toEqual([]);
     expect(ctx.ingest.list(ctx.owner.id)[0]).toMatchObject({ status: 'failed', jobId: null });
   });
   it.each(['obsidian', 'notion'] as const)('preserves %s ZIP bytes and extracted attachments in one raw commit', async (kind) => {

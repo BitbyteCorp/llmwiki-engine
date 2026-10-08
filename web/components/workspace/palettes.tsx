@@ -6,7 +6,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useRouter } from 'next/navigation'
 import { useTheme } from 'next-themes'
 import { api, type Note } from '@/lib/api'
-import { askLuna, openChat } from '@/lib/chat-context'
+import { askAgent, openChat } from '@/lib/chat-context'
 import { ErrorNotice, Loading } from '@/components/common'
 import { useOpsCommands } from '@/components/admin/ops-commands'
 import { confirmEditorLeave, dispatchEditorCommand, getEditorStatus, type EditorCommand } from '@/components/editor/state'
@@ -81,7 +81,7 @@ export function Palettes({ mode, setMode, admin, selectPanel, toggleSidebar, tog
       { id: 'editor-rename', command: 'rename', label: '이름 바꾸기', keywords: ['Rename Move Note'], mutating: true },
       { id: 'editor-delete', command: 'delete', label: '삭제', keywords: ['Delete Note'], mutating: true },
       { id: 'editor-blame', command: 'blame', label: 'Blame 토글', keywords: ['Blame Author History'], mutating: false },
-      { id: 'editor-ask', command: 'ask', label: 'Luna에게 묻기', keywords: ['Ask Luna'], mutating: false },
+      { id: 'editor-ask', command: 'ask', label: '도니에게 묻기', keywords: ['Ask Dony', '도니'], mutating: false },
     ] satisfies { id: string; command: EditorCommand; label: string; keywords: string[]; mutating: boolean }[])
       .filter(command => (!command.mutating || me.data?.user.role === 'editor' || me.data?.user.role === 'admin') && (command.command === 'new' || activePath))
       .map(command => ({ ...command, action: () => dispatchEditorCommand(command.command === 'edit' && (getEditorStatus(activePath)?.mode === 'edit' || getEditorStatus(activePath)?.mode === 'split') ? 'view' : command.command, activePath || undefined, command.command === 'new' ? undefined : { exactPath: true }) })),
@@ -93,12 +93,12 @@ export function Palettes({ mode, setMode, admin, selectPanel, toggleSidebar, tog
       },
     }] : []),
     ...panelRegistry.filter(panel => !panel.admin || admin).map(panel => ({ id: panel.id, label: `${panel.label} 열기`, keywords: [panel.key], action: () => selectPanel(panel.id) })),
-    { id: 'chat-open', label: 'Luna 대화 열기', keywords: ['Open Chat Luna'], action: () => openChat() },
-    { id: 'chat-new', label: '새 대화', keywords: ['New Chat Luna'], action: () => openChat({ newThread: true }) },
+    { id: 'chat-open', label: '도니 대화 열기', keywords: ['Open Chat Dony', '도니'], action: () => openChat() },
+    { id: 'chat-new', label: '새 대화', keywords: ['New Chat Dony', '도니'], action: () => openChat({ newThread: true }) },
     { id: 'chat-search', label: '대화 검색', keywords: ['Search Conversations Messages'], action: () => openChat({ focusSearch: true }) },
-    ...(activePath ? [{ id: 'chat-note', label: '현재 노트로 대화 시작', keywords: ['Ask Luna Current Note Context'], action: () => {
+    ...(activePath ? [{ id: 'chat-note', label: '현재 노트로 대화 시작', keywords: ['Ask Dony Current Note Context', '도니'], action: () => {
       const note = workspace.noteInfo?.path === activePath ? workspace.noteInfo : queryClient.getQueryData<Note>(['notes/content', activePath])
-      askLuna({ notePath: activePath, ...(note ? { ref: note.updatedSha } : {}) })
+      askAgent({ notePath: activePath, ...(note ? { ref: note.updatedSha } : {}) })
     } }] : []),
     { id: 'graph-open', label: '그래프 열기', keywords: ['Graph'], action: () => router.push('/graph') },
     { id: 'tags-view', label: '태그 보기', keywords: ['Tags'], action: () => router.push('/tags') },

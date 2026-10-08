@@ -222,7 +222,7 @@ export class ActivityService {
           }
         }
         const sourceRedacted = user.role !== 'admin' &&
-          ((row.kind === 'luna' && hasRules && !sourceProvenanceComplete) ||
+          ((row.kind === 'agent' && hasRules && !sourceProvenanceComplete) ||
             [...sourcePaths].some((path) => !this.acl.canRead(user, path)));
         const redacted = sourceRedacted || readable.length !== paths.length ||
           (!paths.length && user.role !== 'admin' && hasRules);

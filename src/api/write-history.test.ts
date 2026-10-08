@@ -29,7 +29,7 @@ import type { JobEvent, WriteJob } from '../jobs/write-job.types.js';
 import { WriteJobsRepository } from '../jobs/write-jobs.repository.js';
 import { WriteJobsService } from '../jobs/write-jobs.service.js';
 import { KnowledgeRepo, type BlameRange, type CommitInfo, type FileChange } from '../knowledge/repo.js';
-import { LunaService } from '../luna/luna.service.js';
+import { AgentService } from '../agent/agent.service.js';
 import { IndexerService } from '../rag/indexer.service.js';
 import { HistoryController } from './history.controller.js';
 import { HistoryService } from './history.service.js';
@@ -58,7 +58,7 @@ describe('write and history HTTP acceptance with real Git and SQLite', () => {
   let other: User;
   let admin: User;
   let cookies: Map<number, string>;
-  let luna: { runWrite: Mock<LunaService['runWrite']>; resolveConflicts: Mock<LunaService['resolveConflicts']> };
+  let agent: { runWrite: Mock<AgentService['runWrite']>; resolveConflicts: Mock<AgentService['resolveConflicts']> };
 
   beforeEach(async () => {
     directory = await mkdtemp(join(tmpdir(), 'llmwiki-write-history-http-'));
@@ -67,9 +67,9 @@ describe('write and history HTTP acceptance with real Git and SQLite', () => {
     db = openDb(join(directory, 'wiki.db'));
     runMigrations(db);
     repo = await KnowledgeRepo.open(config, log);
-    luna = {
-      runWrite: vi.fn<LunaService['runWrite']>(async () => { throw new Error('Unexpected Luna call in direct-write test'); }),
-      resolveConflicts: vi.fn<LunaService['resolveConflicts']>(async () => { throw new Error('Unexpected Luna conflict-resolution call'); }),
+    agent = {
+      runWrite: vi.fn<AgentService['runWrite']>(async () => { throw new Error('Unexpected Dony call in direct-write test'); }),
+      resolveConflicts: vi.fn<AgentService['resolveConflicts']>(async () => { throw new Error('Unexpected Dony conflict-resolution call'); }),
     };
     const module = await Test.createTestingModule({
       controllers: [NotesController, HistoryController, JobsController],
@@ -81,7 +81,7 @@ describe('write and history HTTP acceptance with real Git and SQLite', () => {
         { provide: DB, useValue: db },
         { provide: LOGGER, useValue: log },
         { provide: KnowledgeRepo, useValue: repo },
-        { provide: LunaService, useValue: luna },
+        { provide: AgentService, useValue: agent },
         { provide: IndexerService, useValue: { syncToHead: async () => ({ indexedSha: await repo.headSha(), changedFiles: 1 }) } },
       ],
     }).compile();
@@ -188,7 +188,7 @@ describe('write and history HTTP acceptance with real Git and SQLite', () => {
     const retried = await json<{ job: WriteJob }>(await request(`/jobs/${failed.id}/retry`, { method: 'POST' }), 201);
     expect(retried.job.id).not.toBe(failed.id);
     expect(retried.job).toMatchObject({
-      userId: editor.id, input: 'Retry the original source', status: 'queued', kind: 'luna',
+      userId: editor.id, input: 'Retry the original source', status: 'queued', kind: 'agent',
       source: 'chat', client: 'conversation-editor', error: null,
     });
     const detail = await json<JobDetail>(await request(`/jobs/${retried.job.id}`));
@@ -309,13 +309,13 @@ describe('write and history HTTP acceptance with real Git and SQLite', () => {
   it('restricts jobs to their owner or admin, exposes conflict events and hides cross-owner jobs in commit details', async () => {
     const baseSha = (await note('index.md')).updatedSha;
     const seed = await put('wiki/shared.md', 'Original claim\n', baseSha, true);
-    luna.runWrite.mockImplementation(async (_job, wt) => {
-      await wt.write('wiki/shared.md', 'Luna claim\n');
+    agent.runWrite.mockImplementation(async (_job, wt) => {
+      await wt.write('wiki/shared.md', 'Dony claim\n');
       await put('wiki/shared.md', 'Concurrent claim\n', seed.mergeSha, false, other);
       return { summary: 'Resolve knowledge claim' };
     });
-    luna.resolveConflicts.mockImplementation(async (wt) => {
-      await wt.write('wiki/shared.md', 'Luna claim and concurrent claim\n');
+    agent.resolveConflicts.mockImplementation(async (wt) => {
+      await wt.write('wiki/shared.md', 'Dony claim and concurrent claim\n');
     });
     const submitted = jobs.submit({ userId: editor.id, input: 'Private source text', source: 'chat', client: 'chat' });
     jobs.start();
@@ -327,7 +327,7 @@ describe('write and history HTTP acceptance with real Git and SQLite', () => {
     await jobs.stop();
     completed = await json<JobDetail>(await request(`/jobs/${submitted.id}`));
     expect(completed.job).toMatchObject({
-      id: submitted.id, userId: editor.id, kind: 'luna', source: 'chat', client: 'chat',
+      id: submitted.id, userId: editor.id, kind: 'agent', source: 'chat', client: 'chat',
       conflicts: ['wiki/shared.md'], input: 'Private source text',
     });
     expect(completed.user).toEqual({ email: editor.email, name: editor.name });
@@ -335,7 +335,7 @@ describe('write and history HTTP acceptance with real Git and SQLite', () => {
       expect.objectContaining({ phase: 'resolving_conflict', at: expect.any(String), detail: { files: ['wiki/shared.md'] } }),
       expect.objectContaining({ phase: 'done', at: expect.any(String) }),
     ]));
-    expect((await note('wiki/shared.md')).content).toBe('Luna claim and concurrent claim\n');
+    expect((await note('wiki/shared.md')).content).toBe('Dony claim and concurrent claim\n');
     const adminDetail = await json<JobDetail>(await request(`/jobs/${submitted.id}`, {}, admin));
     expect(adminDetail).toEqual(completed);
     await error(await request(`/jobs/${submitted.id}`, {}, other), 404, 'not_found');

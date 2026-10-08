@@ -8,7 +8,7 @@ import { History, Star, Pencil, Save, MessageCircle, GitCommitHorizontal } from 
 import { api, ApiError } from '@/lib/api'
 import type { Note } from '@/lib/api'
 import { onLiveEvent } from '@/lib/events'
-import { askLuna } from '@/lib/chat-context'
+import { askAgent } from '@/lib/chat-context'
 import { EmptyState, ErrorNotice, Loading, noteHref } from '@/components/common'
 import { Markdown } from '@/components/markdown'
 import { Button } from '@/components/ui/button'
@@ -184,10 +184,10 @@ export function NoteReader({ path, split = false, revisionRef, className }: { pa
     } finally { latest.current.busy = false }
   }
   const actions = useRef({ write, discard, canEdit, revisionRef, ask: (text?: string) => {
-    if (confirmEditorLeave()) askLuna({ notePath: path, ref: revisionRef, selection: text })
+    if (confirmEditorLeave()) askAgent({ notePath: path, ref: revisionRef, selection: text })
   } })
   actions.current = { write, discard, canEdit, revisionRef, ask: (text?: string) => {
-    if (confirmEditorLeave()) askLuna({ notePath: path, ref: revisionRef, selection: text })
+    if (confirmEditorLeave()) askAgent({ notePath: path, ref: revisionRef, selection: text })
   } }
   useEffect(() => {
     const command = (event: Event) => {
@@ -320,7 +320,7 @@ export function NoteReader({ path, split = false, revisionRef, className }: { pa
         {mode !== 'edit' && <article className="min-w-0 space-y-5"><Properties frontmatter={frontmatter} /><Outline contentRef={contentRef} scrollerRef={scrollerRef} revision={`${path}:${note.data.updatedSha}:${mode === 'split' ? draft : ''}`} /><div ref={contentRef} onMouseUp={captureSelection} onKeyUp={captureSelection}>{preview.trim() ? <Markdown content={preview} path={path} split={split} ref={revisionRef ? note.data.updatedSha : baseline.current?.updatedSha ?? note.data.updatedSha} /> : <EmptyState title="본문이 없는 노트입니다" />}</div></article>}
       </div>)}
     </div>
-    {selection && <Button className="fixed z-40 shadow-lg" style={{ top: selection.top, left: selection.left }} size="sm" disabled={busy} onMouseDown={event => event.preventDefault()} onClick={() => actions.current.ask(selection.text)}><MessageCircle aria-hidden="true" />Luna에게 묻기</Button>}
+    {selection && <Button className="fixed z-40 shadow-lg" style={{ top: selection.top, left: selection.left }} size="sm" disabled={busy} onMouseDown={event => event.preventDefault()} onClick={() => actions.current.ask(selection.text)}><MessageCircle aria-hidden="true" />도니에게 묻기</Button>}
     <ReaderDialog open={Boolean(conflict)} onClose={() => { if (!busy) { setConflict(null); setPhase('idle') } }} title="노트 변경사항 충돌" description="편집을 시작한 버전, 내 변경사항, 저장소의 최신 변경사항을 비교한 뒤 선택하세요.">
       {error != null && <ErrorNotice error={error} />}
       {conflict && <><section><h3 className="mb-2 font-medium">기준 버전 → 내 변경사항</h3><DiffView before={conflict.base.content} after={conflict.mine} mode="split" /></section><section><h3 className="mb-2 font-medium">기준 버전 → 최신 저장소 버전</h3><DiffView before={conflict.base.content} after={conflict.theirs.content} mode="split" /></section><div className="flex flex-wrap gap-2"><Button variant="outline" disabled={busy} onClick={() => { if (!window.confirm('내 변경사항을 버리고 최신 버전을 불러오시겠습니까?')) return; acceptSnapshot(conflict.theirs); setPhase('idle'); notify({ title: '최신 버전을 불러왔습니다.' }) }}>최신 버전 불러오기</Button><Button variant="outline" onClick={() => { void navigator.clipboard.writeText(conflict.mine).then(() => notify({ title: '내 변경사항을 복사했습니다.', tone: 'success' })).catch(setError) }}>내 내용 복사</Button><Button variant="destructive" disabled={busy || !canEdit || Boolean(revisionRef)} onClick={() => { if (!window.confirm('최신 저장소 내용을 내 변경사항으로 덮어쓰시겠습니까? 다른 사용자의 변경사항이 대체됩니다.')) return; void write(conflict.mine, conflict.theirs) }}>내 내용으로 덮어쓰기</Button></div></>}

@@ -10,7 +10,7 @@ import type { AclUser } from '../acl/acl.service.js';
 import { LOGGER } from '../common/tokens.js';
 import { EventsService } from '../events/events.service.js';
 import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
-import { LunaService } from '../luna/luna.service.js';
+import { AgentService } from '../agent/agent.service.js';
 import { IndexerService } from '../rag/indexer.service.js';
 import type { JobEvent, JobPhase, JobSource, WriteJob } from './write-job.types.js';
 import { NoteWriterService } from './note-writer.service.js';
@@ -25,7 +25,7 @@ export class WriteJobsService implements OnApplicationShutdown {
 
   constructor(
     private readonly repository: WriteJobsRepository,
-    private readonly luna: LunaService,
+    private readonly agent: AgentService,
     private readonly indexer: IndexerService,
     private readonly repo: KnowledgeRepo,
     private readonly users: UsersService,
@@ -52,7 +52,7 @@ export class WriteJobsService implements OnApplicationShutdown {
     const job = this.get(id);
     if (!job) throw new ApiError(404, 'not_found', 'Write job not found');
     if (job.status !== 'failed') throw new ApiError(409, 'job_not_retryable', 'Only failed jobs can be retried');
-    if (job.kind !== 'luna') {
+    if (job.kind !== 'agent') {
       if (!this.writer) throw new Error('Direct writer is not configured');
       return this.writer.retry(job);
     }
@@ -90,13 +90,13 @@ export class WriteJobsService implements OnApplicationShutdown {
     const policy = this.acl.policyKey(user);
     const paths = new Set(job.conflicts);
     for (const path of this.sourcePaths(job.id)) paths.add(path);
-    let hidden = job.kind === 'luna' && this.acl.list().length > 0 && !this.repository.events(job.id).some(event => event.phase === 'queued' && event.detail?.sourceProvenanceComplete === true);
+    let hidden = job.kind === 'agent' && this.acl.list().length > 0 && !this.repository.events(job.id).some(event => event.phase === 'queued' && event.detail?.sourceProvenanceComplete === true);
     for (const sha of new Set([...job.commits, ...(job.mergeSha ? [job.mergeSha] : [])])) {
       try {
         await this.collectCommitPaths(sha, paths);
       } catch { hidden = true; }
     }
-    if (job.kind !== 'luna') {
+    if (job.kind !== 'agent') {
       try {
         const input = JSON.parse(job.input) as { ops?: Array<{ path?: string; from?: string; to?: string }>; paths?: string[]; sha?: string };
         for (const op of input.ops ?? []) for (const path of [op.path, op.from, op.to]) if (path) paths.add(path);
@@ -211,7 +211,7 @@ export class WriteJobsService implements OnApplicationShutdown {
   }
 
   private async run(job: WriteJob): Promise<void> {
-    const { repository, repo, luna, indexer, log } = this;
+    const { repository, repo, agent, indexer, log } = this;
     let wt: Worktree | undefined;
     repository.markRunning(job.id, new Date().toISOString());
     this.phase(job.id, 'preparing');
@@ -227,7 +227,7 @@ export class WriteJobsService implements OnApplicationShutdown {
       wt.setCommitMetadata({ jobId: job.id, source: job.source, requester: user.email, ...(job.client === null ? {} : { client: job.client }) });
       wt.onPhase = (phase, detail) => this.phase(job.id, phase, detail);
       this.phase(job.id, 'editing');
-      const { summary } = await luna.runWrite(this.get(job.id)!, wt, author, user);
+      const { summary } = await agent.runWrite(this.get(job.id)!, wt, author, user);
       const subject = summary.trim().split(/\r?\n/, 1)[0]?.slice(0, 200) || 'Update knowledge';
       this.phase(job.id, 'committing');
       await wt.commit(subject, author);
@@ -246,7 +246,7 @@ export class WriteJobsService implements OnApplicationShutdown {
           for (const path of merge.conflicts) this.acl.assertWrite(resolvingUser, path);
           repository.recordConflicts(job.id, merge.conflicts);
           this.phase(job.id, 'resolving_conflict', { files: merge.conflicts });
-          await luna.resolveConflicts(activeWorktree, merge.conflicts, resolvingUser);
+          await agent.resolveConflicts(activeWorktree, merge.conflicts, resolvingUser);
           await this.verifyResolution(activeWorktree, merge.conflicts);
           await activeWorktree.finishMerge(author);
         }
@@ -266,7 +266,7 @@ export class WriteJobsService implements OnApplicationShutdown {
       });
       repository.markSucceeded(job.id, new Date().toISOString());
     } catch (error) {
-      // Preserve Luna's commits for diagnosis even if it threw before producing a summary.
+      // Preserve Dony's commits for diagnosis even if it threw before producing a summary.
       if (wt) {
         try {
           repository.recordCommits(job.id, await this.commits(wt));

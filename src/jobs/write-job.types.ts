@@ -1,5 +1,5 @@
 export type JobSource = 'mcp' | 'web' | 'chat' | 'dreaming' | 'import' | 'revert';
-export type JobKind = 'luna' | 'direct' | 'revert';
+export type JobKind = 'agent' | 'direct' | 'revert';
 export type JobPhase = 'queued' | 'preparing' | 'editing' | 'committing' | 'merging' | 'resolving_conflict' | 'indexing' | 'cleanup' | 'done' | 'failed';
 export interface JobEvent {
   phase: JobPhase;

@@ -24,7 +24,7 @@ function toJob(row: JobRow): WriteJob {
 export class WriteJobsRepository {
   constructor(@Inject(DB) private readonly db: Db) {}
 
-  enqueue(id: string, userId: number, input: string, createdAt: string, source: JobSource, client?: string, kind: JobKind = 'luna'): void {
+  enqueue(id: string, userId: number, input: string, createdAt: string, source: JobSource, client?: string, kind: JobKind = 'agent'): void {
     this.db.prepare(`
       INSERT INTO write_jobs (id, user_id, kind, source, client, input, status, created_at)
       VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)
@@ -93,12 +93,12 @@ export class WriteJobsRepository {
 
   next(): WriteJob | null {
     const row = this.db.prepare(`
-      SELECT * FROM write_jobs WHERE status = 'queued' AND kind = 'luna' ORDER BY created_at, rowid LIMIT 1
+      SELECT * FROM write_jobs WHERE status = 'queued' AND kind = 'agent' ORDER BY created_at, rowid LIMIT 1
     `).get() as JobRow | undefined;
     return row ? toJob(row) : null;
   }
   queuedDirect(): WriteJob[] {
-    return (this.db.prepare("SELECT * FROM write_jobs WHERE status = 'queued' AND kind <> 'luna' ORDER BY created_at, rowid").all() as JobRow[]).map(toJob);
+    return (this.db.prepare("SELECT * FROM write_jobs WHERE status = 'queued' AND kind <> 'agent' ORDER BY created_at, rowid").all() as JobRow[]).map(toJob);
   }
 
   markRunning(id: string, startedAt: string): void {

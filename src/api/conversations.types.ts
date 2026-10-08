@@ -1,4 +1,4 @@
-import type { Citation } from '../luna/luna.types.js';
+import type { Citation } from '../agent/agent.types.js';
 
 export interface Conversation {
   id: string;

@@ -28,7 +28,7 @@ import { openDb, runMigrations } from '../src/db/index.js';
 import { EventsService } from '../src/events/events.service.js';
 import type { EventAudience, WikiEvent } from '../src/events/events.types.js';
 import { KnowledgeRepo } from '../src/knowledge/repo.js';
-import { LunaService } from '../src/luna/luna.service.js';
+import { AgentService } from '../src/agent/agent.service.js';
 import { SearchService } from '../src/rag/search.service.js';
 import { UploadsService } from '../src/uploads/uploads.service.js';
 import { startFakeOpenAI, type FakeScript } from './fake-openai.js';
@@ -72,7 +72,7 @@ async function fixture(script: FakeScript, authorRole: 'viewer' | 'editor' = 'vi
   disposals.push(async () => db.close());
   runMigrations(db);
   const acl = new AclService(db, new UsersService(new UsersRepository(db)), new AuditService(db));
-  const luna = new LunaService(config, log, repo, { search: async () => [] } as unknown as SearchService, acl);
+  const agent = new AgentService(config, log, repo, { search: async () => [] } as unknown as SearchService, acl);
   const users = new Map<number, User>([1, 2, 3, 4].map(id => [id, {
     id, email: `user${id}@example.test`, name: `User ${id}`, role: id === 4 ? 'admin' : id === 1 ? authorRole : 'viewer',
     createdAt: '2026-10-07T00:00:00.000Z', lastLoginAt: null,
@@ -87,7 +87,7 @@ async function fixture(script: FakeScript, authorRole: 'viewer' | 'editor' = 'vi
     providers: [ConversationsRepository, ConversationsService, GenerationsService, SessionGuard, RolesGuard,
       { provide: DB, useValue: db }, { provide: LOGGER, useValue: log },
       { provide: AclService, useValue: acl },
-      { provide: LunaService, useValue: luna }, { provide: EventsService, useValue: events },
+      { provide: AgentService, useValue: agent }, { provide: EventsService, useValue: events },
       { provide: UploadsService, useValue: { parts: async () => [], get: async () => { throw new Error('No upload in this fixture'); } } },
       { provide: ApiTokensService, useValue: { authenticate: () => null } },
       { provide: SessionsService, useValue: {
@@ -128,7 +128,7 @@ async function fixture(script: FakeScript, authorRole: 'viewer' | 'editor' = 'vi
     return result;
   }
   async function send(id: string, input: SubmitMessage) { return stream(`/conversations/${id}/messages`, 'POST', input); }
-  return { request, create, detail, stream, send, luna, fake, repo, published };
+  return { request, create, detail, stream, send, agent, fake, repo, published };
 }
 async function expectError(response: Response, status: number, code: string) {
   expect(response.status).toBe(status);
@@ -167,7 +167,7 @@ describe('conversation consumer contract', () => {
   it('joins concurrent sends with the same clientId while rejecting a different turn during generation', async () => {
     const f = await fixture([]);
     const completion = Promise.withResolvers<void>();
-    vi.spyOn(f.luna, 'answer').mockImplementationOnce(async (_messages, delta) => {
+    vi.spyOn(f.agent, 'answer').mockImplementationOnce(async (_messages, delta) => {
       delta('Partial');
       await completion.promise;
       return { text: 'Completed once', citations: [] };
@@ -197,7 +197,7 @@ describe('conversation consumer contract', () => {
     const f = await fixture([]);
     const started = Promise.withResolvers<void>();
     const completion = Promise.withResolvers<void>();
-    vi.spyOn(f.luna, 'answer').mockImplementationOnce(async (_messages, delta) => {
+    vi.spyOn(f.agent, 'answer').mockImplementationOnce(async (_messages, delta) => {
       delta('Partial');
       started.resolve();
       await completion.promise;
@@ -223,7 +223,7 @@ describe('conversation consumer contract', () => {
 
   it('keeps a failed partial answer and retries its user turn without duplication or leaking provider errors', async () => {
     const f = await fixture(['Recovered answer']);
-    vi.spyOn(f.luna, 'answer').mockImplementationOnce(async (_messages, delta) => {
+    vi.spyOn(f.agent, 'answer').mockImplementationOnce(async (_messages, delta) => {
       delta('Partial fact');
       throw new Error('private provider credential');
     });

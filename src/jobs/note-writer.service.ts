@@ -72,7 +72,7 @@ export class NoteWriterService {
 
   private launch(job: WriteJob): void {
     if (this.pending.has(job.id)) return;
-    // Direct retries use the merge lock immediately, never the Luna queue.
+    // Direct retries use the merge lock immediately, never the Dony queue.
     const execution = Promise.resolve().then(() => this.replay(job)).catch((error: unknown) => {
       if (this.repository.get(job.id)?.status !== 'failed') {
         this.repository.markFailed(job.id, error instanceof Error ? error.message : String(error), new Date().toISOString());

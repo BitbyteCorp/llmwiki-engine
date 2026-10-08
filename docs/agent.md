@@ -1,21 +1,21 @@
-# Luna
-Luna는 엔진에서 지식 쓰기, 충돌 해결, 꿈꾸기, 웹 질의응답을 수행하는 OpenAI의 GPT-6 Luna 모델이다.
+# 도니
+도니는 엔진에서 지식 쓰기·충돌 해결·꿈꾸기·웹 질의응답을 수행하는 에이전트이며, 사용하는 OpenAI 모델은 `LLM_MODELS`로 고른다(기본 `gpt-6-luna`).
 
 ## 배경
-엔진은 사용자가 보낸 지식을 문서에 반영하고, 기존 지식과의 관계를 정리하며, 지식을 근거로 질문에 답해야 한다. 이 작업을 맡는 LLM을 Luna라고 부른다. Luna가 파일을 편집하는 경계는 엔진이 통제해야 하며, 검색에 필요한 임베딩은 Luna의 지원 API와 구분해야 한다.
+엔진은 사용자가 보낸 지식을 문서에 반영하고, 기존 지식과의 관계를 정리하며, 지식을 근거로 질문에 답해야 한다. Luna는 모델 이름이지 에이전트 이름이 아니므로 에이전트를 도니로, 코드 식별자와 기존 `luna` 작업 종류를 `agent`로 분리했다. 도니가 파일을 편집하는 경계는 엔진이 통제하며, 검색에 필요한 임베딩은 응답 모델과 별도로 선택한다.
 
 ## 내용
 ### Nest 모듈과 의존성
-`LunaModule`은 `KnowledgeModule`과 `RagModule`을 가져오고, `luna.service.ts`의 `LunaService`를 제공하며 다른 모듈에 내보낸다. 서비스는 설정·로그를 공용 `CONFIG`, `LOGGER` 토큰으로 주입받고, `KnowledgeRepo`와 `SearchService`를 클래스 타입으로 주입받는다.
+`src/agent/`의 `AgentModule`은 `KnowledgeModule`과 `RagModule`을 가져오고, `agent.service.ts`의 `AgentService`를 제공하며 다른 모듈에 내보낸다. 서비스는 설정·로그를 공용 `CONFIG`, `LOGGER` 토큰으로 주입받고, `KnowledgeRepo`와 `SearchService`를 클래스 타입으로 주입받는다.
 
-에이전트 도구와 실행 옵션의 형식은 `luna.types.ts`에 두며, 작업 워크트리 도구는 `worktree.ts`, 쓰기와 충돌 해결의 절차는 `writes.ts`에 둔다. 서비스는 에이전트 실행·문맥 로딩·쓰기·충돌 해결·읽기 전용 답변의 인터페이스를 유지한다.
+에이전트 도구와 실행 옵션의 형식은 `agent.types.ts`에 두며, 작업 워크트리 도구는 `worktree.ts`, 쓰기와 충돌 해결의 절차는 `writes.ts`에 둔다. 서비스는 에이전트 실행·문맥 로딩·쓰기·충돌 해결·읽기 전용 답변의 인터페이스를 유지한다.
 
 ### 모델과 호출 방식
-Luna의 모델 ID는 `gpt-6-luna`다. 엔진은 OpenAI Responses API의 함수 호출(function calling)을 사용해 Luna를 호출한다.
+엔진은 OpenAI Responses API의 함수 호출(function calling)을 사용해 도니를 실행한다.
 
-`LUNA_MODEL`과 `LUNA_REASONING_EFFORT`로 기본 모델과 추론 강도를 설정한다. 웹 답변의 요청별 `model`은 쉼표로 구분한 `LUNA_MODELS` 허용 목록에 있어야 하며, 목록을 설정하지 않으면 `LUNA_MODEL`만 허용한다. 대화 서비스는 사용자 메시지를 저장하기 전에 `LunaService.validateModel()`과 `validateEffort()`를 호출하며 `answer()`도 모델 호출 전에 검증한다. 웹 API의 요청별 추론 강도는 `low`, `medium`, `high`만 받는다. Luna 서비스의 기본 설정은 `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`를 허용하므로 웹에서 기본값을 선택할 때는 `effort`를 생략한다. 쓰기·충돌 해결·꿈꾸기는 기본 설정을 사용한다. `OPENAI_BASE_URL`을 설정하면 Responses 호출도 그 주소를 사용한다. `OPENAI_API_KEY`가 없어도 엔진은 시작할 수 있지만 Luna 호출은 설정이 필요하다는 오류로 실패한다.
+`LLM_MODELS`는 쉼표로 구분한 선택 가능 모델 목록이며 기본값은 `gpt-6-luna`다. 각 항목의 앞뒤 공백을 제거하고 빈 항목을 버리며, 정리한 목록은 비어 있을 수 없다. 첫 항목이 기본 모델이고 웹 답변의 요청별 `model`도 이 목록에 있어야 한다. `LLM_REASONING_EFFORT`는 기본 추론 강도를 설정하며 기본값은 `medium`이다. 대화 서비스는 사용자 메시지를 저장하기 전에 `AgentService.validateModel()`과 `validateEffort()`를 호출하며 `answer()`도 모델 호출 전에 검증한다. `GET /api/models`는 선택 가능 모델과 첫 항목인 기본 모델, 요청 가능한 추론 강도와 서버 기본 강도를 반환한다. 웹 API의 요청별 추론 강도는 `low`, `medium`, `high`만 받는다. 에이전트 서비스의 기본 설정은 `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`를 허용하므로 웹에서 기본값을 선택할 때는 `effort`를 생략한다. 쓰기·충돌 해결·꿈꾸기는 기본 설정을 사용한다. `OPENAI_BASE_URL`을 설정하면 Responses 호출도 그 주소를 사용한다. `OPENAI_API_KEY`가 없어도 엔진은 시작할 수 있지만 도니 실행은 설정이 필요하다는 오류로 실패한다.
 
-함수 호출 결과를 다음 Responses 입력으로 돌려주는 루프를 사용한다. 도구 실행이나 인자 해석 실패는 오류를 담은 도구 출력으로 모델에 전달하므로 Luna가 수정하거나 설명할 수 있다. 기본 호출 상한은 32턴이며 상한 안에 작업을 끝내지 못하면 실패한다. 웹 답변은 텍스트 델타를 즉시 전달하고, 취소 신호가 오면 추가 모델·도구 호출을 중단한다.
+함수 호출 결과를 다음 Responses 입력으로 돌려주는 루프를 사용한다. 도구 실행이나 인자 해석 실패는 오류를 담은 도구 출력으로 모델에 전달하므로 도니가 수정하거나 설명할 수 있다. 기본 호출 상한은 32턴이며 상한 안에 작업을 끝내지 못하면 실패한다. 웹 답변은 텍스트 델타를 즉시 전달하고, 취소 신호가 오면 추가 모델·도구 호출을 중단한다.
 
 `answer()`는 텍스트 또는 Responses의 `input_text`·`input_image`·`input_file` 콘텐츠 배열을 사용자·답변 메시지의 입력으로 받는다. 진행 이벤트는 `status` 단계, 도구의 `start`·`end`, 최종 인용, 모든 모델 턴을 합산한 `usage`다. 사용량은 입력·출력·추론 토큰으로 나누고 추론 토큰은 출력 토큰의 부분집합이다. 공개 도구 요약은 검색 질의나 노트 경로만 담으며 도구 결과나 노트 본문을 넣지 않는다.
 
@@ -28,9 +28,9 @@ Luna의 모델 ID는 `gpt-6-luna`다. 엔진은 OpenAI Responses API의 함수 �
 실행 문맥의 메모리 파일 규칙은 [지식 저장소](knowledge-repository.md#메모리-파일의-문맥-제공-규칙)에 기록한다.
 
 ### 엔진이 정의하는 함수 도구
-Luna에는 OpenAI 호스티드 셸 대신 엔진이 정의한 함수 도구를 제공한다. `search`는 main의 검색 색인을 사용한다. 쓰기 도구 `list_files`, `read_file`, `write_file`, `delete_file`, `move_file`, `commit`은 작업 워크트리의 메서드로만 실행한다. 따라서 검색 결과는 현재 작업 중인 미반영 편집을 포함하지 않으며, 파일 편집 범위는 작업 워크트리 안으로 제한한다.
+도니에게는 OpenAI 호스티드 셸 대신 엔진이 정의한 함수 도구를 제공한다. `search`는 main의 검색 색인을 사용한다. 쓰기 도구 `list_files`, `read_file`, `write_file`, `delete_file`, `move_file`, `commit`은 작업 워크트리의 메서드로만 실행한다. 따라서 검색 결과는 현재 작업 중인 미반영 편집을 포함하지 않으며, 파일 편집 범위는 작업 워크트리 안으로 제한한다.
 
-예를 들어 지식 쓰기나 충돌 해결 중 파일을 편집할 때도, Luna가 도구를 통해 작업 워크트리 밖의 파일을 변경하지 못하게 한다. 작업 워크트리와 main의 관계는 [쓰기 흐름](write-flow.md)에서 설명한다.
+예를 들어 지식 쓰기나 충돌 해결 중 파일을 편집할 때도, 도니가 도구를 통해 작업 워크트리 밖의 파일을 변경하지 못하게 한다. 작업 워크트리와 main의 관계는 [쓰기 흐름](write-flow.md)에서 설명한다.
 
 충돌 해결에는 충돌 마커가 있는 작업 파일과 분기 기준·작업 브랜치·main의 내용을 함께 제공한다. 두 변경의 의도를 보존하도록 요청한 뒤 마커가 남았는지 확인하고, 남아 있으면 한 번 더 요청한다. 두 번의 해결 시도 뒤에도 마커가 남아 있으면 실패하며, 해결 도구가 머지 커밋을 만들지는 않는다.
 
@@ -43,7 +43,7 @@ Luna에는 OpenAI 호스티드 셸 대신 엔진이 정의한 함수 도구를 �
 `proposal(answer, mode, path?)`는 읽기 전용 검색·노트 도구로 근거를 확인하고 완성된 Markdown 파일의 `{ path, baseSha, original, proposed }`를 반환한다. `edit`는 기존 경로가 필요하며 원문과 frontmatter를 보존하도록 지시하고, `new`는 기존 파일을 덮지 않는다. 새 경로를 생략하면 답변의 첫 제목 또는 첫 문장에서 `wiki/<slug>.md`를 정한다. 제안은 파일·워크트리·커밋을 만들지 않으며 실제 저장은 사용자가 미리보기를 확인한 뒤 일반 노트 쓰기 API로 수행한다.
 
 ### 임베딩 모델을 분리하는 이유
-Luna는 OpenAI Embeddings 엔드포인트를 지원하지 않는다. 따라서 문서와 질의의 임베딩에는 Luna와 별도의 모델을 사용한다. 임베딩 모델의 선택과 인덱싱 방식은 [RAG](rag.md)에서 설명한다.
+기본 응답 모델인 `gpt-6-luna`는 OpenAI Embeddings 엔드포인트를 지원하지 않는다. 따라서 문서와 질의의 임베딩에는 응답 모델과 별도의 모델을 사용한다. 임베딩 모델의 선택과 인덱싱 방식은 [RAG](rag.md)에서 설명한다.
 
 ### 첨부 파일과 가져오기 업로드
 `UploadsModule`은 `JobsModule`을 가져오고 `UploadsService`를 내보낸다. `POST /api/uploads`는 인증된 사용자의 multipart `file` 필드와 선택적 `purpose` 필드를 받는다. 기본 `purpose=chat`은 최대 20 MiB의 PNG·JPEG·WebP·GIF·PDF·UTF-8 텍스트 및 마크다운을 받는다. 확장자나 브라우저의 Content-Type을 신뢰하지 않고 파일 시그니처와 엄격한 UTF-8 디코딩으로 종류를 판별한다. 제어 문자가 들어간 바이너리를 텍스트로 위장해 올릴 수 없다. `purpose=import`는 editor 이상만 사용할 수 있으며, 같은 파일 종류 외에 시그니처로 확인한 ZIP을 받고 최대 크기는 100 MiB다. 가져오기 업로드는 채팅 첨부로 사용할 수 없다.
@@ -57,7 +57,7 @@ editor 이상의 `POST /api/uploads/:id/save { path, baseSha }`는 소유자의 
 시작할 때와 매시간 보존 기간이 지난 미사용 업로드를 정리한다. `UPLOAD_RETENTION_DAYS`는 양수인 일 수이고 기본값은 7이다. `messages.attachments` JSON에 참조된 업로드와 자산 저장을 성공한 업로드는 보존하며, 자산 저장 중인 파일도 정리하지 않는다. 파일 생성과 DB 기록 사이의 비정상 종료로 생긴 파일만 있는 오래된 고아도 정리한다. 실패한 저장은 보존으로 간주하지 않는다.
 
 ## 관련 문서
-- [엔진 아키텍처](architecture.md)는 Luna를 사용하는 구성 요소와 외부 의존을 설명한다.
-- [쓰기 흐름](write-flow.md)과 [꿈꾸기](dreaming.md)는 Luna가 지식을 변경하는 절차를 설명한다.
-- [작성 규칙](writing-rules.md)은 Luna가 지식 저장소에 글을 쓸 때 따르는 규칙을 설명한다.
+- [엔진 아키텍처](architecture.md)는 도니를 사용하는 구성 요소와 외부 의존을 설명한다.
+- [쓰기 흐름](write-flow.md)과 [꿈꾸기](dreaming.md)는 도니가 지식을 변경하는 절차를 설명한다.
+- [작성 규칙](writing-rules.md)은 도니가 지식 저장소에 글을 쓸 때 따르는 규칙을 설명한다.
 - [웹 버전](web.md)과 [RAG](rag.md)는 지식을 근거로 답변하는 방식을 설명한다.

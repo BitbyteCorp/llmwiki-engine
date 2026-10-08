@@ -13,7 +13,7 @@ import { loadConfig } from '../config.js';
 import { openDb, runMigrations, type Db } from '../db/index.js';
 import { EventsService } from '../events/events.service.js';
 import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
-import type { LunaService } from '../luna/luna.service.js';
+import type { AgentService } from '../agent/agent.service.js';
 import type { IndexerService } from '../rag/indexer.service.js';
 import type { WriteJob } from './write-job.types.js';
 import { WriteJobsRepository } from './write-jobs.repository.js';
@@ -32,21 +32,21 @@ async function fixture() {
   db.prepare('INSERT INTO users(id,email,name,role,created_at) VALUES (1,?,?,?,?)')
     .run(author.email, author.name, 'editor', new Date().toISOString());
   const repo = await KnowledgeRepo.open(config, log);
-  const luna = {
+  const agent = {
     runWrite: vi.fn(async (_job: WriteJob, wt: Worktree) => {
       await wt.write('wiki/result.md', 'saved knowledge\n');
       return { summary: 'Save useful knowledge\nDetails of the update.' };
     }),
     resolveConflicts: vi.fn(async () => {}),
-  } as unknown as LunaService;
+  } as unknown as AgentService;
   const indexer = {
     syncToHead: vi.fn(async () => ({ indexedSha: await repo.headSha(), changedFiles: 1 })),
   } as unknown as IndexerService;
   const users = new UsersService(new UsersRepository(db));
   const events = new EventsService();
   const acl = new AclService(db, users, new AuditService(db));
-  const jobs = new WriteJobsService(new WriteJobsRepository(db), luna, indexer, repo, users, log, events, acl);
-  const ctx = { config, db, log, repo, luna, indexer, users, jobs, events };
+  const jobs = new WriteJobsService(new WriteJobsRepository(db), agent, indexer, repo, users, log, events, acl);
+  const ctx = { config, db, log, repo, agent, indexer, users, jobs, events };
   fixtures.push({ dir, db, jobs });
   return { dir, ctx, jobs };
 }
@@ -78,11 +78,11 @@ afterEach(async () => {
   }
 });
 
-describe('WriteJobsService with real git and a Luna double', () => {
+describe('WriteJobsService with real git and a Dony double', () => {
   it('persists lifecycle, commits leftovers as requester, merges and indexes main', async () => {
     const { dir, ctx, jobs } = await fixture();
     const observed: string[] = [];
-    vi.mocked(ctx.luna.runWrite).mockImplementation(async (job, wt, user) => {
+    vi.mocked(ctx.agent.runWrite).mockImplementation(async (job, wt, user) => {
       observed.push(jobs.get(job.id)!.status);
       expect(user).toEqual(author);
       await wt.write('wiki/first.md', 'first meaning\n');
@@ -110,7 +110,7 @@ describe('WriteJobsService with real git and a Luna double', () => {
     expect(result.error).toBeNull();
     for (const sha of result.commits) {
       const { stdout } = await git('git', ['show', '-s', '--format=%an%n%ae%n%cn%n%ce', sha], { cwd: join(dir, 'knowledge') });
-      expect(stdout.trim().split('\n')).toEqual([author.name, author.email, 'Luna', 'luna@llmwiki.local']);
+      expect(stdout.trim().split('\n')).toEqual([author.name, author.email, '도니', 'dony@llmwiki.local']);
     }
     expect((await ctx.repo.show(result.commits[1]!)).commit.subject).toBe('Save useful knowledge');
     expect(await readdir(join(dir, 'worktrees'))).toEqual([]);
@@ -119,12 +119,12 @@ describe('WriteJobsService with real git and a Luna double', () => {
   it('resolves a concurrent main conflict, with requester author on the merge commit', async () => {
     const { ctx, jobs } = await fixture();
     await advance(ctx.repo, 'baseline', 'original\n');
-    vi.mocked(ctx.luna.runWrite).mockImplementation(async (_job, wt) => {
+    vi.mocked(ctx.agent.runWrite).mockImplementation(async (_job, wt) => {
       await wt.write('wiki/shared.md', 'requested update\n');
       await advance(ctx.repo, 'concurrent', 'concurrent update\n');
       return { summary: 'Update shared note' };
     });
-    vi.mocked(ctx.luna.resolveConflicts).mockImplementation(async (wt, files) => {
+    vi.mocked(ctx.agent.resolveConflicts).mockImplementation(async (wt, files) => {
       expect(files).toEqual(['wiki/shared.md']);
       expect(await wt.read(files[0]!)).toContain('<<<<<<<');
       await wt.write(files[0]!, 'requested update\nconcurrent update\n');
@@ -143,7 +143,7 @@ describe('WriteJobsService with real git and a Luna double', () => {
     const { ctx, jobs } = await fixture();
     await advance(ctx.repo, 'baseline', 'original\n');
     let beforeMerge = '';
-    vi.mocked(ctx.luna.runWrite).mockImplementation(async (_job, wt) => {
+    vi.mocked(ctx.agent.runWrite).mockImplementation(async (_job, wt) => {
       await wt.write('wiki/shared.md', 'requested update\n');
       await advance(ctx.repo, 'concurrent', 'concurrent update\n');
       beforeMerge = await ctx.repo.headSha();
@@ -158,19 +158,19 @@ describe('WriteJobsService with real git and a Luna double', () => {
     expect(ctx.indexer.syncToHead).not.toHaveBeenCalled();
   });
 
-  it('preserves main and records Luna commits when the agent fails', async () => {
+  it('preserves main and records Dony commits when the agent fails', async () => {
     const { dir, ctx, jobs } = await fixture();
     const before = await ctx.repo.headSha();
-    vi.mocked(ctx.luna.runWrite).mockImplementation(async (_job, wt, user) => {
+    vi.mocked(ctx.agent.runWrite).mockImplementation(async (_job, wt, user) => {
       await wt.write('wiki/incomplete.md', 'not published\n');
       await wt.commit('Unpublished attempt', user);
-      throw new Error('Luna request failed');
+      throw new Error('Dony request failed');
     });
     jobs.start();
     const result = await completed(jobs, jobs.submit({ userId: 1, input: 'fail', source: 'mcp' }).id);
     await jobs.stop();
     expect(result.status).toBe('failed');
-    expect(result.error).toBe('Luna request failed');
+    expect(result.error).toBe('Dony request failed');
     expect(result.commits).toHaveLength(1);
     expect(result.finishedAt).not.toBeNull();
     expect(await ctx.repo.headSha()).toBe(before);
@@ -192,7 +192,7 @@ describe('WriteJobsService with real git and a Luna double', () => {
     const { ctx, jobs } = await fixture();
     const before = await ctx.repo.headSha();
     ctx.db.prepare('UPDATE users SET name = NULL WHERE id = 1').run();
-    vi.mocked(ctx.luna.runWrite).mockImplementation(async (_job, _wt, user) => {
+    vi.mocked(ctx.agent.runWrite).mockImplementation(async (_job, _wt, user) => {
       expect(user).toEqual({ name: author.email, email: author.email });
       return { summary: 'Nothing new to save' };
     });
@@ -219,13 +219,13 @@ describe('WriteJobsService with real git and a Luna double', () => {
     expect(jobs.get(running.id)?.error).toContain('Engine restarted');
     expect(jobs.get(merging.id)?.finishedAt).not.toBeNull();
     expect((await completed(jobs, queued.id)).status).toBe('succeeded');
-    expect(ctx.luna.runWrite).toHaveBeenCalledTimes(1);
+    expect(ctx.agent.runWrite).toHaveBeenCalledTimes(1);
   });
 
-  it('runs one Luna job at a time and stops before consuming the next queued job', async () => {
+  it('runs one Dony job at a time and stops before consuming the next queued job', async () => {
     const { ctx, jobs } = await fixture();
     const { promise: gate, resolve: release } = Promise.withResolvers<void>();
-    vi.mocked(ctx.luna.runWrite).mockImplementationOnce(async (_job, wt) => {
+    vi.mocked(ctx.agent.runWrite).mockImplementationOnce(async (_job, wt) => {
       await gate;
       await wt.write('wiki/first.md', 'first\n');
       return { summary: 'First write' };
@@ -233,7 +233,7 @@ describe('WriteJobsService with real git and a Luna double', () => {
     const first = jobs.submit({ userId: 1, input: 'first', source: 'mcp' });
     const second = jobs.submit({ userId: 1, input: 'second', source: 'mcp' });
     jobs.start();
-    await vi.waitFor(() => expect(ctx.luna.runWrite).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(ctx.agent.runWrite).toHaveBeenCalledTimes(1));
     expect(jobs.get(second.id)?.status).toBe('queued');
     const stopping = jobs.stop();
     release();
@@ -257,6 +257,6 @@ describe('WriteJobsService with real git and a Luna double', () => {
     const result = await completed(jobs, records[0]!.id);
     expect(result.status).toBe('failed');
     expect(result.error).toContain('no longer exists');
-    expect(ctx.luna.runWrite).not.toHaveBeenCalled();
+    expect(ctx.agent.runWrite).not.toHaveBeenCalled();
   });
 });

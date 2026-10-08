@@ -16,7 +16,7 @@ export interface TokenUsage {
 }
 
 export type ChatMessage = { role: 'user' | 'assistant'; content: string | ResponseInputContent[] };
-export type LunaEventHandler = (event: 'tool' | 'citation' | 'usage' | 'status', data: unknown) => void;
+export type AgentEventHandler = (event: 'tool' | 'citation' | 'usage' | 'status', data: unknown) => void;
 
 export interface AnswerOptions {
   /** Omitted only for trusted internal system callers. */
@@ -27,7 +27,7 @@ export interface AnswerOptions {
   effort?: string;
   context?: { notePath: string; ref?: string; selection?: string };
   summary?: string;
-  onEvent?: LunaEventHandler;
+  onEvent?: AgentEventHandler;
 }
 
 export interface AgentTool {
@@ -45,7 +45,7 @@ export interface RunAgentOptions {
   tools: AgentTool[];
   effort?: string;
   model?: string;
-  onEvent?: LunaEventHandler;
+  onEvent?: AgentEventHandler;
   signal?: AbortSignal;
   onTextDelta?: (text: string) => void;
   maxTurns?: number;

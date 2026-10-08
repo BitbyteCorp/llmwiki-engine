@@ -41,7 +41,7 @@ it('isolates worktree writes, commits as the requester, and fast-forwards main',
   const shown = await repo.show(sha!);
   expect(shown.commit).toMatchObject({ authorName: author.name, authorEmail: author.email });
   expect(shown.patch).toContain('+# Hello');
-  expect((await git('git', ['show', '-s', '--format=%cn <%ce>', sha!], { cwd: join(dir, 'knowledge') })).stdout.trim()).toBe('Luna <luna@llmwiki.local>');
+  expect((await git('git', ['show', '-s', '--format=%cn <%ce>', sha!], { cwd: join(dir, 'knowledge') })).stdout.trim()).toBe('도니 <dony@llmwiki.local>');
   expect(await repo.pushMain()).toMatchObject({ pushed: false, reason: expect.any(String) });
   await wt.dispose();
 });
@@ -74,7 +74,7 @@ it('resolves two concurrent edits in the work branch before advancing main', asy
     expect(await right.conflictedFiles()).toEqual([]);
     expect(await right.fastForwardMain()).toBe(mergeSha);
     expect(await repo.readFile('wiki/conflict.md')).toBe('left and right resolved\n');
-    expect((await git('git', ['show', '-s', '--format=%cn <%ce>', mergeSha], { cwd: join(dir, 'knowledge') })).stdout.trim()).toBe('Luna <luna@llmwiki.local>');
+    expect((await git('git', ['show', '-s', '--format=%cn <%ce>', mergeSha], { cwd: join(dir, 'knowledge') })).stdout.trim()).toBe('도니 <dony@llmwiki.local>');
   });
   await left.dispose();
   await right.dispose();

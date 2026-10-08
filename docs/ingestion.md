@@ -1,8 +1,8 @@
 # 원문 수집
-URL·PDF·텍스트·Markdown 파일·Obsidian 볼트·Notion 내보내기를 불변 원문과 출처 Markdown으로 보관한 뒤, 원문마다 Luna 통합 작업 하나를 실행한다.
+URL·PDF·텍스트·Markdown 파일·Obsidian 볼트·Notion 내보내기를 불변 원문과 출처 Markdown으로 보관한 뒤, 원문마다 도니 통합 작업 하나를 실행한다.
 
 ## 배경
-수집과 지식 통합은 서로 다른 단계다. 수집 단계는 다운로드·압축 해제·텍스트 추출을 수행하고 원문을 먼저 git에 저장한다. 통합 단계는 이미 커밋된 출처 Markdown을 Luna가 읽어 위키 노트를 정리하는 작업이다. 통합이 실패하더라도 원문 커밋은 보존하므로 원문의 출처와 실패 원인을 확인할 수 있다.
+수집과 지식 통합은 서로 다른 단계다. 수집 단계는 다운로드·압축 해제·텍스트 추출을 수행하고 원문을 먼저 git에 저장한다. 통합 단계는 이미 커밋된 출처 Markdown을 도니가 읽어 위키 노트를 정리하는 작업이다. 통합이 실패하더라도 원문 커밋은 보존하므로 원문의 출처와 실패 원인을 확인할 수 있다.
 
 ## 내용
 ### 입력과 권한
@@ -66,12 +66,12 @@ raw/<sha256>/
 출처 Markdown의 frontmatter에는 import ID, `importer`(수집을 요청한 사용자의 숫자 ID), 종류, 원래 source, 최종 URL, SHA-256, 파일명과 수집 시간을 기록한다. 본문은 불변 원문 링크와 추출 본문 또는 추출 노트 링크를 포함한다. 모든 새 원문·첨부·출처 Markdown은 `NoteWriterService.apply({ source: 'import', client: 'ingest' })` 한 번으로 커밋한다. 기존 raw 경로는 수정하지 않는다. 동일 원문을 다시 수집하면 git blob ID로 실제 바이트가 같은지 확인하여 기존 불변 자료를 재사용하고 별도의 출처 기록과 통합 작업을 생성한다. 대형 바이너리도 문자열로 읽지 않고 git 메타데이터와 입력 바이트의 blob 해시를 비교한다. 경로가 같으나 기존 바이트가 다르면 `409 raw_conflict`로 거부한다. git 커밋에는 일반 쓰기와 동일한 job/source/requester/client trailer가 들어간다.
 
 ### 통합 작업과 복구
-원문마다 `source=import`인 Luna 작업 하나를 제출한다. 작업 입력에는 본문 전체를 붙이지 않고 커밋된 출처 Markdown 경로와 최대 10,000자의 지침만 전달한다. Luna는 출처 링크를 따라 필요한 자료를 읽고 원문을 지침으로 실행하지 않으며 raw 자료를 수정하지 않는다. 실제 통합 실행과 한도는 기존 [쓰기 흐름](write-flow.md)을 따른다.
+원문마다 `source=import`인 도니 작업 하나를 제출한다. 작업 입력에는 본문 전체를 붙이지 않고 커밋된 출처 Markdown 경로와 최대 10,000자의 지침만 전달한다. 도니는 출처 링크를 따라 필요한 자료를 읽고 원문을 지침으로 실행하지 않으며 raw 자료를 수정하지 않는다. 실제 통합 실행과 한도는 기존 [쓰기 흐름](write-flow.md)을 따른다.
 
 `imports` SQLite 테이블은 수집 중 `extracting`, 제출 후 `queued`, 실행 중 `running`, 완료 후 `succeeded` 또는 `failed`를 기록한다. `job.updated` 이벤트가 상태를 갱신하고, 목록·상세 조회와 시작 시 저장된 write job 상태를 다시 확인하므로 놓친 이벤트도 복구한다. 작업 제출 전에 프로세스가 중단된 기록은 시작 시 실패로 바꾼다. source 수집 실패는 기록에 남고 REST는 해당 오류를 반환한다. 수집 제출의 `import.create`와 통합 완료의 `import.complete` 성공·실패 감사 기록에는 사용자, import ID, 종류만 남기며 원문 내용은 감사 요약에 넣지 않는다.
 
 ## 관련 문서
 - [지식 저장소](knowledge-repository.md)는 raw 원문과 위키 노트의 저장 위치를 설명한다.
-- [쓰기 흐름](write-flow.md)은 직접 원문 커밋과 Luna 통합 작업의 기록·머지 흐름을 설명한다.
+- [쓰기 흐름](write-flow.md)은 직접 원문 커밋과 도니 통합 작업의 기록·머지 흐름을 설명한다.
 - [인증](auth.md)은 editor/viewer 권한과 REST bearer 토큰을 설명한다.
 - [MCP](mcp.md)는 같은 수집 기능을 호출하는 `ingest_source` 도구를 설명한다.

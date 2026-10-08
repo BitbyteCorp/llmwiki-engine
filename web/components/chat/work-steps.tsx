@@ -20,7 +20,7 @@ export function WorkSteps({ steps, running, noteCount }: { steps: WorkStep[]; ru
       <span className="min-w-0 flex-1 break-words" role={running ? 'status' : undefined}>{running && '작업 중 · '}{steps.length}단계 · 노트 {noteCount}개 참고</span>
       <ChevronRight aria-hidden="true" className="size-3 shrink-0 transition-transform group-open/steps:rotate-90"/>
     </summary>
-    <ol aria-label="Luna 작업 단계" className="mx-3 mb-2.5 space-y-2 border-l border-border pl-3">
+    <ol aria-label="도니 작업 단계" className="mx-3 mb-2.5 space-y-2 border-l border-border pl-3">
       {steps.map((step, index) => <li key={index} className="relative flex min-w-0 items-start gap-2">
         <span className="mt-0.5 shrink-0" title={step.status === 'done' ? '완료' : running ? '진행 중' : '미완료'}>
           {step.status === 'done' ? <Check aria-hidden="true" className="size-3 text-success"/> : running ? <LoaderCircle aria-hidden="true" className="size-3 text-primary motion-safe:animate-spin"/> : <Circle aria-hidden="true" className="size-3 text-muted-foreground"/>}

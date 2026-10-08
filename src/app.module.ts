@@ -5,7 +5,7 @@ import type { Duplex } from 'node:stream';
 import { CommonModule } from './common/common.module.js';
 import { KnowledgeModule } from './knowledge/knowledge.module.js';
 import { RagModule } from './rag/rag.module.js';
-import { LunaModule } from './luna/luna.module.js';
+import { AgentModule } from './agent/agent.module.js';
 import { JobsModule } from './jobs/jobs.module.js';
 import { AuthModule } from './auth/auth.module.js';
 import { McpModule } from './mcp/mcp.module.js';
@@ -25,7 +25,7 @@ import { OpsModule } from './ops/ops.module.js';
     EventsModule,
     KnowledgeModule,
     RagModule,
-    LunaModule,
+    AgentModule,
     JobsModule,
     AuthModule,
     AuditModule,

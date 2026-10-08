@@ -15,8 +15,8 @@ import { loadConfig } from '../config.js';
 import { EventsService } from '../events/events.service.js';
 import type { WikiEvent } from '../events/events.types.js';
 import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
-import type { LunaService } from '../luna/luna.service.js';
-import type { RunAgentOptions } from '../luna/luna.types.js';
+import type { AgentService } from '../agent/agent.service.js';
+import type { RunAgentOptions } from '../agent/agent.types.js';
 import type { IndexerService } from '../rag/indexer.service.js';
 import type { SearchService } from '../rag/search.service.js';
 import type { DreamRun } from './dream-run.types.js';
@@ -66,17 +66,17 @@ async function fixture(slackWebhookUrl?: string) {
     await worktree.write('wiki/result.md', '# Reviewed knowledge\n');
     return { text: 'SECRET_SUMMARY', toolCalls: 2 };
   });
-  const luna = {
+  const agent = {
     baseInstructions: async () => 'Review facts.', runAgent,
     worktreeTools: (wt: Worktree) => { worktree = wt; return []; },
     resolveConflicts: async () => { throw new Error('Unexpected conflict'); },
-  } as unknown as LunaService;
+  } as unknown as AgentService;
   const indexer = { syncToHead: async () => ({ indexedSha: await repo.headSha() }) } as unknown as IndexerService;
   const search = { search: async () => [] } as unknown as SearchService;
   const audit = new AuditService(db);
   const acl = new AclService(db, new UsersService(new UsersRepository(db)), audit);
-  const dreaming = new DreamingService(repo, luna, indexer, search, config, log, runs, events, acl, audit);
-  const other = new DreamingService(repo, luna, indexer, search, config, log, runs, events, acl, audit);
+  const dreaming = new DreamingService(repo, agent, indexer, search, config, log, runs, events, acl, audit);
+  const other = new DreamingService(repo, agent, indexer, search, config, log, runs, events, acl, audit);
   return { root, repo, runs, db, dreaming, other, runAgent, events, seen, warn };
 }
 

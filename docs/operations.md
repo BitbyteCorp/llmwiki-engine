@@ -75,7 +75,7 @@ Next로 전달되기 전에 요청 로깅 미들웨어를 실행한다. `x-reque
 | 운영 명령 | 영어 검색어 |
 |---|---|
 | 운영 설정 열기 | `Operations Queue Index Dream Settings` |
-| 지금 꿈꾸기 실행 | `Dream Now Luna Journal` |
+| 지금 꿈꾸기 실행 | `Dream Now Dony Journal` |
 | 증분 재색인 | `Incremental Reindex Search` |
 | 전체 재색인 | `Full Rebuild Reindex Search` |
 | 원문 가져오기 시작 | `Import URL Text File Obsidian Notion` |

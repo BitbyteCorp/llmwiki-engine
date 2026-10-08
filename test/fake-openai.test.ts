@@ -78,15 +78,15 @@ describe('fake OpenAI SDK compatibility', () => {
       { output: [
         '두 노트를 읽는다.',
         { name: 'read_note', arguments: '{"path":"wiki/engine.md"}', call_id: 'call_engine' },
-        { name: 'read_note', arguments: { path: 'wiki/luna.md' }, call_id: 'call_luna' },
+        { name: 'read_note', arguments: { path: 'wiki/agent.md' }, call_id: 'call_agent' },
       ] },
-      { text: '엔진은 지식을 관리하고 Luna는 답변한다. 🌙' },
+      { text: '엔진은 지식을 관리하고 도니는 답변한다. 🌙' },
     ]);
     const tools = [{ type: 'function' as const, name: 'read_note',
       parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'], additionalProperties: false }, strict: true }];
     const stream = mode === 'helper'
-      ? client.responses.stream({ model: 'gpt-6-luna', input: '엔진과 Luna를 설명하라.', tools })
-      : await client.responses.create({ model: 'gpt-6-luna', input: '엔진과 Luna를 설명하라.', tools, stream: true });
+      ? client.responses.stream({ model: 'gpt-6-luna', input: '엔진과 도니를 설명하라.', tools })
+      : await client.responses.create({ model: 'gpt-6-luna', input: '엔진과 도니를 설명하라.', tools, stream: true });
     const events: ResponseStreamEvent[] = [];
     for await (const event of stream) events.push(event);
     const initial = events.find((event) => event.type === 'response.completed')!.response;
@@ -97,7 +97,7 @@ describe('fake OpenAI SDK compatibility', () => {
     expect(events.filter((event) => event.type === 'response.function_call_arguments.delta')
       .filter((event) => event.output_index === 1).map((event) => event.delta).join('')).toBe('{"path":"wiki/engine.md"}');
     expect(events.filter((event) => event.type === 'response.function_call_arguments.delta')
-      .filter((event) => event.output_index === 2).map((event) => event.delta).join('')).toBe('{"path":"wiki/luna.md"}');
+      .filter((event) => event.output_index === 2).map((event) => event.delta).join('')).toBe('{"path":"wiki/agent.md"}');
     expect(events.map((event) => event.sequence_number)).toEqual(events.map((_, index) => index));
     expect(events.filter((event) => event.type === 'response.output_item.done').map((event) => event.item))
       .toEqual(initial.output);
@@ -105,9 +105,9 @@ describe('fake OpenAI SDK compatibility', () => {
       const parsed = await stream.finalResponse();
       expect(parsed.output).toMatchObject(initial.output);
       expect(parsed.output.filter((item) => item.type === 'function_call').map((item) => item.parsed_arguments))
-        .toEqual([{ path: 'wiki/engine.md' }, { path: 'wiki/luna.md' }]);
+        .toEqual([{ path: 'wiki/engine.md' }, { path: 'wiki/agent.md' }]);
     }
-    const notes: Record<string, string> = { 'wiki/engine.md': '엔진은 지식을 관리한다.', 'wiki/luna.md': 'Luna는 답변한다.' };
+    const notes: Record<string, string> = { 'wiki/engine.md': '엔진은 지식을 관리한다.', 'wiki/agent.md': '도니는 답변한다.' };
     const input = calls.map((call) => ({
       type: 'function_call_output' as const, call_id: call.call_id,
       output: notes[readNoteArguments.parse(JSON.parse(call.arguments)).path]!,
@@ -119,7 +119,7 @@ describe('fake OpenAI SDK compatibility', () => {
     for await (const event of answerStream) if (event.type === 'response.output_text.delta') answer += event.delta;
     const final: Response = await answerStream.finalResponse();
 
-    expect(answer).toBe('엔진은 지식을 관리하고 Luna는 답변한다. 🌙');
+    expect(answer).toBe('엔진은 지식을 관리하고 도니는 답변한다. 🌙');
     expect(final.output_text).toBe(answer);
     expect(final.status).toBe('completed');
     expect(snapshots.at(-1)).toBe(answer);
@@ -127,7 +127,7 @@ describe('fake OpenAI SDK compatibility', () => {
       stream: true, previous_response_id: initial.id,
       input: [
         { type: 'function_call_output', call_id: 'call_engine', output: '엔진은 지식을 관리한다.' },
-        { type: 'function_call_output', call_id: 'call_luna', output: 'Luna는 답변한다.' },
+        { type: 'function_call_output', call_id: 'call_agent', output: '도니는 답변한다.' },
       ],
     });
   });

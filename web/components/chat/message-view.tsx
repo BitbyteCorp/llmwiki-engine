@@ -60,10 +60,10 @@ export function ChatMessageView({ message, steps = [], onEdit, onAction, onPropo
   function regenerate() {
     if (window.confirm('이 답변을 다시 생성하면 이후 메시지도 교체됩니다. 계속하시겠습니까?')) onAction(message, 'regenerate')
   }
-  return <article aria-label={assistant ? 'Luna 답변' : '사용자 질문'} className={`group/message min-w-0 ${assistant ? 'w-full py-1' : 'ml-auto w-fit max-w-[90%] rounded-2xl rounded-tr-sm bg-secondary px-3 py-2.5'}`}>
+  return <article aria-label={assistant ? '도니 답변' : '사용자 질문'} className={`group/message min-w-0 ${assistant ? 'w-full py-1' : 'ml-auto w-fit max-w-[90%] rounded-2xl rounded-tr-sm bg-secondary px-3 py-2.5'}`}>
     {assistant && <header className="mb-2.5 flex items-center gap-2">
       <span aria-hidden="true" className="flex size-6 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary"><Sparkles className="size-3.5"/></span>
-      <strong className="text-xs font-semibold">Luna</strong>
+      <strong className="text-xs font-semibold">도니</strong>
       <time dateTime={message.createdAt} className="ml-auto text-[10px] text-muted-foreground">{formatDate(message.createdAt)}</time>
     </header>}
     {message.context && <details className="mb-2 rounded-lg border border-border/70 px-2 py-1.5 text-xs">

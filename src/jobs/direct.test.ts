@@ -15,9 +15,9 @@ import { openDb, runMigrations } from '../db/index.js';
 import { EventsService } from '../events/events.service.js';
 import type { WikiEvent } from '../events/events.types.js';
 import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
-import type { LunaService } from '../luna/luna.service.js';
-import { resolveConflicts } from '../luna/writes.js';
-import type { AgentTool } from '../luna/luna.types.js';
+import type { AgentService } from '../agent/agent.service.js';
+import { resolveConflicts } from '../agent/writes.js';
+import type { AgentTool } from '../agent/agent.types.js';
 import type { IndexerService } from '../rag/indexer.service.js';
 import { NoteWriterService } from './note-writer.service.js';
 import { WriteJobsRepository } from './write-jobs.repository.js';
@@ -39,15 +39,15 @@ async function fixture() {
   const published: WikiEvent[] = [];
   events.subscribe((event) => published.push(event));
   const indexer = { syncToHead: vi.fn(async () => {}) } as unknown as IndexerService;
-  const luna = { runWrite: vi.fn(async () => ({ summary: 'No changes' })), resolveConflicts: vi.fn(async () => {}) } as unknown as LunaService;
+  const agent = { runWrite: vi.fn(async () => ({ summary: 'No changes' })), resolveConflicts: vi.fn(async () => {}) } as unknown as AgentService;
   const acl = new AclService(db, users, new AuditService(db));
   const writer = new NoteWriterService(repository, repo, users, indexer, events, log, acl);
-  const jobs = new WriteJobsService(repository, luna, indexer, repo, users, log, events, acl, writer);
+  const jobs = new WriteJobsService(repository, agent, indexer, repo, users, log, events, acl, writer);
   cleanups.push(async () => { await jobs.stop(); db.close(); await rm(dir, { recursive: true, force: true }); });
   async function put(path: string, content: string, create = true, baseSha?: string) {
     return writer.apply({ userId: 1, source: 'web', baseSha: baseSha ?? await repo.headSha(), ops: [{ op: 'put', path, content, create }] });
   }
-  return { dir, db, repo, repository, events, published, indexer, luna, jobs, writer, put, acl };
+  return { dir, db, repo, repository, events, published, indexer, agent, jobs, writer, put, acl };
 }
 
 it('checks touched paths only, preserves unrelated updates, and rejects stale edits and both move endpoints', async () => {
@@ -115,20 +115,20 @@ it('previews and applies an inverse without changing main during preview', async
   expect(result.mergeSha).not.toBe(created.mergeSha);
 });
 
-it('holds direct freshness through indexing while Luna uses the same merge lock', async () => {
+it('holds direct freshness through indexing while Dony uses the same merge lock', async () => {
   const f = await fixture();
   await f.put('wiki/shared.md', 'base');
   const { promise: editing, resolve: editingStarted } = Promise.withResolvers<void>();
   const { promise: finishEdit, resolve: releaseEdit } = Promise.withResolvers<void>();
-  vi.mocked(f.luna.runWrite).mockImplementation(async (_job, wt: Worktree, author) => {
-    await wt.write('wiki/luna.md', 'luna');
-    await wt.commit('Luna edits', author);
+  vi.mocked(f.agent.runWrite).mockImplementation(async (_job, wt: Worktree, author) => {
+    await wt.write('wiki/agent.md', 'agent');
+    await wt.commit('Dony edits', author);
     editingStarted();
     await finishEdit;
-    return { summary: 'Luna edits' };
+    return { summary: 'Dony edits' };
   });
   f.jobs.start();
-  const lunaJob = f.jobs.submit({ userId: 1, input: 'save', source: 'chat' });
+  const agentJob = f.jobs.submit({ userId: 1, input: 'save', source: 'chat' });
   await editing;
   const { promise: indexing, resolve: indexingStarted } = Promise.withResolvers<void>();
   const { promise: finishIndex, resolve: releaseIndex } = Promise.withResolvers<void>();
@@ -141,15 +141,15 @@ it('holds direct freshness through indexing while Luna uses the same merge lock'
   releaseIndex();
   await direct;
   await expect(late).rejects.toMatchObject({ code: 'stale_note' });
-  await vi.waitFor(() => expect(f.jobs.get(lunaJob.id)?.status).toBe('succeeded'));
+  await vi.waitFor(() => expect(f.jobs.get(agentJob.id)?.status).toBe('succeeded'));
   await f.jobs.stop();
   expect(await f.repo.readFile('wiki/shared.md')).toBe('direct');
-  expect(await f.repo.readFile('wiki/luna.md')).toBe('luna');
+  expect(await f.repo.readFile('wiki/agent.md')).toBe('agent');
 });
 
-it('retries failed Luna with provenance, cancels only queued jobs and keeps failed commits inspectable', async () => {
+it('retries failed Dony with provenance, cancels only queued jobs and keeps failed commits inspectable', async () => {
   const f = await fixture();
-  vi.mocked(f.luna.runWrite).mockImplementationOnce(async (_job, wt, author) => {
+  vi.mocked(f.agent.runWrite).mockImplementationOnce(async (_job, wt, author) => {
     await wt.write('wiki/failed.md', 'inspect me');
     await wt.commit('Attempt', author);
     throw new Error('provider down');
@@ -173,7 +173,7 @@ it('retries failed Luna with provenance, cancels only queued jobs and keeps fail
   await expect(Promise.resolve().then(() => f.jobs.cancel(retried.id))).rejects.toMatchObject({ code: 'job_not_cancelable' });
 });
 
-it('replays direct and revert failures immediately outside the Luna queue with original payload and metadata', async () => {
+it('replays direct and revert failures immediately outside the Dony queue with original payload and metadata', async () => {
   const f = await fixture();
   const createWorktree = f.repo.createWorktree.bind(f.repo);
   vi.spyOn(f.repo, 'createWorktree').mockImplementationOnce(async (id) => {
@@ -183,12 +183,12 @@ it('replays direct and revert failures immediately outside the Luna queue with o
   });
   await expect(f.put('wiki/retry.md', 'retained request')).rejects.toThrow('temporary merge failure');
   const original = f.jobs.list()[0]!;
-  const queuedLuna = f.jobs.submit({ userId: 1, input: 'stay queued', source: 'chat' });
+  const queuedAgent = f.jobs.submit({ userId: 1, input: 'stay queued', source: 'chat' });
   const retried = f.jobs.retry(original.id);
   expect(retried.input).toBe(original.input);
   expect(f.jobs.events(retried.id)[0]?.detail).toEqual({ retryOf: original.id });
   await vi.waitFor(() => expect(f.jobs.get(retried.id)?.status).toBe('succeeded'));
-  expect(f.jobs.get(queuedLuna.id)?.status).toBe('queued');
+  expect(f.jobs.get(queuedAgent.id)?.status).toBe('queued');
   expect(await f.repo.readFile('wiki/retry.md')).toBe('retained request');
   const applied = f.jobs.get(retried.id)!;
   vi.mocked(f.repo.createWorktree).mockImplementationOnce(async (id) => {
@@ -205,14 +205,15 @@ it('replays direct and revert failures immediately outside the Luna queue with o
   expect(f.jobs.get(failedRevert.id)?.status).toBe('failed');
 });
 
-it('preserves legacy rows during history migration and accepts legacy timestamp cursors', async () => {
+it('preserves legacy rows through history and agent migrations and accepts legacy timestamp cursors', async () => {
   const db = openDb(':memory:');
   try {
     for (const name of ['001_core', '003_jobs']) db.exec(await readFile(new URL(`../db/migrations/${name}.sql`, import.meta.url), 'utf8'));
     db.prepare("INSERT INTO write_jobs(id,user_id,source,input,status,summary,commits,error,created_at,finished_at) VALUES ('legacy',99,'mcp','original input','failed','original summary','[\"abc\"]','original error','2026-01-01T00:00:00.000Z','2026-01-02T00:00:00.000Z')").run();
     db.exec(await readFile(new URL('../db/migrations/007_history.sql', import.meta.url), 'utf8'));
+    db.exec(await readFile(new URL('../db/migrations/016_agent_job_kind.sql', import.meta.url), 'utf8'));
     const repository = new WriteJobsRepository(db);
-    expect(repository.get('legacy')).toMatchObject({ userId: 99, kind: 'luna', source: 'mcp', client: null, input: 'original input', status: 'failed', summary: 'original summary', commits: ['abc'], conflicts: [], error: 'original error' });
+    expect(repository.get('legacy')).toMatchObject({ userId: 99, kind: 'agent', source: 'mcp', client: null, input: 'original input', status: 'failed', summary: 'original summary', commits: ['abc'], conflicts: [], error: 'original error' });
     repository.enqueue('new', 99, 'new input', '2026-02-01T00:00:00.000Z', 'web');
     expect(repository.list({ before: '2026-02-01T00:00:00.000Z' }).map((job) => job.id)).toEqual(['legacy']);
   } finally { db.close(); }
@@ -231,7 +232,7 @@ it('records both conflict attempts and their verified outcomes through the workt
     expect(merged).toMatchObject({ ok: false, conflicts: ['wiki/conflict.md'] });
     wt.onPhase = (phase, detail) => f.jobs.phase(job.id, phase, detail);
     let attempt = 0;
-    const luna = {
+    const agent = {
       baseInstructions: async () => '',
       worktreeTools: () => [{
         name: 'write_file', description: 'Resolve', parameters: { type: 'object' },
@@ -242,8 +243,8 @@ it('records both conflict attempts and their verified outcomes through the workt
         if (attempt === 2) await tools[0]!.run({ path: 'wiki/conflict.md', content: 'branch\nmain\n' });
         return { text: '' };
       },
-    } as unknown as LunaService;
-    await resolveConflicts(luna, f.repo, f.acl, wt, ['wiki/conflict.md']);
+    } as unknown as AgentService;
+    await resolveConflicts(agent, f.repo, f.acl, wt, ['wiki/conflict.md']);
     expect(await wt.read('wiki/conflict.md')).toBe('branch\nmain\n');
     expect(f.jobs.events(job.id).filter((event) => event.phase === 'resolving_conflict').map((event) => event.detail)).toEqual([
       { attempt: 1, result: 'started', files: ['wiki/conflict.md'] },

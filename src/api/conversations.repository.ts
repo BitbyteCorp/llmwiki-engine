@@ -3,7 +3,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import type { Statement } from 'better-sqlite3';
 import { DB } from '../common/tokens.js';
 import type { Db } from '../db/index.js';
-import type { Citation } from '../luna/luna.types.js';
+import type { Citation } from '../agent/agent.types.js';
 import type { Conversation, Message, MessageContext, Usage } from './conversations.types.js';
 
 type Row = Omit<Message, 'citations' | 'attachments' | 'context' | 'usage'> & { citations: string; attachments: string; context: string | null; usage: string | null };

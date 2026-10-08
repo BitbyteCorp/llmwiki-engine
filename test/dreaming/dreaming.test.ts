@@ -17,8 +17,8 @@ import { DreamingService } from '../../src/dreaming/dreaming.service.js';
 import { EventsService } from '../../src/events/events.service.js';
 import { KnowledgeRepo, type CommitInfo, type FileChange, type Worktree } from '../../src/knowledge/repo.js';
 import { commitTrailers, type CommitMetadata } from '../../src/knowledge/commit-trailers.js';
-import { LunaService } from '../../src/luna/luna.service.js';
-import type { AgentTool, RunAgentOptions } from '../../src/luna/luna.types.js';
+import { AgentService } from '../../src/agent/agent.service.js';
+import type { AgentTool, RunAgentOptions } from '../../src/agent/agent.types.js';
 import { IndexerService } from '../../src/rag/indexer.service.js';
 import { SearchService } from '../../src/rag/search.service.js';
 import type { SearchHit } from '../../src/rag/types.js';
@@ -252,7 +252,7 @@ async function fixture() {
   });
   const indexer = { syncToHead: vi.fn(async () => ({ indexedSha: await repo.headSha(), changedFiles: 1 })) };
   const search = { search: vi.fn(async () => [similarHit]) };
-  const luna = {
+  const agent = {
     runAgent,
     baseInstructions: async () => 'Use verified facts.',
     worktreeTools: (worktree: Worktree, author: Author): AgentTool[] => [
@@ -270,7 +270,7 @@ async function fixture() {
       { provide: DB, useValue: db },
       { provide: LOGGER, useValue: pino({ level: 'silent' }) },
       { provide: KnowledgeRepo, useValue: repo },
-      { provide: LunaService, useValue: luna },
+      { provide: AgentService, useValue: agent },
       { provide: IndexerService, useValue: indexer },
       { provide: SearchService, useValue: search },
       AuditService,
@@ -338,17 +338,17 @@ describe('DreamingService.runOnce', () => {
     expect(f.indexer.syncToHead).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps main untouched when Luna fails, but still pushes main', async () => {
+  it('keeps main untouched when Dony fails, but still pushes main', async () => {
     const f = await fixture();
     const head = await f.repo.change();
     f.addMessage('pending');
     f.runAgent.mockImplementationOnce(async (options) => {
       await writeJournal(options);
-      throw new Error('Luna unavailable');
+      throw new Error('Dony unavailable');
     });
     const run = await f.dreaming.runOnce();
     expect(run).toMatchObject({ status: 'failed', mergeSha: null, pushed: true });
-    expect(run.error).toContain('Luna unavailable');
+    expect(run.error).toContain('Dony unavailable');
     expect(await f.repo.headSha()).toBe(head);
     expect(await f.repo.listFiles('journal/')).toEqual([]);
     expect(f.learnedAt('pending')).toBeNull();
@@ -432,7 +432,7 @@ describe('DreamingService.runOnce', () => {
     const head = await f.repo.change();
     f.checkpoint(f.baseSha);
     f.addMessage('retry-me');
-    f.runAgent.mockRejectedValueOnce(new Error('Temporary Luna failure'));
+    f.runAgent.mockRejectedValueOnce(new Error('Temporary Dony failure'));
     const dreaming = f.dreaming;
     const failed = await dreaming.runOnce();
     expect(failed.status).toBe('failed');
@@ -555,7 +555,7 @@ describe('registerDreamCommands', () => {
   it.each(['succeeded', 'failed'] as const)('prints the %s run from a real Nest context and sets failure exit status', async (status) => {
     const f = await fixture();
     f.addMessage('cli-pending');
-    if (status === 'failed') f.runAgent.mockRejectedValueOnce(new Error('CLI Luna unavailable'));
+    if (status === 'failed') f.runAgent.mockRejectedValueOnce(new Error('CLI Dony unavailable'));
     const printed = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     const previousExitCode = process.exitCode;
     process.exitCode = undefined;
@@ -565,7 +565,7 @@ describe('registerDreamCommands', () => {
       await program.parseAsync(['dream', 'run'], { from: 'user' });
       const output = JSON.parse(printed.mock.calls[0][0] as string) as { id: string; status: string; pushed: boolean; error: string | null };
       expect(output).toMatchObject({
-        status, pushed: true, error: status === 'failed' ? 'CLI Luna unavailable' : null,
+        status, pushed: true, error: status === 'failed' ? 'CLI Dony unavailable' : null,
       });
       expect(process.exitCode).toBe(status === 'failed' ? 1 : undefined);
       expect(f.db.prepare('SELECT status FROM dream_runs WHERE id = ?').get(output.id)).toEqual({ status });

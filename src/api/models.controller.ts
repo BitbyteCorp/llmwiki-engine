@@ -4,18 +4,18 @@ import { SessionGuard } from '../auth/guards/session.guard.js';
 import { CONFIG } from '../common/tokens.js';
 import type { Config } from '../config.js';
 
-@Controller('api/luna')
+@Controller('api/models')
 @UseGuards(SessionGuard, RolesGuard)
-export class LunaModelsController {
+export class ModelsController {
   constructor(@Inject(CONFIG) private readonly config: Config) {}
 
-  @Get('models')
+  @Get()
   models() {
     return {
-      models: (process.env.LUNA_MODELS ?? this.config.lunaModel).split(',').map(value => value.trim()).filter(Boolean),
-      defaultModel: this.config.lunaModel,
+      models: this.config.llmModels,
+      defaultModel: this.config.llmModel,
       efforts: ['low', 'medium', 'high'],
-      defaultEffort: this.config.lunaReasoningEffort,
+      defaultEffort: this.config.llmReasoningEffort,
     };
   }
 }

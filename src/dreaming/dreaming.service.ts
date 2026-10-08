@@ -9,7 +9,7 @@ import type { Config } from '../config.js';
 import { EventsService } from '../events/events.service.js';
 import { KnowledgeRepo, type CommitInfo, type Worktree } from '../knowledge/repo.js';
 import type { Logger } from '../log.js';
-import { LunaService } from '../luna/luna.service.js';
+import { AgentService } from '../agent/agent.service.js';
 import { IndexerService } from '../rag/indexer.service.js';
 import { SearchService } from '../rag/search.service.js';
 import type { DreamRun } from './dream-run.types.js';
@@ -49,7 +49,7 @@ export class DreamingService implements OnApplicationShutdown {
 
   constructor(
     private readonly repo: KnowledgeRepo,
-    private readonly luna: LunaService,
+    private readonly agent: AgentService,
     private readonly indexer: IndexerService,
     private readonly search: SearchService,
     @Inject(CONFIG) private readonly config: Config,
@@ -96,7 +96,7 @@ export class DreamingService implements OnApplicationShutdown {
   }
 
   private async execute(): Promise<DreamRun> {
-    const { repo, luna, indexer, config, log, runs } = this;
+    const { repo, agent, indexer, config, log, runs } = this;
     const run: DreamRun = {
       id: randomUUID(), startedAt: new Date().toISOString(), finishedAt: null,
       status: 'running', fromSha: null, toSha: null, mergeSha: null, pushed: false, error: null,
@@ -155,10 +155,10 @@ export class DreamingService implements OnApplicationShutdown {
         worktree.setCommitMetadata({ jobId: run.id, source: 'dreaming', requester: config.gitBotEmail });
         const author = { name: config.gitBotName, email: config.gitBotEmail };
         const journalPath = `journal/${date}.md`;
-        const result = await luna.runAgent({
-          instructions: `${await luna.baseInstructions()}\n\n${dreamInstructions(date, journalPath)}`,
+        const result = await agent.runAgent({
+          instructions: `${await agent.baseInstructions()}\n\n${dreamInstructions(date, journalPath)}`,
           input: JSON.stringify({ date, fromSha: run.fromSha, toSha: run.toSha, commits, changedNotes, userMessages: messages }),
-          tools: luna.worktreeTools(worktree, author),
+          tools: agent.worktreeTools(worktree, author),
         });
         run.summary = result.text || null;
         if (!(await worktree.read(journalPath))?.trim()) {
@@ -170,7 +170,7 @@ export class DreamingService implements OnApplicationShutdown {
         await repo.withMergeLock(async () => {
           const merge = await wt.mergeMain();
           if (!merge.ok) {
-            await luna.resolveConflicts(wt, merge.conflicts);
+            await agent.resolveConflicts(wt, merge.conflicts);
             await wt.finishMerge(author);
           }
           const previousHead = await repo.headSha();
@@ -245,7 +245,7 @@ function dreamInstructions(date: string, journalPath: string): string {
 깨진 위키링크와 index.md를 고치고 MEMORY.md의 낡은 항목을 정리한다. raw/ 원문은 불변으로 보존한다.
 ACL 경계를 넘어 제한된 노트·사용자 자료의 내용이나 의미를 다른 권한 영역의 노트, 색인, 메모리, 일기에 복사·요약·의역하지 않는다. 이 시스템 작업은 전체 저장소를 읽을 수 있지만 공유 범위를 확대할 권한은 없다. 경계가 불명확하면 내용을 옮기지 않고 기존 영역에 보존한다.
 userMessages에는 아직 학습하지 않은 사용자 발언만 있다. 사용자가 직접 말한 사실과 정정만 추출한다.
-질문이나 요청을 사실로 바꾸지 않고 Luna/assistant 답변을 재학습하지 않으며 대화를 덤프하지 않는다.
+질문이나 요청을 사실로 바꾸지 않고 도니/assistant 답변을 재학습하지 않으며 대화를 덤프하지 않는다.
 대화에서 추출하는 지식은 공용 위키에 공개된다는 점을 고려하고, 비밀값은 저장하지 않으며 개인정보는 마스킹한다.
 ${journalPath}에 오늘의 변경, 정리한 내용, 남은 쟁점을 요약한 한국어 일기를 반드시 작성한다.
 동일 날짜 일기가 있으면 기존 내용을 보존하며 이번 정리 내용을 반영한다. 입력에 없는 새 사실은 만들지 않는다.

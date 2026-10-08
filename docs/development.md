@@ -9,7 +9,7 @@
 - Node.js 24, TypeScript 6, ESM, pnpm 10.34.6을 사용한다. 서버 TypeScript는 엄격 모드와 `NodeNext` 모듈 해석을 사용하며, 소스의 로컬 import에는 빌드 결과에 맞는 `.js` 확장자를 쓴다.
 - 서버는 NestJS와 Express 어댑터를 사용한다. 개발과 CLI 실행은 SWC의 `@swc-node/register/esm-register`, 서버 컴파일은 `tsc`, 테스트는 Vitest와 `unplugin-swc`를 사용한다.
 - 상태와 검색 인덱스는 `better-sqlite3`와 `sqlite-vec`로 SQLite에 저장한다. ORM 없이 SQL 마이그레이션을 적용한다.
-- Luna는 OpenAI SDK의 Responses API와 함수 도구를 사용한다. 환경 변수 검증은 Zod, CLI는 Commander, 로그는 Pino, 스케줄은 Croner, JWT/JWKS는 Jose, frontmatter는 gray-matter를 사용한다. Git은 `git` CLI를 인자 배열로 실행한다.
+- 도니는 OpenAI SDK의 Responses API와 함수 도구를 사용한다. 환경 변수 검증은 Zod, CLI는 Commander, 로그는 Pino, 스케줄은 Croner, JWT/JWKS는 Jose, frontmatter는 gray-matter를 사용한다. Git은 `git` CLI를 인자 배열로 실행한다.
 - `web/`는 Next.js App Router, React 19, TypeScript, Tailwind CSS 4, shadcn/ui를 사용하는 웹 프로젝트다. 화면 경로는 App Router, 서버 상태는 TanStack Query, 마크다운은 react-markdown과 remark-gfm이 담당한다. 세부 화면 구성은 [웹](web.md)에 기록한다.
 - 패키지는 루트 `package.json`과 `pnpm-lock.yaml` 하나로 관리하며 설치도 루트에서 한 번만 실행한다. Next.js와 UI 의존성도 루트에 두며 `web/package.json`이나 별도 웹 lockfile은 두지 않는다.
 
@@ -25,7 +25,7 @@ Next의 CommonJS 진입점은 호출 가능한 함수를 내보내지만 `NodeNe
 | `src/common/`, `src/app.module.ts` | 전역 설정·로그·DB 제공자, 오류 필터·검증 파이프·상태 확인과 기능 모듈 구성을 담당한다. |
 | `src/main.ts`, `src/cli.ts` | Nest와 Next를 함께 실행하는 HTTP 진입점과 Nest 애플리케이션 컨텍스트를 사용하는 관리 명령 진입점이다. |
 | `src/knowledge/`, `src/jobs/` | 지식 저장소의 git 조작과 쓰기 작업의 실행·상태·머지를 담당한다. |
-| `src/luna/`, `src/knowledge/seed/` | 에이전트 루프와 도구, 빈 지식 저장소의 초기 문서를 담당한다. |
+| `src/agent/`, `src/knowledge/seed/` | 에이전트 루프와 도구, 빈 지식 저장소의 초기 문서를 담당한다. |
 | `src/rag/` | 파생 검색 인덱스와 검색·재구축 명령을 담당한다. |
 | `src/auth/` | 사용자·권한·설정, Google 로그인, 웹 세션, MCP OAuth를 담당한다. |
 | `src/mcp/`, `src/api/` | MCP 도구와 웹 REST API·대화 저장을 각각 담당한다. |
@@ -47,6 +47,13 @@ HTTP 진입점은 Nest 애플리케이션을 만들고 Next를 준비한 뒤 같
 Zod 검증 실패는 400과 `invalid_input`을 반환한다. 메시지는 각 오류를 점으로 연결한 `path: message`로 표현하고 여러 오류를 `; `로 연결하며, 경로 없는 오류는 기존 API 계약과 같은 `input: message`를 사용한다. 오류 객체의 숫자 `status`가 400~599이면 해당 상태를 보존하고, 문자열 `code`가 없는 500 이외 오류는 `bad_request`를 사용한다.
 
 HTTP 진입점과 Nest 테스트 앱은 `src/common/http/configure-app.ts`의 `configureApp(app)`을 초기화와 수신 시작 전에 적용한다. OAuth 본문은 URL-encoded와 JSON 모두 64 KiB로 제한하며, URL-encoded 필드는 `extended: false`로 파싱한다. `/api/imports`와 `/mcp`의 JSON 본문은 원문 수집을 위해 21 MiB까지 받는다. 이후 공용 JSON·`extended: true` URL-encoded 파서를 명시적으로 등록해 나머지 백엔드 경로에는 기본 100 KiB 제한을 유지한다. Nest의 파서 중복 검사는 경로가 아니라 미들웨어 이름만 확인하므로 경로 전용 파서만 등록하면 다른 경로의 본문 파싱이 사라지는 함정이 있다. 본문 제한을 넘으면 413과 `bad_request`를 반환한다.
+
+### SQL 마이그레이션과 테이블 재구축
+`src/db/index.ts`의 마이그레이션 러너는 SQL 파일을 파일명 순서로 적용하고, 파일명과 적용 시각을 `schema_migrations`에 저장한다. 이미 적용한 파일은 다시 실행하지 않으며 각 파일의 SQL과 적용 이력 기록을 같은 트랜잭션으로 처리한다. 기존 마이그레이션은 변경하지 않고 새 파일로 스키마를 바꾼다.
+
+SQLite는 기존 `CHECK` 제약을 `ALTER TABLE`로 변경할 수 없으므로 테이블을 재구축해야 한다. 재구축 SQL은 `-- rebuild-table: <table>` 마커로 대상 테이블을 선언한다. 러너는 대상의 명시적 인덱스·트리거 정의와 기존 외래 키 설정을 보존하고, 트랜잭션 밖에서 `PRAGMA foreign_keys = OFF`를 적용한다. SQLite에서 트랜잭션 안의 `PRAGMA foreign_keys` 변경은 효력이 없기 때문이다. 이미 진행 중인 트랜잭션에서는 이 마커가 있는 마이그레이션을 거절한다.
+
+테이블 교체와 보존한 인덱스·트리거 복원 후 같은 트랜잭션에서 `foreign_key_check`를 실행한다. 위반이 있으면 스키마 변경과 적용 이력을 모두 롤백하며, 성공·실패와 관계없이 이전 외래 키 설정을 복원한다. [작업 종류 마이그레이션](write-flow.md#작업-종류와-출처)의 `016_agent_job_kind.sql`도 이 마커를 사용한다.
 
 ### 루트 스크립트와 빌드 자산
 | 명령 | 동작 |
@@ -77,7 +84,7 @@ HTTP 진입점과 Nest 테스트 앱은 `src/common/http/configure-app.ts`의 `c
 fixture의 범위를 검증하는 명령은 `pnpm vitest run test/fake-openai.test.ts`다. 이 fixture는 OpenAI API의 유료 호출이나 외부 네트워크 없이 도구 호출과 스트리밍을 재현하기 위한 것이며 실제 모델 품질을 평가하지 않는다.
 
 ### 환경 변수
-설정은 프로세스 환경 변수에서 읽는다. 키와 비밀값은 저장소나 이미지에 넣지 않고 실행 시 전달한다. 대부분은 `src/config.ts`의 Zod 스키마가 검증한다. `LUNA_MODELS`는 Luna 서비스와 모델 목록 컨트롤러가, `UPLOAD_RETENTION_DAYS`는 업로드 서비스가 직접 읽는다. 빈 `LUNA_MODELS`는 미설정과 다르며 허용 모델이 없는 목록이 되므로 기본 모델만 사용할 때는 변수를 아예 설정하지 않는다.
+설정은 프로세스 환경 변수에서 읽는다. 키와 비밀값은 저장소나 이미지에 넣지 않고 실행 시 전달한다. 대부분은 `src/config.ts`의 Zod 스키마가 검증한다. 모델 목록과 기본 모델·추론 강도도 공용 설정을 사용하며, `UPLOAD_RETENTION_DAYS`는 업로드 서비스가 직접 읽는다. `LLM_MODELS`는 앞뒤 공백과 빈 항목을 제거한 뒤 하나 이상의 모델이 있어야 하므로 빈 값은 허용하지 않는다.
 
 | 변수 | 기본값 | 의미 |
 | --- | --- | --- |
@@ -91,21 +98,20 @@ fixture의 범위를 검증하는 명령은 `pnpm vitest run test/fake-openai.te
 | `RATE_LIMIT_AUTH` | `30` | 인증·OAuth 경로에서 집계 구간당 IP별 최대 요청 수다. |
 | `RATE_LIMIT_USER` | `60` | 검색·채팅 메시지·쓰기·가져오기가 공유하는 사용자별 최대 요청 수다. |
 | `AUTH_CLEANUP_INTERVAL_MS` | `300000` | 만료 세션·인증 요청·코드·토큰 정리 주기(밀리초)다. |
-| `OPENAI_API_KEY` | 미설정 | 시작 시 필수는 아니지만 Luna와 임베딩 실행에는 필요하다. 미설정이면 해당 기능이 명확한 오류로 실패한다. |
+| `OPENAI_API_KEY` | 미설정 | 시작 시 필수는 아니지만 도니와 임베딩 실행에는 필요하다. 미설정이면 해당 기능이 명확한 오류로 실패한다. |
 | `OPENAI_BASE_URL` | 미설정 | OpenAI 호환 API 주소를 재정의한다. 테스트 서버 연결에도 사용한다. |
-| `LUNA_MODEL` | `gpt-6-luna` | Luna의 응답 모델이다. |
-| `LUNA_REASONING_EFFORT` | `medium` | Luna의 추론 강도다. |
-| `LUNA_MODELS` | `LUNA_MODEL` | 쉼표로 구분하는 채팅 모델 허용 목록이다. 미설정이면 기본 Luna 모델만 선택할 수 있다. 설정할 때는 `LUNA_MODEL`도 포함해야 기본값 요청을 허용하며 빈 값은 모든 모델을 거절한다. |
+| `LLM_MODELS` | `gpt-6-luna` | 쉼표로 구분하는 선택 가능 모델 목록이다. 앞뒤 공백과 빈 항목을 제거하고, 첫 항목을 기본 모델로 사용한다. 요청별 모델은 이 목록에 있어야 하며 목록은 비어 있을 수 없다. |
+| `LLM_REASONING_EFFORT` | `medium` | 도니의 기본 추론 강도다. |
 | `UPLOAD_RETENTION_DAYS` | `7` | 사용하지 않는 임시 업로드의 보관 일수다. 가져온 raw 원문이나 assets git 파일의 보관 기간과 다르다. |
 | `EMBEDDING_MODEL` | `text-embedding-3-small` | 검색 임베딩 모델이다. |
 | `EMBEDDING_DIMENSIONS` | `1536` | 임베딩 벡터 차원이다. |
-| `SEARCH_RERANK` | `off` | `llm`이면 검색 후보의 Luna 재정렬을 사용한다. |
+| `SEARCH_RERANK` | `off` | `llm`이면 설정한 LLM 모델로 검색 후보를 재정렬한다. |
 | `SEARCH_EXPAND` | `off` | `llm`이면 검색 질의 확장을 사용한다. |
 | `INDEX_POLL_SECONDS` | `60` | 외부 git 변경과 지식 저장소 HEAD를 확인하는 인덱스 동기화 주기다. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | 미설정 | Google 로그인에 필요하다. 미설정 상태에서도 부팅할 수 있지만 Google 로그인은 실패한다. |
 | `KNOWLEDGE_REPO_URL` | 미설정 | 지식 저장소의 git 원격 주소다. 없으면 로컬 `main` 저장소를 생성하고 일일 push를 건너뛰며 로그로 남긴다. |
 | `GIT_SSH_KEY_PATH` | 미설정 | git의 `GIT_SSH_COMMAND`에서 사용하는 SSH 배포 키 경로다. |
-| `GIT_BOT_NAME`, `GIT_BOT_EMAIL` | `Luna`, `luna@llmwiki.local` | git 커미터 정보다. |
+| `GIT_BOT_NAME`, `GIT_BOT_EMAIL` | `도니`, `dony@llmwiki.local` | git 커미터 정보다. |
 | `DREAM_CRON` | `0 3 * * *` | 꿈꾸기 실행 일정이다. |
 | `TZ_DREAM` | `Asia/Seoul` | 꿈꾸기 일정의 시간대다. |
 | `SLACK_WEBHOOK_URL` | 미설정 | 꿈꾸기의 영속 실행 기록이 저장된 뒤 결과·소요 시간·머지 SHA·push 결과만 알리는 선택적 Slack webhook이다. 원문 노트나 작업 입력은 보내지 않는다. |
@@ -129,7 +135,7 @@ pnpm cli user add admin@example.com --role admin
 DEV_LOGIN_EMAIL=admin@example.com pnpm dev
 ```
 
-`pnpm dev` 하나로 API와 UI를 함께 실행하므로 별도 UI 개발 서버를 띄우지 않는다. 서버가 준비되면 `http://localhost:3000/auth/dev-login`에 접근해 등록한 관리자 세션을 만든다. 개발 로그인은 Google 없이 로컬 화면을 확인하기 위한 접점이며 신규 사용자를 자동 생성하지 않는다. 사용자 이메일은 CLI로 미리 등록해야 한다. API 키 없이 로컬 인증과 저장소를 확인할 수 있지만 Luna의 응답과 임베딩을 확인하려면 `OPENAI_API_KEY`가 필요하다.
+`pnpm dev` 하나로 API와 UI를 함께 실행하므로 별도 UI 개발 서버를 띄우지 않는다. 서버가 준비되면 `http://localhost:3000/auth/dev-login`에 접근해 등록한 관리자 세션을 만든다. 개발 로그인은 Google 없이 로컬 화면을 확인하기 위한 접점이며 신규 사용자를 자동 생성하지 않는다. 사용자 이메일은 CLI로 미리 등록해야 한다. API 키 없이 로컬 인증과 저장소를 확인할 수 있지만 도니의 응답과 임베딩을 확인하려면 `OPENAI_API_KEY`가 필요하다.
 
 Next custom server에는 `PUBLIC_URL`의 호스트 이름과 `PORT`를 전달한다. Next 개발 모드는 이 호스트와 `localhost`를 개발 자산·HMR의 허용 origin으로 사용한다. 이를 생략하면 Next가 `localhost:3000`을 기준으로 초기화되어 `127.0.0.1` 같은 설정된 주소에서 HMR 연결이 거절되고 화면이 로딩 상태에 머무를 수 있다. 브라우저에서는 `PUBLIC_URL`에 설정한 호스트로 접근한다.
 

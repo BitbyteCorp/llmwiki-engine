@@ -30,7 +30,7 @@ import type { WriteJob } from '../jobs/write-job.types.js';
 import { WriteJobsRepository } from '../jobs/write-jobs.repository.js';
 import { WriteJobsService } from '../jobs/write-jobs.service.js';
 import { KnowledgeRepo, type CommitInfo, type FileChange, type Worktree } from '../knowledge/repo.js';
-import { LunaService } from '../luna/luna.service.js';
+import { AgentService } from '../agent/agent.service.js';
 import { IndexerService } from '../rag/indexer.service.js';
 import { HistoryController } from './history.controller.js';
 import { HistoryService } from './history.service.js';
@@ -72,7 +72,7 @@ describe('folder ACL at notes, history and job HTTP boundaries', () => {
         SessionGuard, RolesGuard, EventsService, AuditService, AclService,
         { provide: CONFIG, useValue: config }, { provide: DB, useValue: db }, { provide: LOGGER, useValue: log },
         { provide: KnowledgeRepo, useValue: repo },
-        { provide: LunaService, useValue: { runWrite: async () => { throw new Error('Direct HTTP writes must not invoke Luna'); } } },
+        { provide: AgentService, useValue: { runWrite: async () => { throw new Error('Direct HTTP writes must not invoke Dony'); } } },
         { provide: IndexerService, useValue: { syncToHead: async () => ({ indexedSha: await repo.headSha(), changedFiles: 1 }) } },
       ],
     }).compile();

@@ -45,7 +45,7 @@ it('follows renames with historical paths even across a page cursor', async () =
 it('records trailers and attributes grouped blame ranges to the introducing jobs', async () => {
   const { repo } = await fixture();
   const seed = (await repo.show(await repo.headSha())).commit;
-  expect(seed.trailers).toEqual({ 'Wiki-Job': 'initialize', 'Wiki-Source': 'dreaming', 'Wiki-Requester': 'luna@llmwiki.local' });
+  expect(seed.trailers).toEqual({ 'Wiki-Job': 'initialize', 'Wiki-Source': 'dreaming', 'Wiki-Requester': 'dony@llmwiki.local' });
   const wt = await repo.createWorktree('blame');
   wt.setCommitMetadata(metadata);
   await wt.write('wiki/lines.md', 'one\ntwo\nthree\nfour\n');
@@ -54,7 +54,7 @@ it('records trailers and attributes grouped blame ranges to the introducing jobs
   await wt.write('wiki/lines.md', 'one\nTWO\nthree\nfour\n');
   const last = (await wt.commit('Edit line', author))!;
   await wt.fastForwardMain();
-  expect((await repo.show(first)).commit).toMatchObject({ committerName: 'Luna', committerEmail: 'luna@llmwiki.local', committedAt: expect.any(String), trailers: { 'Wiki-Job': metadata.jobId, 'Wiki-Source': 'web', 'Wiki-Requester': author.email, 'Wiki-Client': 'editor' } });
+  expect((await repo.show(first)).commit).toMatchObject({ committerName: '도니', committerEmail: 'dony@llmwiki.local', committedAt: expect.any(String), trailers: { 'Wiki-Job': metadata.jobId, 'Wiki-Source': 'web', 'Wiki-Requester': author.email, 'Wiki-Client': 'editor' } });
   expect(await repo.blame('wiki/lines.md', 'main')).toEqual({ ref: last, ranges: [
     { start: 1, end: 1, sha: first, authorName: author.name, date: expect.any(String), summary: 'Create lines', jobId: 'job-123', source: 'web' },
     { start: 2, end: 2, sha: last, authorName: author.name, date: expect.any(String), summary: 'Edit line', jobId: 'job-456', source: 'revert' },

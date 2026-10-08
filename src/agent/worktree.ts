@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { Worktree } from '../knowledge/repo.js';
 import type { SearchService } from '../rag/search.service.js';
-import type { AgentTool } from './luna.types.js';
+import type { AgentTool } from './agent.types.js';
 import type { AclService, AclUser } from '../acl/acl.service.js';
 
 const pathArgs = z.object({ path: z.string().min(1) }).strict();
@@ -100,7 +100,7 @@ export function makeWorktreeTools(
     },
     {
       name: 'commit',
-      description: 'Commit a reviewed logical unit of worktree changes. The requester is the author; the configured Luna bot is the committer. A null SHA means no changes.',
+      description: 'Commit a reviewed logical unit of worktree changes. The requester is the author; the configured Dony bot is the committer. A null SHA means no changes.',
       parameters: { type: 'object', properties: { message: { type: 'string', minLength: 1 } }, required: ['message'], additionalProperties: false },
       async run(args: unknown) {
         const { message } = commitArgs.parse(args);

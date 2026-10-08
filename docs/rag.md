@@ -3,7 +3,7 @@
 
 ## 배경
 
-검색은 Luna의 답변 근거, 기존 노트에 대한 지식 반영, 꿈꾸기의 중복 후보 탐색과 웹의 빠른 탐색에 쓰인다. 지식 저장소의 main이 진실 원천이며 SQLite 인덱스는 언제든 재구축할 수 있는 파생물이다. 작업 워크트리의 미머지 변경과 `MEMORY.md`는 검색 대상이 아니다.
+검색은 도니의 답변 근거, 기존 노트에 대한 지식 반영, 꿈꾸기의 중복 후보 탐색과 웹의 빠른 탐색에 쓰인다. 지식 저장소의 main이 진실 원천이며 SQLite 인덱스는 언제든 재구축할 수 있는 파생물이다. 작업 워크트리의 미머지 변경과 `MEMORY.md`는 검색 대상이 아니다.
 
 ## 내용
 
@@ -36,7 +36,7 @@ frontmatter를 분리하고 H1~H6 제목을 기준으로 청크를 만든다. �
 
 각 기본 어휘 채널과 벡터 채널에서 최대 200개의 필터 적용 후보를 가져온다. 청크 점수는 RRF `1/(60+rank)`로 합친다. RRF가 BM25의 절대 크기를 지우므로 원래 질의 term이 제목·heading·태그에 포함된 비율에 각각 0.5·0.25·0.1을 곱한 값 중 최대값을 택하고, `1+최대값`을 청크 점수에 곱한다. 제목의 강한 근거가 반복 본문에 밀리지 않게 하는 제한된 필드 보정이다. 노트 점수는 최고 청크 점수에 다음 세 청크의 점수를 각각 0.1, 0.05, 0.025배로 더하되 추가 합은 최고 점수의 20%로 제한한다. 무제한 청크 합산을 제거하여 노트 길이가 순위를 지배하지 않게 한다. 동일 점수의 노트는 경로로 결정적으로 정렬한다. `related`는 직접 검색된 노트의 양방향 1-hop 링크 맥락이며 링크 자체를 검색 hit로 승격하거나 의미 이웃으로 간주하지 않는다. 링크 그래프 점수 보정은 사용하지 않는다.
 
-`SEARCH_EXPAND=off|llm`의 기본값은 `off`다. `llm`은 기존 OpenAI Responses 클라이언트 설정과 Luna 모델을 사용해 별칭·한국어↔영어 번역 질의를 최대 3개 생성한다. 입력은 500자, 별칭은 각각 100자, 출력은 160토큰으로 제한하며 각 확장 채널의 RRF 가중치는 0.35다. 원래 질의 증거가 확장보다 강하다. 서비스별 최대 200개, 10분 캐시를 사용한다.
+`SEARCH_EXPAND=off|llm`의 기본값은 `off`다. `llm`은 기존 OpenAI Responses 클라이언트 설정과 설정한 LLM 모델을 사용해 별칭·한국어↔영어 번역 질의를 최대 3개 생성한다. 입력은 500자, 별칭은 각각 100자, 출력은 160토큰으로 제한하며 각 확장 채널의 RRF 가중치는 0.35다. 원래 질의 증거가 확장보다 강하다. 서비스별 최대 200개, 10분 캐시를 사용한다.
 
 `SEARCH_RERANK=off|llm`의 기본값도 `off`다. `llm`은 융합 상위 최대 12개 노트의 제목·짧은 excerpt만 보내 순서를 정한다. 반환값은 기존 후보 인덱스의 완전한 순열이어야 하며 새 노트를 만들어 넣지 않는다. 출력은 180토큰으로 제한한다. 순서에 맞춰 기존 점수 스케일을 재배정한다.
 
@@ -44,7 +44,7 @@ frontmatter를 분리하고 H1~H6 제목을 기준으로 청크를 만든다. �
 
 ### 검색 결과와 필터
 
-`SearchService.search(query,opts)`는 Luna·MCP·꿈꾸기를 위해 `SearchHit[]`를 계속 반환한다. `SearchService.query(query,opts)`는 `{ mode,degraded,hits,nextCursor }`를 반환한다. 기본 limit은 내부 서비스·HTTP·MCP 모두 **20**이며 1~100의 정수다. 빈 내부 질의는 빈 배열이며 HTTP의 빈 `q`는 400이다.
+`SearchService.search(query,opts)`는 도니·MCP·꿈꾸기를 위해 `SearchHit[]`를 계속 반환한다. `SearchService.query(query,opts)`는 `{ mode,degraded,hits,nextCursor }`를 반환한다. 기본 limit은 내부 서비스·HTTP·MCP 모두 **20**이며 1~100의 정수다. 빈 내부 질의는 빈 배열이며 HTTP의 빈 `q`는 400이다.
 
 hit의 필드는 `path`, `title`, `kind`, `score`, `heading`, `anchor`, `excerpt`, `highlights`, `tags`, `updatedAt`, `snippet`, `related`다. `excerpt`는 첫 매칭 주변의 약 260자 본문이며 잘린 양끝은 `…`로 표시한다. `highlights`의 `[start,end]`는 excerpt의 UTF-16 반열린 범위다. `snippet`은 기존 내부 호출자의 호환을 위해 가장 좋은 청크 본문 전체를 유지한다. `heading`은 섹션 경로이며 `anchor`는 웹의 heading id다. `updatedAt`과 작성자 필터는 frontmatter 날짜가 아니라 마지막으로 해당 노트를 수정한 git 커밋에서 인덱싱한다. 시간이 없는 경우 `updatedAt:null`이다.
 
@@ -124,7 +124,7 @@ OpenAI 호스티드 file_search는 지식 복제와 별도 동기화가 필요�
 
 - [엔진 구성](architecture.md)은 SQLite·sqlite-vec 선택과 실행 구조를 설명한다.
 - [지식 저장소](knowledge-repository.md)는 검색 원문과 main의 역할을 설명한다.
-- [Luna](luna.md)는 검색 결과를 쓰는 모델과 임베딩의 역할을 설명한다.
+- [도니](agent.md)는 검색 결과를 쓰는 모델과 임베딩의 역할을 설명한다.
 - [MCP](mcp.md)와 [웹 버전](web.md)은 사용자 검색 인터페이스를 설명한다.
 - [쓰기 흐름](write-flow.md)과 [꿈꾸기](dreaming.md)는 main 머지와 지식 정리 절차를 설명한다.
 - [읽기 성능과 캐시 경계](performance.md)는 SQLite 읽기 인덱스, git·HTTP 캐시와 렌더링 비용을 설명한다.

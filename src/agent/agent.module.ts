@@ -1,11 +1,11 @@
 import { Module } from '@nestjs/common';
 import { KnowledgeModule } from '../knowledge/knowledge.module.js';
 import { RagModule } from '../rag/rag.module.js';
-import { LunaService } from './luna.service.js';
+import { AgentService } from './agent.service.js';
 
 @Module({
   imports: [KnowledgeModule, RagModule],
-  providers: [LunaService],
-  exports: [LunaService],
+  providers: [AgentService],
+  exports: [AgentService],
 })
-export class LunaModule {}
+export class AgentModule {}

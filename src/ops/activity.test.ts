@@ -31,7 +31,7 @@ const viewer: User = { id: 1, email: 'viewer@example.test', name: 'Viewer', role
 const admin: User = { ...viewer, id: 3, email: 'admin@example.test', role: 'admin' };
 function commit(sha: string, at = stamp, source = 'web', jobId?: string): CommitInfo {
   return { sha, parents: [], authorName: 'Writer', authorEmail: 'writer@example.test', date: at,
-    committedAt: at, committerName: 'Luna', committerEmail: 'luna@example.test', subject: 'Updated note', body: '',
+    committedAt: at, committerName: '도니', committerEmail: 'dony@example.test', subject: 'Updated note', body: '',
     trailers: { 'Wiki-Source': source, ...(jobId ? { 'Wiki-Job': jobId } : {}) } };
 }
 function dream(id: string, at = stamp): DreamRun {
@@ -238,10 +238,10 @@ describe('operations activity and REST', () => {
     const http = await server();
     const ok = await request(http).post('/api/admin/dreams/run').set('x-admin', '1').expect(201);
     expect(ok.body.status).toBe('succeeded');
-    manual.mockResolvedValueOnce({ ...dream('failed-run'), status: 'failed', error: 'Luna failed' });
+    manual.mockResolvedValueOnce({ ...dream('failed-run'), status: 'failed', error: 'Dony failed' });
     const failedRun = await request(http).post('/api/admin/dreams/run').set('x-admin', '1').expect(201);
     expect(failedRun.body.status).toBe('failed');
-    manual.mockRejectedValueOnce(new ApiError(503, 'unavailable', 'Luna unavailable'));
+    manual.mockRejectedValueOnce(new ApiError(503, 'unavailable', 'Dony unavailable'));
     await request(http).post('/api/admin/dreams/run').set('x-admin', '1').expect(503);
     const records = new AuditService(db).list({ limit: 10 }).events;
     expect(records.map((record) => [record.actorId, record.action, record.target, record.outcome])).toEqual([

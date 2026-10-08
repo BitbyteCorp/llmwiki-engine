@@ -29,7 +29,7 @@ import { EventsService } from '../src/events/events.service.js';
 import { NoteWriterService } from '../src/jobs/note-writer.service.js';
 import { WriteJobsRepository } from '../src/jobs/write-jobs.repository.js';
 import { KnowledgeRepo } from '../src/knowledge/repo.js';
-import { LunaService } from '../src/luna/luna.service.js';
+import { AgentService } from '../src/agent/agent.service.js';
 import { IndexerService } from '../src/rag/indexer.service.js';
 import { SearchService } from '../src/rag/search.service.js';
 import { UploadsService } from '../src/uploads/uploads.service.js';
@@ -101,7 +101,7 @@ async function fixture(script: FakeScript = [], gate?: { received: () => void; r
   indexer.init();
   await indexer.syncToHead();
   const search = new SearchService(config, db, log, acl, repo);
-  const luna = new LunaService(config, log, repo, search, acl);
+  const agent = new AgentService(config, log, repo, search, acl);
   const jobs = new WriteJobsRepository(db);
   const writer = new NoteWriterService(jobs, repo, users, indexer, events, log, acl, audit);
   const repository = new ConversationsRepository(db);
@@ -110,7 +110,7 @@ async function fixture(script: FakeScript = [], gate?: { received: () => void; r
     providers: [ConversationsService, GenerationsService, UploadsService, RolesGuard,
       { provide: ConversationsRepository, useValue: repository }, { provide: CONFIG, useValue: config },
       { provide: DB, useValue: db }, { provide: LOGGER, useValue: log }, { provide: AclService, useValue: acl },
-      { provide: LunaService, useValue: luna }, { provide: EventsService, useValue: events },
+      { provide: AgentService, useValue: agent }, { provide: EventsService, useValue: events },
       { provide: NoteWriterService, useValue: writer }, { provide: AuditService, useValue: audit }],
   }).overrideGuard(SessionGuard).useValue({ canActivate(context: { switchToHttp(): { getRequest(): Request } }) {
     const req = context.switchToHttp().getRequest();

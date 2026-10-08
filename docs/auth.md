@@ -37,7 +37,7 @@ CLI의 `user add|role|list`는 `auth.commands.ts`에 정의하며, 지연 생성
 
 전역 역할에 [폴더별 접근 제어](access-control.md)를 함께 적용한다. 관리자는 경로 규칙을 우회하며 적용 가능한 규칙이 없으면 기존 역할 권한을 유지한다. 가장 긴 적용 접두사 안에서 사용자·역할·전체 순으로 규칙을 고른다. `write` 규칙도 전역 조회자를 편집자로 올리지 않는다.
 
-전역 `AclModule`의 `AclService`를 웹·MCP·Luna가 함께 사용한다. 읽을 수 없는 경로는 존재를 숨기는 `404 not_found`, 읽을 수 있지만 쓸 수 없는 경로는 `403 forbidden`이다. 관리자는 `/api/admin/acl`과 `/api/admin/acl/check`에서 규칙과 실효 권한을 관리하며 변경은 감사 기록에 남긴다.
+전역 `AclModule`의 `AclService`를 웹·MCP·도니가 함께 사용한다. 읽을 수 없는 경로는 존재를 숨기는 `404 not_found`, 읽을 수 있지만 쓸 수 없는 경로는 `403 forbidden`이다. 관리자는 `/api/admin/acl`과 `/api/admin/acl/check`에서 규칙과 실효 권한을 관리하며 변경은 감사 기록에 남긴다.
 
 ### 첫 관리자 등록과 비상 복구
 

@@ -25,7 +25,7 @@ import { WriteJobsService } from '../jobs/write-jobs.service.js';
 import { WriteJobsRepository } from '../jobs/write-jobs.repository.js';
 import { NoteWriterService } from '../jobs/note-writer.service.js';
 import { KnowledgeRepo, type CommitInfo } from '../knowledge/repo.js';
-import { LunaService } from '../luna/luna.service.js';
+import { AgentService } from '../agent/agent.service.js';
 import { IndexerService } from '../rag/indexer.service.js';
 import { EventsService } from '../events/events.service.js';
 import { UploadsService } from '../uploads/uploads.service.js';
@@ -52,14 +52,14 @@ const note = '---\ntitle: Navigation\ntags:\n  - maps\n---\n# Navigation\n\nMain
 const commit = (sha: string): CommitInfo => ({
   sha, parents: [], authorName: 'Requester', authorEmail: 'requester@example.com',
   date: stamp, subject: `Change ${sha.slice(0, 7)}`, body: '',
-  committerName: 'Luna', committerEmail: 'luna@example.com', committedAt: stamp, trailers: {},
+  committerName: '도니', committerEmail: 'dony@example.com', committedAt: stamp, trailers: {},
 });
 const makeJob = (id: string, userId: number, commits: string[] = [], merged: string | null = null): WriteJob => ({
-  id, userId, kind: 'luna', source: 'mcp', client: null, conflicts: [], input: 'Update navigation', status: 'succeeded',
+  id, userId, kind: 'agent', source: 'mcp', client: null, conflicts: [], input: 'Update navigation', status: 'succeeded',
   summary: 'Updated navigation', commits, mergeSha: merged, error: null,
   createdAt: stamp, startedAt: stamp, finishedAt: stamp,
 });
-type Answer = LunaService['answer'];
+type Answer = AgentService['answer'];
 interface ConversationDetail { conversation: Conversation; messages: Message[] }
 
 function parseEvents(text: string): Array<{ event: string; data: Record<string, unknown> }> {
@@ -175,7 +175,7 @@ describe('web REST API', () => {
         { provide: KnowledgeRepo, useValue: repo },
         { provide: NoteWriterService, useValue: { stop: async () => {} } },
         { provide: IndexerService, useValue: {} },
-        { provide: LunaService, useValue: { answer, validateModel: () => 'gpt-6-luna', validateEffort: (effort?: string) => effort ?? 'medium', summarize: async () => 'Summary', proposal: vi.fn() } },
+        { provide: AgentService, useValue: { answer, validateModel: () => 'gpt-6-luna', validateEffort: (effort?: string) => effort ?? 'medium', summarize: async () => 'Summary', proposal: vi.fn() } },
         { provide: UploadsService, useValue: { parts: async () => [], get: vi.fn() } },
         { provide: EventsService, useValue: { publish: vi.fn() } },
         { provide: UsersService, useValue: users },

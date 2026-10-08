@@ -93,7 +93,7 @@ export function ImportDialog({ onClose, onCreated, onFailure }: { onClose: () =>
     }
   }
 
-  return <ImportModal title="원문 가져오기" description="원문을 보관한 뒤 Luna가 위키 지식으로 통합합니다." onClose={onClose} busy={busy}>
+  return <ImportModal title="원문 가져오기" description="원문을 보관한 뒤 도니가 위키 지식으로 통합합니다." onClose={onClose} busy={busy}>
     <form onSubmit={submit} className="space-y-3" aria-busy={busy}>
       <div role="tablist" aria-label="원문 종류" className="flex gap-1 overflow-x-auto rounded-lg bg-muted p-1">
         {tabs.map((item, index) => <button type="button" role="tab" id={`import-tab-${item.id}`} aria-selected={tab === item.id} aria-controls={`import-panel-${item.id}`} tabIndex={tab === item.id ? 0 : -1} key={item.id} disabled={busy} onKeyDown={(event) => moveTab(event, index)} onClick={() => switchTab(item.id)} className={`min-h-9 shrink-0 whitespace-nowrap rounded-md px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 ${tab === item.id ? 'bg-background font-medium text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}>{item.title}</button>)}
@@ -117,7 +117,7 @@ export function ImportDialog({ onClose, onCreated, onFailure }: { onClose: () =>
           {tab === 'notion' && <p className="text-xs text-muted-foreground">Notion의 “Markdown & CSV” 내보내기 ZIP을 사용하세요. 페이지 ID를 제거한 경로가 충돌하면 전체 수집이 실패합니다.</p>}
         </>}
       </div>
-      <div className="space-y-3"><Label htmlFor="import-instructions">Luna 통합 지침 <span className="text-muted-foreground">(선택)</span></Label><Textarea id="import-instructions" rows={3} maxLength={10000} placeholder="핵심 개념을 요약하고 기존 노트와 연결해 주세요." value={instructions} onChange={(event) => setInstructions(event.target.value)} disabled={busy} /><p className="text-right text-xs text-muted-foreground">{instructions.length.toLocaleString()} / 10,000자</p></div>
+      <div className="space-y-3"><Label htmlFor="import-instructions">도니 통합 지침 <span className="text-muted-foreground">(선택)</span></Label><Textarea id="import-instructions" rows={3} maxLength={10000} placeholder="핵심 개념을 요약하고 기존 노트와 연결해 주세요." value={instructions} onChange={(event) => setInstructions(event.target.value)} disabled={busy} /><p className="text-right text-xs text-muted-foreground">{instructions.length.toLocaleString()} / 10,000자</p></div>
       <div className="rounded-lg border bg-muted/30 p-3 text-xs leading-5 text-muted-foreground">원문은 공용 지식 저장소에 보관됩니다. 통합 작업이 실패해도 보관된 원문은 유지됩니다. 민감한 정보는 제출 전에 확인해 주세요.</div>
       {error != null && <ErrorNotice error={error} />}
       {busy && <div role="status" aria-live="polite" className="space-y-3 rounded-lg border bg-card p-4 text-sm">

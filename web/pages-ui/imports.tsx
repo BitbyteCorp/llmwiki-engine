@@ -54,7 +54,7 @@ function ImportsList({ user }: { user: User }) {
     if (records.some((record) => record.jobId === event.jobId)) void client.invalidateQueries({ queryKey: importKeys.lists })
   }), [client, records])
   return <div className="space-y-3">
-    <PageHeader title="원문 가져오기" description={user.role === 'admin' ? '전체 사용자의 수집 기록과 Luna 통합 진행 상태를 확인합니다.' : '내가 가져온 원문과 Luna 통합 진행 상태를 확인합니다.'} actions={<>
+    <PageHeader title="원문 가져오기" description={user.role === 'admin' ? '전체 사용자의 수집 기록과 도니 통합 진행 상태를 확인합니다.' : '내가 가져온 원문과 도니 통합 진행 상태를 확인합니다.'} actions={<>
       <Button variant="outline" disabled={list.isFetching} onClick={() => void list.refetch()}><RefreshCw className={list.isFetching ? 'animate-spin motion-reduce:animate-none' : ''} />새로고침</Button>
       {user.role !== 'viewer' && <Button onClick={() => setCreating(true)}><Plus />새 가져오기</Button>}
     </>} />

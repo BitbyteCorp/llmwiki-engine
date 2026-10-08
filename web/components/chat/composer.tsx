@@ -115,7 +115,7 @@ export function ChatComposer({ conversationId, disabled, streaming, onSubmit, on
   }, [edit?.id, edit?.content])
   useEffect(() => {
     const controller = new AbortController()
-    void request<ModelOptions>('/api/luna/models', { signal: controller.signal }).then(setModelOptions).catch(() => { /* Missing discovery still uses configured server defaults. */ })
+    void request<ModelOptions>('/api/models', { signal: controller.signal }).then(setModelOptions).catch(() => { /* Missing discovery still uses configured server defaults. */ })
     return () => controller.abort()
   }, [])
   useEffect(() => {
@@ -246,7 +246,7 @@ export function ChatComposer({ conversationId, disabled, streaming, onSubmit, on
     } else if (event.key === 'ArrowUp' && !content && !edit && !streaming && !disabled) { event.preventDefault(); onEditLast?.() }
   }
   const blocked = disabled || streaming || submitting || pinning || attachments.pending || attachments.failed || !content.trim()
-  return <section data-chat-composer className="relative min-w-0 space-y-2 rounded-xl border bg-background p-2.5 shadow-sm focus-within:border-ring/50" aria-label="Luna 메시지 작성">
+  return <section data-chat-composer className="relative min-w-0 space-y-2 rounded-xl border bg-background p-2.5 shadow-sm focus-within:border-ring/50" aria-label="도니 메시지 작성">
     {edit && <div className="flex items-center justify-between gap-2 text-xs"><span>질문 수정 · 이후 대화를 다시 생성합니다.</span><Button type="button" variant="ghost" size="xs" onClick={onCancelEdit}>수정 취소</Button></div>}
     {context && <div className="flex items-start gap-2 rounded-lg border bg-muted/50 px-2 py-1.5 text-xs"><Pin className="mt-0.5 size-3 shrink-0 text-muted-foreground" /><div className="min-w-0 flex-1"><p className="truncate" title={context.notePath}>고정 문맥 · {context.notePath}{context.ref ? ` @ ${context.ref.slice(0, 10)}` : ''}</p>{context.selection && <p className="mt-1 line-clamp-2 whitespace-pre-wrap break-words text-muted-foreground">선택: {context.selection}</p>}</div><Button type="button" variant="ghost" size="icon-xs" aria-label="고정 문맥 제거" onClick={() => pin(null)}><X /></Button></div>}
     <fieldset disabled={submitting} className="min-w-0"><DraftAttachments items={attachments.items} onRemove={key => { if (!submissionRef.current) attachments.remove(key) }} /></fieldset>
@@ -256,7 +256,7 @@ export function ChatComposer({ conversationId, disabled, streaming, onSubmit, on
         {options.map((option, index) => <button id={`${listId}-${index}`} key={option.description} type="button" role="option" aria-selected={index === active} className={`flex w-full flex-col rounded px-2 py-1.5 text-left text-sm ${index === active ? 'bg-accent text-accent-foreground' : 'hover:bg-accent'}`} onMouseDown={event => event.preventDefault()} onClick={() => choose(index)}><span>{option.label}</span><span className="break-all text-xs text-muted-foreground">{option.description}</span></button>)}
         {lookup !== null && !options.length && <p className="px-2 py-1 text-xs text-muted-foreground">{loadingSuggestions ? '노트를 찾는 중…' : suggestionError || '일치하는 노트가 없습니다.'}</p>}
       </div>}
-      <Textarea ref={textarea} value={content} disabled={disabled} rows={2} maxLength={100000} placeholder={disabled ? '조회 권한으로는 메시지를 보낼 수 없습니다.' : 'Luna에게 질문하세요. @ 노트 · / 명령'} aria-label="메시지" aria-controls={showOptions ? listId : undefined} aria-expanded={showOptions} aria-activedescendant={showOptions && options.length ? `${listId}-${Math.min(active, options.length - 1)}` : undefined} className="field-sizing-fixed max-h-60 min-h-20 resize-none overflow-y-auto rounded-none border-0 bg-transparent px-1 py-2 shadow-none focus-visible:ring-0 dark:bg-transparent" onChange={event => { setContent(event.target.value); setCaret(event.target.selectionStart); setDismissed(false); setActive(0); setError('') }} onSelect={event => setCaret(event.currentTarget.selectionStart)} onKeyDown={keyDown} onPaste={event => {
+      <Textarea ref={textarea} value={content} disabled={disabled} rows={2} maxLength={100000} placeholder={disabled ? '조회 권한으로는 메시지를 보낼 수 없습니다.' : '도니에게 질문하세요. @ 노트 · / 명령'} aria-label="메시지" aria-controls={showOptions ? listId : undefined} aria-expanded={showOptions} aria-activedescendant={showOptions && options.length ? `${listId}-${Math.min(active, options.length - 1)}` : undefined} className="field-sizing-fixed max-h-60 min-h-20 resize-none overflow-y-auto rounded-none border-0 bg-transparent px-1 py-2 shadow-none focus-visible:ring-0 dark:bg-transparent" onChange={event => { setContent(event.target.value); setCaret(event.target.selectionStart); setDismissed(false); setActive(0); setError('') }} onSelect={event => setCaret(event.currentTarget.selectionStart)} onKeyDown={keyDown} onPaste={event => {
         if (disabled || streaming || submissionRef.current || edit) return
         const files = Array.from(event.clipboardData.items).filter(item => item.kind === 'file').flatMap(item => { const file = item.getAsFile(); return file ? [file] : [] })
         if (files.length) { event.preventDefault(); attachments.addFiles(files) }

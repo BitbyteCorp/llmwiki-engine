@@ -47,7 +47,7 @@ const databases: Db[] = [];
 
 function makeJob(id: string, userId: number, input: string): WriteJob {
   return {
-    id, userId, kind: 'luna', source: 'mcp', client: null, conflicts: [], input, status: 'queued', summary: null, commits: [],
+    id, userId, kind: 'agent', source: 'mcp', client: null, conflicts: [], input, status: 'queued', summary: null, commits: [],
     mergeSha: null, error: null, createdAt: '2026-01-02T03:04:05.000Z',
     startedAt: null, finishedAt: null,
   };
@@ -250,7 +250,7 @@ describe('MCP Streamable HTTP protocol', () => {
     });
     expectPayload(await call(client, 'get_write_status', { jobId: 'write-1' }), {
       job: {
-        id: 'write-1', userId: 11, kind: 'luna', source: 'mcp', client: null, conflicts: [], input: 'Record that backups run daily.',
+        id: 'write-1', userId: 11, kind: 'agent', source: 'mcp', client: null, conflicts: [], input: 'Record that backups run daily.',
         status: 'queued', summary: null, commits: [], mergeSha: null, error: null,
         createdAt: '2026-01-02T03:04:05.000Z', startedAt: null, finishedAt: null,
       },
@@ -274,7 +274,7 @@ describe('MCP Streamable HTTP protocol', () => {
     const { client } = await connect('admin', 1);
     expectPayload(await call(client, 'get_write_status', { jobId: 'other-job' }), {
       job: {
-        id: 'other-job', userId: 22, kind: 'luna', source: 'mcp', client: null, conflicts: [], input: 'Record the backup schedule.',
+        id: 'other-job', userId: 22, kind: 'agent', source: 'mcp', client: null, conflicts: [], input: 'Record the backup schedule.',
         status: 'succeeded', summary: 'Documented daily backups.', commits: ['commit-a'],
         mergeSha: 'merge-a', error: null, createdAt: '2026-01-02T03:04:05.000Z',
         startedAt: '2026-01-02T03:04:06.000Z', finishedAt: '2026-01-02T03:04:07.000Z',

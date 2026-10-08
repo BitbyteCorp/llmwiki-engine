@@ -32,7 +32,7 @@ index.md to help you find the wiki's entry points.
 
 Proactively use write to preserve useful, reusable discoveries, decisions,
 procedures, and source material rather than waiting for an explicit request to
-save them. Submit natural-language instructions or source content: Luna decides
+save them. Submit natural-language instructions or source content: Dony decides
 how to integrate it with existing notes. Writing is asynchronous; retain the
 jobId and use get_write_status to verify success before claiming it was saved.
 
@@ -184,7 +184,7 @@ export class McpService {
     });
 
     server.registerTool('write', {
-      description: 'Editor/admin only. Submit durable knowledge, source material, or natural-language editing instructions for Luna to integrate into the wiki. This is asynchronous: returns jobId and queued status, not a completed write. Poll get_write_status until succeeded or failed. Never submit secrets, personal information, or live chat state.',
+      description: 'Editor/admin only. Submit durable knowledge, source material, or natural-language editing instructions for Dony to integrate into the wiki. This is asynchronous: returns jobId and queued status, not a completed write. Poll get_write_status until succeeded or failed. Never submit secrets, personal information, or live chat state.',
       inputSchema: {
         content: z.string().refine(value => value.trim().length > 0, 'Content must not be blank.')
           .describe('Durable knowledge or instructions to integrate; preserve source text and relevant context.'),
@@ -239,10 +239,10 @@ export class McpService {
     }));
 
     server.registerPrompt('capture_knowledge', {
-      description: 'Capture durable, shareable knowledge through Luna.',
+      description: 'Capture durable, shareable knowledge through Dony.',
       argsSchema: { content: z.string().min(1) },
     }, ({ content }) => ({
-      messages: [{ role: 'user', content: { type: 'text', text: `Preserve this reusable knowledge:\n${content}\nFirst search and read relevant existing notes. Exclude secrets, credentials, personal information, and transient chat state. If you have editor/admin permission, submit source material and context via write (or ingest_source for an import), then poll get_write_status before claiming it was saved. Luna decides how to integrate it.` } }],
+      messages: [{ role: 'user', content: { type: 'text', text: `Preserve this reusable knowledge:\n${content}\nFirst search and read relevant existing notes. Exclude secrets, credentials, personal information, and transient chat state. If you have editor/admin permission, submit source material and context via write (or ingest_source for an import), then poll get_write_status before claiming it was saved. Dony decides how to integrate it.` } }],
     }));
 
     server.registerPrompt('review_note_history', {

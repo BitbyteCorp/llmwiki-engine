@@ -12,7 +12,7 @@
 
 ### Nest 모듈과 실행 수명
 
-`DreamingModule`은 `KnowledgeModule`, `LunaModule`, `RagModule`을 가져오고 `DreamRunsRepository`와 `DreamingService`를 제공·내보낸다. 서비스는 지식 저장소, Luna, 인덱서, 검색 서비스와 `CONFIG`, `LOGGER` 토큰, 실행 기록 저장소, 전역 `EventsService`를 생성자 DI로 받는다.
+`DreamingModule`은 `KnowledgeModule`, `AgentModule`, `RagModule`을 가져오고 `DreamRunsRepository`와 `DreamingService`를 제공·내보낸다. 서비스는 지식 저장소, 도니, 인덱서, 검색 서비스와 `CONFIG`, `LOGGER` 토큰, 실행 기록 저장소, 전역 `EventsService`를 생성자 DI로 받는다.
 
 `DreamRunsRepository`는 실행 기록 SQL, 성공 체크포인트 조회, 미학습 사용자 메시지 조회와 학습 완료 표시를 담당한다. `DreamRun`과 대화 입력 형식은 `dream-run.types.ts`에 두며, 서비스는 배치·머지·백업 흐름을 담당한다.
 
@@ -25,15 +25,15 @@ HTTP 진입점인 `main.ts`만 스케줄러를 명시적으로 시작한다. `dr
 
 운영 HTTP 진입점은 `runManual()`을 사용한다. 같은 저장소에서 실행 중인 배치가 있으면 기존 결과를 기다리지 않고 HTTP 409, 코드 `dream_running`으로 거절하며 새 실행 기록을 만들지 않는다. CLI와 스케줄러의 `runOnce()`는 기존처럼 실행을 합친다. 서비스 인스턴스가 달라도 같은 `KnowledgeRepo` 객체를 사용하면 이 규칙을 공유한다.
 
-입력 범위는 직전 성공한 `dream_runs.to_sha`를 제외한 이후 커밋부터 실행 시작에 읽은 main HEAD까지다. 첫 실행의 기준점은 저장소의 첫 커밋이다. Luna가 작업하는 동안 main에 추가된 커밋은 이번 학습 체크포인트를 앞당기지 않으며 다음 실행에서 검토한다.
+입력 범위는 직전 성공한 `dream_runs.to_sha`를 제외한 이후 커밋부터 실행 시작에 읽은 main HEAD까지다. 첫 실행의 기준점은 저장소의 첫 커밋이다. 도니가 작업하는 동안 main에 추가된 커밋은 이번 학습 체크포인트를 앞당기지 않으며 다음 실행에서 검토한다.
 
 대화 입력은 [웹 대화 기록의 하루치 학습 배치](web.md#대화-기록과-학습)를 따른다. 배치 시작 시점까지 생성된 `role='user'`, `learned_at IS NULL` 메시지만 가져온다. 실패한 날짜의 미학습 메시지도 함께 가져오므로 날짜 경계 때문에 누락되지 않는다. assistant 메시지는 입력에 넣지 않는다.
 
-커밋 변경과 미학습 메시지가 모두 없으면 Luna를 실행하거나 일기를 쓰지 않으며 백업 push만 시도한다.
+커밋 변경과 미학습 메시지가 모두 없으면 도니를 실행하거나 일기를 쓰지 않으며 백업 push만 시도한다.
 
 ### 정리 작업
 
-main에서 `dream-YYYY-MM-DD` 작업 워크트리를 파생한다. 날짜는 스케줄러 시간대 설정과 별개로 항상 한국 표준시를 따른다. 변경 노트마다 검색 결과에서 자기 자신을 제외한 상위 5개 관련 노트의 본문을 함께 수집한다. Luna는 지식 저장소 `AGENTS.md`와 `MEMORY.md` 문맥, 워크트리 편집 도구를 사용해 다음 작업을 수행한다.
+main에서 `dream-YYYY-MM-DD` 작업 워크트리를 파생한다. 날짜는 스케줄러 시간대 설정과 별개로 항상 한국 표준시를 따른다. 변경 노트마다 검색 결과에서 자기 자신을 제외한 상위 5개 관련 노트의 본문을 함께 수집한다. 도니는 지식 저장소 `AGENTS.md`와 `MEMORY.md` 문맥, 워크트리 편집 도구를 사용해 다음 작업을 수행한다.
 
 - 변경된 노트와 의미적으로 가까운 기존 노트를 찾아 지식의 충돌과 중복을 정리한다. 유사 노트 조회에는 [RAG](rag.md)를 사용한다.
 - 대화 배치에서 추출한 지식을 지식 저장소에 반영한다.
@@ -41,9 +41,9 @@ main에서 `dream-YYYY-MM-DD` 작업 워크트리를 파생한다. 날짜는 스
 - 메모리 파일인 `MEMORY.md`에서 낡은 항목을 정리한다.
 - `journal/YYYY-MM-DD.md`에 그날의 변경과 정리 결과, 남은 쟁점을 요약한다. 같은 날짜에 다시 실행하면 기존 일기를 보존하며 보완한다.
 
-편집에는 [작성 규칙](writing-rules.md)을 적용한다. 사용자 발언에서 직접 말한 사실과 정정만 추출하며 질문을 사실로 바꾸거나 Luna 답변을 재학습하지 않는다. 일기 파일이 없거나 비어 있으면 main에 반영하지 않고 실패로 기록한다.
+편집에는 [작성 규칙](writing-rules.md)을 적용한다. 사용자 발언에서 직접 말한 사실과 정정만 추출하며 질문을 사실로 바꾸거나 도니 답변을 재학습하지 않는다. 일기 파일이 없거나 비어 있으면 main에 반영하지 않고 실패로 기록한다.
 
-작업 결과는 `GIT_BOT_NAME`과 `GIT_BOT_EMAIL`을 author로 커밋한다. 직렬 머지 락 안에서 main을 워크트리에 머지하고, 충돌이 발생하면 Luna가 해결한 뒤 main을 fast-forward한다. 재인덱싱까지 성공한 뒤 이번 배치에 포함된 사용자 메시지만 `learned_at`으로 표시한다. 머지나 재인덱싱 실패 시에는 미학습 상태를 유지한다. 작업 워크트리 격리와 직렬 머지 방식은 [쓰기 흐름](write-flow.md)을 따른다.
+작업 결과는 `GIT_BOT_NAME`과 `GIT_BOT_EMAIL`을 author로 커밋한다. 직렬 머지 락 안에서 main을 워크트리에 머지하고, 충돌이 발생하면 도니가 해결한 뒤 main을 fast-forward한다. 재인덱싱까지 성공한 뒤 이번 배치에 포함된 사용자 메시지만 `learned_at`으로 표시한다. 머지나 재인덱싱 실패 시에는 미학습 상태를 유지한다. 작업 워크트리 격리와 직렬 머지 방식은 [쓰기 흐름](write-flow.md)을 따른다.
 
 학습 완료 표시는 캡처한 메시지 ID뿐 아니라 본문도 현재 DB 값과 같을 때만 적용한다. 배치가 실행되는 동안 같은 ID의 사용자 메시지가 수정되면 새 본문은 이번 배치에서 읽지 않은 내용이므로 미학습 상태를 유지하고 다음 배치 입력으로 남긴다.
 
@@ -57,7 +57,7 @@ main에서 `dream-YYYY-MM-DD` 작업 워크트리를 파생한다. 날짜는 스
 
 ### 실행 기록과 운영 조회
 
-`dream_runs`는 시작·종료 시각, 상태, 입력 커밋 범위, 머지 SHA, 기존 `pushed` 불리언과 오류를 저장한다. 추가 필드는 Luna 최종 응답인 `summary`(없으면 `null`), 이번 머지에서 실제 바뀐 `changedPaths`, 검증된 일기 경로 `journalPath`(정리하지 않은 날은 `null`)다. push 결과는 `push.status`(`pending`, `succeeded`, `skipped`, `failed`), `remote`, `sha`, `at`, `reason`으로 별도 보존한다. 확인할 수 없는 원격과 SHA는 `null`이며 추측하지 않는다.
+`dream_runs`는 시작·종료 시각, 상태, 입력 커밋 범위, 머지 SHA, 기존 `pushed` 불리언과 오류를 저장한다. 추가 필드는 도니 최종 응답인 `summary`(없으면 `null`), 이번 머지에서 실제 바뀐 `changedPaths`, 검증된 일기 경로 `journalPath`(정리하지 않은 날은 `null`)다. push 결과는 `push.status`(`pending`, `succeeded`, `skipped`, `failed`), `remote`, `sha`, `at`, `reason`으로 별도 보존한다. 확인할 수 없는 원격과 SHA는 `null`이며 추측하지 않는다.
 
 `DreamRunsRepository.get(id)`는 상세 실행 또는 `null`을 반환한다. `list({ before, limit })`는 시작 시각 내림차순, 같은 시각에서는 ID 내림차순으로 조회한다. `before`는 이전 페이지의 마지막 실행 ID이며 시각 커서도 지원한다. 기본 한도는 50개이고 최대 200개다. `latest()`는 가장 최근 실행, `running()`은 실행 중인 기록을 반환하며 없으면 `null`이다. `backupStatus()`는 push 시도가 끝난 마지막 실행 `lastAttempt`와 성공한 마지막 push 실행 `lastSuccess`를 반환한다. 정리 자체가 실패했어도 push가 성공했다면 `lastSuccess`에 포함한다.
 
@@ -74,6 +74,6 @@ main에서 `dream-YYYY-MM-DD` 작업 워크트리를 파생한다. 날짜는 스
 
 - [지식 저장소](knowledge-repository.md)는 일기와 메모리 파일의 배치 및 백업 정책을 설명한다.
 - [쓰기 흐름](write-flow.md)은 작업 워크트리에서 main으로 반영하는 절차를 설명한다.
-- [작성 규칙](writing-rules.md)은 Luna가 지식을 정리할 때 적용하는 기준을 설명한다.
+- [작성 규칙](writing-rules.md)은 도니가 지식을 정리할 때 적용하는 기준을 설명한다.
 - [RAG](rag.md)는 변경 노트와 유사한 기존 노트를 찾는 방식을 설명한다.
 - [웹 버전](web.md#대화-기록과-학습)은 대화 입력의 학습 대상과 반영 주기, 공개 범위를 설명한다.

@@ -34,9 +34,25 @@ export function runMigrations(db: Db): void {
   for (const name of readdirSync(migrationsDir).filter((file) => file.endsWith('.sql')).sort()) {
     if (known.has(name)) continue;
     const sql = readFileSync(join(migrationsDir, name), 'utf8');
-    db.transaction(() => {
-      db.exec(sql);
-      record.run(name, new Date().toISOString());
-    })();
+    // A SQL marker opts a table rebuild into FK suspension and schema-object preservation.
+    const rebuiltTable = sql.match(/^-- rebuild-table: ([a-z_][a-z0-9_]*)$/m)?.[1];
+    if (rebuiltTable && db.inTransaction) throw new Error(`Migration ${name} must run outside an existing transaction`);
+    const foreignKeys = rebuiltTable ? db.pragma('foreign_keys', { simple: true }) : undefined;
+    const preservedSchema = rebuiltTable
+      ? db.prepare("SELECT sql FROM sqlite_schema WHERE tbl_name = ? AND type IN ('index', 'trigger') AND sql IS NOT NULL").all(rebuiltTable) as Array<{ sql: string }>
+      : [];
+    if (rebuiltTable) db.pragma('foreign_keys = OFF');
+    try {
+      db.transaction(() => {
+        db.exec(sql);
+        for (const entry of preservedSchema) db.exec(entry.sql);
+        if (rebuiltTable && (db.pragma('foreign_key_check') as unknown[]).length > 0) {
+          throw new Error(`Foreign key violations after migration ${name}`);
+        }
+        record.run(name, new Date().toISOString());
+      })();
+    } finally {
+      if (rebuiltTable) db.pragma(`foreign_keys = ${foreignKeys ? 'ON' : 'OFF'}`);
+    }
   }
 }

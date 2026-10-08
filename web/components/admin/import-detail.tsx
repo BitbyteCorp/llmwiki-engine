@@ -33,7 +33,7 @@ export function ImportDetail({ id, onClose }: { id: string; onClose: () => void 
     }
   }), [client, id, record?.jobId])
   const sourceLink = record && /^https?:\/\//i.test(record.source) ? record.source : null
-  return <ImportModal drawer title="가져오기 상세" description="원문 보관 상태와 연결된 Luna 통합 작업을 확인합니다." onClose={onClose}>
+  return <ImportModal drawer title="가져오기 상세" description="원문 보관 상태와 연결된 도니 통합 작업을 확인합니다." onClose={onClose}>
     <div className="space-y-3">
       {detail.isPending && <Loading label="가져오기 정보를 불러오는 중…" />}
       {detail.error && <div className="space-y-3"><ErrorNotice error={detail.error} /><Button variant="outline" onClick={() => void detail.refetch()}>다시 시도</Button></div>}

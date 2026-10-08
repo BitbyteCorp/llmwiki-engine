@@ -3,7 +3,7 @@ import type { ResponseInputContent } from 'openai/resources/responses/responses'
 import type { Logger } from 'pino';
 import { DB, LOGGER } from '../common/tokens.js';
 import { EventsService } from '../events/events.service.js';
-import { LunaService } from '../luna/luna.service.js';
+import { AgentService } from '../agent/agent.service.js';
 import { UploadsService } from '../uploads/uploads.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { ApiError, notFound } from './api-error.js';
@@ -20,7 +20,7 @@ export class ConversationsService implements OnModuleDestroy {
   private readonly presenceTimer = setInterval(() => this.expirePresence(),5000);
   constructor(
     private readonly repository: ConversationsRepository,
-    private readonly luna: LunaService,
+    private readonly agent: AgentService,
     @Inject(LOGGER) private readonly log: Logger,
     private readonly generations: GenerationsService,
     private readonly uploads: UploadsService,
@@ -82,8 +82,8 @@ export class ConversationsService implements OnModuleDestroy {
       const prior=this.generations.findClient(id,input.clientId);
       if(prior) return prior;
     }
-    const model=this.luna.validateModel(input.model);
-    const effort=this.luna.validateEffort(input.effort);
+    const model=this.agent.validateModel(input.model);
+    const effort=this.agent.validateEffort(input.effort);
     await this.uploads.parts(userId,input.attachments ?? []);
     this.access(id,userId,true);
     if(input.clientId) {const prior=this.generations.findClient(id,input.clientId);if(prior)return prior;}
@@ -118,7 +118,7 @@ export class ConversationsService implements OnModuleDestroy {
           if(keep>0) {
             const old=history.slice(0,keep);
             emit('status',{phase:'summarizing'});
-            summary=await this.luna.summarize(old.map(m=>({role:m.role,content:m.content})),assertAccess);
+            summary=await this.agent.summarize(old.map(m=>({role:m.role,content:m.content})),assertAccess);
             if(signal.aborted) throw new Error('Cancelled');
             history=history.slice(keep);
           }
@@ -147,7 +147,7 @@ export class ConversationsService implements OnModuleDestroy {
         }
         emit('status',{phase:'answering'});
         assertAccess();
-        const answer=await this.luna.answer(inputs,text=>{
+        const answer=await this.agent.answer(inputs,text=>{
           if(signal.aborted)return;
           partial+=text;this.repository.finish(assistant.id,partial,'running');emit('delta',{text});
         },signal,{user:actor,model,effort,context:user.context ?? undefined,summary,assertAccess,
@@ -178,8 +178,8 @@ export class ConversationsService implements OnModuleDestroy {
     if(!user)notFound('User message not found');
     for(const path of messageSources(this.db,user)) this.acl.assertRead(chatUser(this.db,userId),path);
     if(message.role==='assistant' && !['failed','cancelled','interrupted'].includes(message.status))throw new ApiError(409,'not_retryable','Only unsuccessful answers can be retried');
-    const model=this.luna.validateModel(user.model ?? undefined);
-    const effort=this.luna.validateEffort(user.effort ?? undefined);
+    const model=this.agent.validateModel(user.model ?? undefined);
+    const effort=this.agent.validateEffort(user.effort ?? undefined);
     this.repository.truncate(id,user.id);
     return this.begin(id,userId,user,model,effort);
   }
@@ -190,8 +190,8 @@ export class ConversationsService implements OnModuleDestroy {
     const user=messages.slice(0,index).reverse().find(m=>m.role==='user');if(!user)notFound('User message not found');
     const turn=readableTurns(this.db,this.acl,chatUser(this.db,userId),messages).find(turn=>turn.message.id===mid);
     if(!turn?.readable) notFound('Assistant message not found');
-    const model=this.luna.validateModel(user.model ?? undefined);
-    const effort=this.luna.validateEffort(user.effort ?? undefined);
+    const model=this.agent.validateModel(user.model ?? undefined);
+    const effort=this.agent.validateEffort(user.effort ?? undefined);
     this.repository.truncate(id,user.id);
     return this.begin(id,userId,user,model,effort);
   }
@@ -201,8 +201,8 @@ export class ConversationsService implements OnModuleDestroy {
     const turn=readableTurns(this.db,this.acl,chatUser(this.db,userId),this.repository.messages(id,userId)).find(turn=>turn.message.id===mid);
     if(!turn?.readable) notFound('User message not found');
     for(const path of messageSources(this.db,user)) this.acl.assertRead(chatUser(this.db,userId),path);
-    const model=this.luna.validateModel(user.model ?? undefined);
-    const effort=this.luna.validateEffort(user.effort ?? undefined);
+    const model=this.agent.validateModel(user.model ?? undefined);
+    const effort=this.agent.validateEffort(user.effort ?? undefined);
     this.repository.truncate(id,mid);this.repository.edit(mid,content);this.changed(id,mid);
     return this.begin(id,userId,{...user,content},model,effort);
   }
@@ -239,7 +239,7 @@ export class ConversationsService implements OnModuleDestroy {
     if(!turn?.readable) notFound('Completed answer not found');
     const policyKey=this.acl.policyKey(actor);
     try {
-      const proposal=await this.luna.proposal(answer.content,mode,path,actor,()=>{
+      const proposal=await this.agent.proposal(answer.content,mode,path,actor,()=>{
         if(this.acl.policyKey(chatUser(this.db,userId))!==policyKey) notFound('Completed answer not found');
       });
       this.access(id,userId,true);
