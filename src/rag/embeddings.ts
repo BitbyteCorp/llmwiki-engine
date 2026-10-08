@@ -1,4 +1,4 @@
-import OpenAI from 'openai';
+import { createOpenAI } from '../common/openai.js';
 import type { Config } from '../config.js';
 
 // 128 chunks of approximately 800 tokens stay below the aggregate API input limit.
@@ -7,7 +7,7 @@ const BATCH_SIZE = 128;
 export async function embedTexts(config: Config, texts: string[], signal?: AbortSignal): Promise<number[][]> {
   signal?.throwIfAborted();
   if (!config.openaiApiKey) throw new Error('OPENAI_API_KEY is required for embeddings');
-  const client = new OpenAI({ apiKey: config.openaiApiKey, baseURL: config.openaiBaseUrl });
+  const client = createOpenAI(config);
   const vectors: number[][] = [];
   for (let offset = 0; offset < texts.length; offset += BATCH_SIZE) {
     signal?.throwIfAborted();

@@ -1,5 +1,4 @@
 import { HttpException, Inject, Injectable } from '@nestjs/common';
-import OpenAI from 'openai';
 import type { Response, ResponseCreateParamsBase, ResponseInput } from 'openai/resources/responses/responses';
 import { z } from 'zod';
 import GithubSlugger from 'github-slugger';
@@ -9,6 +8,7 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import { CONFIG, LOGGER } from '../common/tokens.js';
 import { idSchema } from '../common/ids.js';
+import { createOpenAI } from '../common/openai.js';
 import type { Config } from '../config.js';
 import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
 import type { Logger } from '../log.js';
@@ -133,7 +133,7 @@ export class AgentService {
     const maxTurns = opts.maxTurns ?? 32;
     if (!Number.isInteger(maxTurns) || maxTurns < 1) throw new Error('maxTurns must be a positive integer');
     opts.signal?.throwIfAborted();
-    const client = new OpenAI({ apiKey: config.openaiApiKey, baseURL: config.openaiBaseUrl });
+    const client = createOpenAI(config);
     const input: ResponseInput = typeof opts.input === 'string'
       ? [{ role: 'user', content: opts.input }]
       : opts.input.map((message) => ({ ...message }));

@@ -11,6 +11,7 @@ const envSchema = z.object({
   SESSION_SECRET: optionalText,
   OPENAI_API_KEY: optionalText,
   OPENAI_BASE_URL: z.preprocess((value) => value === '' ? undefined : value, z.url().optional()),
+  OPENAI_MAX_RETRIES: z.coerce.number().int().nonnegative().default(8),
   LLM_MODELS: z.string().default('gpt-6-luna')
     .transform(value => value.split(',').map(model => model.trim()).filter(Boolean))
     .pipe(z.array(z.string()).nonempty()),
@@ -46,7 +47,7 @@ const envSchema = z.object({
 export interface Config {
   nodeEnv: 'development' | 'test' | 'production';
   port: number; publicUrl: string; dataDir: string; sessionSecret: string;
-  openaiApiKey?: string; openaiBaseUrl?: string;
+  openaiApiKey?: string; openaiBaseUrl?: string; openaiMaxRetries?: number;
   llmModels: string[]; llmModel: string; llmReasoningEffort: string;
   embeddingModel: string; embeddingDimensions: number;
   searchRerank?: 'off' | 'llm'; searchExpand?: 'off' | 'llm'; indexPollSeconds?: number;
@@ -67,6 +68,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     nodeEnv: parsed.NODE_ENV, port: parsed.PORT, publicUrl: parsed.PUBLIC_URL,
     dataDir: resolve(parsed.DATA_DIR), sessionSecret: parsed.SESSION_SECRET ?? randomBytes(32).toString('hex'),
     openaiApiKey: parsed.OPENAI_API_KEY, openaiBaseUrl: parsed.OPENAI_BASE_URL,
+    openaiMaxRetries: parsed.OPENAI_MAX_RETRIES,
     llmModels: parsed.LLM_MODELS, llmModel: parsed.LLM_MODELS[0], llmReasoningEffort: parsed.LLM_REASONING_EFFORT,
     embeddingModel: parsed.EMBEDDING_MODEL, embeddingDimensions: parsed.EMBEDDING_DIMENSIONS,
     searchRerank: parsed.SEARCH_RERANK, searchExpand: parsed.SEARCH_EXPAND, indexPollSeconds: parsed.INDEX_POLL_SECONDS,

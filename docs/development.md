@@ -102,6 +102,7 @@ fixture의 범위를 검증하는 명령은 `pnpm vitest run test/fake-openai.te
 | `AUTH_CLEANUP_INTERVAL_MS` | `300000` | 만료 세션·인증 요청·코드·토큰 정리 주기(밀리초)다. |
 | `OPENAI_API_KEY` | 미설정 | 시작 시 필수는 아니지만 도니와 임베딩 실행에는 필요하다. 미설정이면 해당 기능이 명확한 오류로 실패한다. |
 | `OPENAI_BASE_URL` | 미설정 | OpenAI 호환 API 주소를 재정의한다. 테스트 서버 연결에도 사용한다. |
+| `OPENAI_MAX_RETRIES` | `8` | 도니와 임베딩의 최초 요청 이후 최대 재시도 횟수다. 0 이상의 정수만 허용하며 `0`이면 재시도를 끈다. 429 대기 힌트와 선택적 검색 호출의 예외는 [OpenAI 재시도 정책](agent.md#openai-재시도-정책)을 따른다. |
 | `LLM_MODELS` | `gpt-6-luna` | 쉼표로 구분하는 선택 가능 모델 목록이다. 앞뒤 공백과 빈 항목을 제거하고, 첫 항목을 기본 모델로 사용한다. 요청별 모델은 이 목록에 있어야 하며 목록은 비어 있을 수 없다. |
 | `LLM_REASONING_EFFORT` | `medium` | 도니의 기본 추론 강도다. |
 | `UPLOAD_RETENTION_DAYS` | `7` | 사용하지 않는 임시 업로드의 보관 일수다. 가져온 raw 원문이나 assets git 파일의 보관 기간과 다르다. |
