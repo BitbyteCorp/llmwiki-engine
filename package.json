@@ -11,12 +11,12 @@
   },
   "packageManager": "pnpm@10.34.6",
   "scripts": {
-    "dev": "node --import @swc-node/register/esm-register src/main.ts",
+    "dev": "NODE_ENV=development node --env-file-if-exists=.env --import @swc-node/register/esm-register src/main.ts",
     "build": "next build web && tsc -p tsconfig.build.json && node scripts/build-assets.mjs",
     "start": "node dist/main.js",
     "test": "vitest run",
     "typecheck": "tsc --noEmit && tsc --noEmit -p web/tsconfig.json",
-    "cli": "node --import @swc-node/register/esm-register src/cli.ts"
+    "cli": "node --env-file-if-exists=.env --import @swc-node/register/esm-register src/cli.ts"
   },
   "pnpm": {
     "onlyBuiltDependencies": [

@@ -128,12 +128,13 @@ corepack enable
 corepack prepare pnpm@10.34.6 --activate
 pnpm install --frozen-lockfile
 
-export DATA_DIR="$PWD/data"
-export NODE_ENV=development
-export SESSION_SECRET="$(openssl rand -hex 32)"
+cp .env.example .env
+# .env의 SESSION_SECRET, DEV_LOGIN_EMAIL 등 로컬 값을 채운다.
 pnpm cli user add admin@example.com --role admin
-DEV_LOGIN_EMAIL=admin@example.com pnpm dev
+pnpm dev
 ```
+
+`pnpm dev`와 `pnpm cli`는 저장소 루트의 `.env`가 있으면 Node의 `--env-file-if-exists=.env`로 읽는다. 셸에서 이미 지정한 환경변수가 `.env`보다 우선하므로 `DEV_LOGIN_EMAIL=admin@example.com pnpm dev`처럼 일회성으로 덮어쓸 수 있다. `pnpm dev`는 항상 `NODE_ENV=development`로 실행한다. `.env`에 `NODE_ENV=production`이 남아 있으면 개발 서버가 빌드된 Next 앱을 찾고 개발 로그인을 거부하기 때문이다. 같은 이유로 `.env.example`에는 `NODE_ENV`를 두지 않으며, Docker 이미지와 Compose는 각자 `production`을 고정한다. `pnpm start`는 `.env`를 읽지 않는다.
 
 `pnpm dev` 하나로 API와 UI를 함께 실행하므로 별도 UI 개발 서버를 띄우지 않는다. 서버가 준비되면 `http://localhost:3000/auth/dev-login`에 접근해 등록한 관리자 세션을 만든다. 개발 로그인은 Google 없이 로컬 화면을 확인하기 위한 접점이며 신규 사용자를 자동 생성하지 않는다. 사용자 이메일은 CLI로 미리 등록해야 한다. API 키 없이 로컬 인증과 저장소를 확인할 수 있지만 도니의 응답과 임베딩을 확인하려면 `OPENAI_API_KEY`가 필요하다.
 
