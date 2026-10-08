@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import Link from 'next/link'
 import dynamic from 'next/dynamic'
-import { History, Star, Pencil, Save, MessageCircle, GitCommitHorizontal } from 'lucide-react'
+import { History, Star, Pencil, Save, MessageCircle, GitCommitHorizontal, BookOpen, Columns2 } from 'lucide-react'
 import { api, ApiError } from '@/lib/api'
 import type { Note } from '@/lib/api'
 import { onLiveEvent } from '@/lib/events'
@@ -280,23 +280,22 @@ export function NoteReader({ path, split = false, revisionRef, className }: { pa
     if ((event.target as HTMLElement).closest('[role="dialog"]')) return
     if (event.key === 'Escape' && (mode !== 'view' || dirty) && !(event.target as HTMLElement).closest('.cm-editor')) { event.preventDefault(); discard() }
   }}>
-    <header className={cn('shrink-0 space-y-2 border-b sm:p-4', blame ? 'p-2' : 'p-3')}>
-      <div className={blame ? 'hidden sm:block' : undefined}><Breadcrumbs path={path} title={title} /></div>
-      <div className="flex items-start justify-between gap-2">
-        <Heading className={cn('min-w-0 break-words text-xl font-bold tracking-tight', blame && 'sr-only sm:not-sr-only')}>{title}{dirty && <span className="ml-2 text-sm text-warning" aria-label="저장하지 않은 변경사항">●</span>}</Heading>
-        <div className="flex shrink-0 items-center gap-1">
-          <Button variant="ghost" size="icon-sm" aria-label={favorite ? '즐겨찾기에서 제거' : '즐겨찾기에 추가'} aria-pressed={favorite} title="즐겨찾기" onClick={() => toggleFavorite(path)}><Star aria-hidden="true" className={favorite ? 'fill-current text-warning' : ''} /></Button>
-          <Button variant="ghost" size="icon-sm" nativeButton={false} aria-label="이 노트의 변경 이력" title="변경 이력" render={<Link href={`/history?path=${encodeURIComponent(path)}`} />}><History aria-hidden="true" /></Button>
+    <header className={cn('@container/note-header shrink-0 space-y-1.5 border-b px-3 sm:px-4 sm:py-2.5', blame ? 'py-1.5' : 'py-2')}>
+      <div className="flex items-center gap-2">
+        <div className={cn('min-w-0 flex-1', blame && 'hidden sm:block')}><Breadcrumbs path={path} title={title} /></div>
+        <div className="ml-auto flex shrink-0 items-center gap-0.5">
+          <Button variant="ghost" size="icon-xs" aria-label={favorite ? '즐겨찾기에서 제거' : '즐겨찾기에 추가'} aria-pressed={favorite} title="즐겨찾기" onClick={() => toggleFavorite(path)}><Star aria-hidden="true" className={favorite ? 'fill-current text-warning' : ''} /></Button>
+          <Button variant="ghost" size="icon-xs" nativeButton={false} aria-label="이 노트의 변경 이력" title="변경 이력" render={<Link href={`/history?path=${encodeURIComponent(path)}`} />}><History aria-hidden="true" /></Button>
         </div>
       </div>
-      <p className={cn('break-all text-xs text-muted-foreground', blame && 'hidden sm:block')}>{path}{split && <span className="ml-2">· 분할 보기</span>}</p>
-      {note.data && <div className="flex flex-wrap gap-2">
-        {canEdit && !revisionRef && <div role="group" aria-label="노트 보기 모드" className="flex gap-1">
-          {(['view', 'edit', 'split'] as const).map(value => <Button key={value} size="sm" variant={mode === value ? 'secondary' : 'ghost'} aria-pressed={mode === value} disabled={busy} onClick={() => { setMode(value); setBlame(false); setSelection(null) }}>{value === 'view' ? '읽기' : value === 'edit' ? <><Pencil aria-hidden="true" />편집</> : '편집 + 미리보기'}</Button>)}
+      <Heading className={cn('min-w-0 break-words text-lg font-bold leading-tight tracking-tight', blame && 'sr-only sm:not-sr-only')}>{title}{dirty && <span className="ml-2 text-sm text-warning" aria-label="저장하지 않은 변경사항">●</span>}</Heading>
+      {note.data && <div className="flex flex-wrap items-center gap-1">
+        {canEdit && !revisionRef && <div role="group" aria-label="노트 보기 모드" className="mr-1 flex gap-0.5 rounded-md border p-0.5">
+          {(['view', 'edit', 'split'] as const).map(value => <Button key={value} size="xs" variant={mode === value ? 'secondary' : 'ghost'} aria-pressed={mode === value} title={value === 'split' ? '편집 + 미리보기' : undefined} disabled={busy} className="[&_svg]:@max-sm/note-header:hidden" onClick={() => { setMode(value); setBlame(false); setSelection(null) }}>{value === 'view' ? <><BookOpen aria-hidden="true" />읽기</> : value === 'edit' ? <><Pencil aria-hidden="true" />편집</> : <><Columns2 aria-hidden="true" />미리보기</>}</Button>)}
         </div>}
-        <Button size="sm" variant={blame ? 'secondary' : 'ghost'} aria-pressed={blame} disabled={busy} onClick={() => { if (mode === 'view' || discard()) setBlame(value => !value) }}><GitCommitHorizontal aria-hidden="true" />줄별 이력</Button>
-        <Button size="sm" variant="ghost" disabled={busy} onClick={() => actions.current.ask()}><MessageCircle aria-hidden="true" /><span className={blame ? 'sr-only sm:not-sr-only' : undefined}>이 노트에 대해 묻기</span></Button>
-        {dirty && canEdit && !revisionRef && <><Button size="sm" disabled={busy} onClick={() => void write()}><Save aria-hidden="true" />{phase === 'saving' ? '저장 중…' : '저장'}</Button><Button size="sm" variant="outline" disabled={busy} onClick={discard}>변경 버리기</Button></>}
+        <Button size="xs" variant={blame ? 'secondary' : 'ghost'} aria-pressed={blame} title="줄별 이력" disabled={busy} onClick={() => { if (mode === 'view' || discard()) setBlame(value => !value) }}><GitCommitHorizontal aria-hidden="true" /><span className="sr-only @sm/note-header:not-sr-only">줄별 이력</span></Button>
+        <Button size="xs" variant="ghost" aria-label="이 노트에 대해 묻기" title="이 노트에 대해 묻기" disabled={busy} onClick={() => actions.current.ask()}><MessageCircle aria-hidden="true" /><span className="sr-only @sm/note-header:not-sr-only">묻기</span></Button>
+        {dirty && canEdit && !revisionRef && <div className="ml-auto flex gap-1"><Button size="xs" disabled={busy} onClick={() => void write()}><Save aria-hidden="true" />{phase === 'saving' ? '저장 중…' : '저장'}</Button><Button size="xs" variant="outline" disabled={busy} onClick={discard}>변경 버리기</Button></div>}
       </div>}
       {mode !== 'view' && <div className="space-y-1"><Label htmlFor={`commit-message-${split ? 'split' : 'main'}`}>커밋 메시지</Label><Input id={`commit-message-${split ? 'split' : 'main'}`} value={message} maxLength={2000} placeholder={defaultMessage} disabled={busy} onChange={event => setMessage(event.target.value)} /><p className="text-xs text-muted-foreground">Ctrl/Cmd + S 저장 · Esc 변경 버리기 · [[ 노트 링크 자동완성 · 이미지 붙여넣기/끌어놓기{uploading && ' · 이미지 업로드 중…'}</p></div>}
       {revisionRef && note.data && <div role="status" className="space-y-2 rounded-md border bg-muted/50 p-3 text-sm">

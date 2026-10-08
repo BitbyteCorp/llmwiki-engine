@@ -16,7 +16,7 @@ export function Breadcrumbs({ path, title }: { path: string; title: string }) {
             <button type="button" onClick={() => revealFolder(folders.slice(0, index + 1).join('/'))} className="break-all rounded px-1 py-1 text-left hover:bg-muted focus-visible:outline-2 focus-visible:outline-ring">{folder}</button>
           </li>
         ))}
-        <li className="flex min-w-0 items-center gap-1"><ChevronRight aria-hidden="true" className="size-3 shrink-0" /><span aria-current="page" className="break-words px-1 text-foreground">{title}</span></li>
+        <li className="flex min-w-0 items-center gap-1"><ChevronRight aria-hidden="true" className="size-3 shrink-0" /><span aria-current="page" title={path} className="break-words px-1 text-foreground">{title}</span></li>
       </ol>
     </nav>
   )
