@@ -68,6 +68,45 @@ async function vectorFixture(query: string) {
 }
 
 describe('SearchService', () => {
+  it.each(['expansion', 'reranking'])('cancels an in-flight %s request without returning fallback results', async (stage) => {
+    const started = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const fake = await startFakeOpenAI(async (_request, index) => {
+      if (index === 0) {
+        started.resolve();
+        await release.promise;
+      }
+      return '[]';
+    });
+    cleanup.push(() => fake.close());
+    const f = await fixture({ openaiApiKey: 'test-key', openaiBaseUrl: fake.url,
+      searchExpand: stage === 'expansion' ? 'llm' : 'off', searchRerank: 'llm' });
+    f.chunk({ path: 'wiki/one.md', content: 'storage one' });
+    f.chunk({ path: 'wiki/two.md', content: 'storage two' });
+    const controller = new AbortController();
+    const reason = new Error('Search cancelled');
+    const outcome = f.search.search('storage', {}, controller.signal).then(
+      (hits) => ({ hits }), (error: unknown) => ({ error }),
+    );
+    // Real HTTP abort latency is the contract; fake timers cannot drive the socket lifecycle.
+    const startedTimer = setTimeout(() => started.reject(new Error('Search never reached Responses')), 2000);
+    let abortTimer: NodeJS.Timeout | undefined;
+    try {
+      await started.promise;
+      controller.abort(reason);
+      const deadline = new Promise<'timeout'>((resolve) => {
+        abortTimer = setTimeout(() => resolve('timeout'), 500);
+      });
+      expect(await Promise.race([outcome, deadline])).toEqual({ error: reason });
+      expect(fake.requests.map((request) => request.path)).toEqual(['/v1/responses']);
+    } finally {
+      clearTimeout(startedTimer);
+      clearTimeout(abortTimer);
+      release.resolve();
+      await outcome;
+    }
+  });
+
   it('matches Korean substrings and returns both incoming and outgoing one-hop links', async () => {
     const f = await fixture();
     f.chunk({ path: 'wiki/storage.md', title: '지식 관리', heading: '관리 > 보존', content: '저장소는 main을 보존한다.' });

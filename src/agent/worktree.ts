@@ -26,9 +26,9 @@ export function makeWorktreeTools(
         type: 'object', properties: { query: { type: 'string', minLength: 1 }, limit: { type: 'integer', minimum: 1, maximum: 100 } },
         required: ['query'], additionalProperties: false,
       },
-      async run(args: unknown) {
+      async run(args: unknown, signal?: AbortSignal) {
         const { query, limit } = searchArgs.parse(args);
-        const hits = await search.search(query, { limit, user });
+        const hits = await search.search(query, { limit, user }, signal);
         if (user) wt.onPhase?.('editing', { sourcePaths: hits.map(hit => hit.path) });
         return JSON.stringify(hits);
       },

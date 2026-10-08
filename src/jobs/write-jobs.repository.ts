@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { DB } from '../common/tokens.js';
 import type { Db } from '../db/index.js';
 import type { JobEvent, JobKind, JobPhase, JobSource, WriteJob } from './write-job.types.js';
+import { projectSubagent, type ProjectedSubagent } from './write-job.projection.js';
 
 interface JobRow {
   id: string; user_id: number; kind: JobKind; source: JobSource; client: string | null; input: string; conflicts: string;
@@ -24,11 +25,16 @@ function toJob(row: JobRow): WriteJob {
 export class WriteJobsRepository {
   constructor(@Inject(DB) private readonly db: Db) {}
 
-  enqueue(id: string, userId: number, input: string, createdAt: string, source: JobSource, client?: string, kind: JobKind = 'agent'): void {
+  enqueue(id: string, userId: number, input: string, createdAt: string, source: JobSource, client?: string, kind: JobKind = 'agent', dedupeKey?: string): void {
     this.db.prepare(`
-      INSERT INTO write_jobs (id, user_id, kind, source, client, input, status, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)
-    `).run(id, userId, kind, source, client ?? null, input, createdAt);
+      INSERT INTO write_jobs (id, user_id, kind, source, client, input, status, created_at, dedupe_key)
+      VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?)
+    `).run(id, userId, kind, source, client ?? null, input, createdAt, dedupeKey ?? null);
+  }
+
+  getByDedupeKey(key: string): WriteJob | null {
+    const row = this.db.prepare("SELECT * FROM write_jobs WHERE dedupe_key = ? AND status <> 'failed'").get(key) as JobRow | undefined;
+    return row ? toJob(row) : null;
   }
 
   addEvent(id: string, phase: JobPhase, detail: Record<string, unknown> | null = null, at = new Date().toISOString()): void {
@@ -83,12 +89,23 @@ export class WriteJobsRepository {
   }
 
   failInterrupted(error: string, finishedAt: string): WriteJob[] {
-    const interrupted = this.db.prepare("SELECT * FROM write_jobs WHERE status IN ('running', 'merging')").all() as JobRow[];
-    this.db.prepare(`
-      UPDATE write_jobs SET status = 'failed', error = ?, finished_at = ?
-      WHERE status IN ('running', 'merging')
-    `).run(error, finishedAt);
-    return interrupted.map(toJob);
+    return this.db.transaction(() => {
+      const interrupted = this.db.prepare("SELECT * FROM write_jobs WHERE status IN ('running', 'merging')").all() as JobRow[];
+      for (const job of interrupted) {
+        const children = new Map<string, ProjectedSubagent>();
+        for (const event of this.events(job.id)) {
+          const snapshot = projectSubagent(event.detail?.subagent, () => true);
+          if (snapshot) children.set(snapshot.id, snapshot);
+        }
+        for (const snapshot of children.values()) {
+          if (snapshot.status !== 'running') continue;
+          this.addEvent(job.id, 'editing', { subagent: { ...snapshot, status: 'cancelled', error: 'interrupted', finishedAt } }, finishedAt);
+        }
+        this.markFailed(job.id, error, finishedAt);
+        this.addEvent(job.id, 'failed', { reason: 'interrupted' }, finishedAt);
+      }
+      return interrupted.map(job => this.get(job.id)!);
+    })();
   }
 
   next(): WriteJob | null {

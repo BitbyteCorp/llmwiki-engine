@@ -1,5 +1,6 @@
 import { Test } from '@nestjs/testing';
 import { mkdtemp, rm, symlink } from 'node:fs/promises';
+import { createServer, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
@@ -53,7 +54,7 @@ function output(body: RequestBody, callId: string): Record<string, unknown> {
 
 // Conversations are routed by their initial user input rather than request arrival order:
 // independent child loops must genuinely overlap, including while one HTTP response is held.
-async function fixture(route: Route) {
+async function fixture(route: Route, embeddingUrl?: string) {
   const requests: Array<{ initial: Initial; turn: number; body: RequestBody }> = [];
   const turns = new Map<string, number>();
   const fake = await startFakeOpenAI(async (request) => {
@@ -79,7 +80,14 @@ async function fixture(route: Route) {
   runMigrations(db);
   cleanup.push(async () => db.close());
   const acl = new AclService(db, new UsersService(new UsersRepository(db)), new AuditService(db));
-  const search = { search: async () => [] } as unknown as SearchService;
+  let search = { search: async () => [] } as unknown as SearchService;
+  if (embeddingUrl) {
+    db.exec('CREATE VIRTUAL TABLE chunk_vectors USING vec0(chunk_id INTEGER PRIMARY KEY, embedding float[2])');
+    const meta = db.prepare('INSERT INTO index_meta(key,value) VALUES (?,?)');
+    meta.run('embedding_model', config.embeddingModel);
+    meta.run('embedding_dimensions', '2');
+    search = new SearchService({ ...config, openaiBaseUrl: embeddingUrl, embeddingDimensions: 2 }, db, log, acl);
+  }
   const module = await Test.createTestingModule({
     providers: [
       AgentService,
@@ -122,6 +130,36 @@ const job: WriteJob = {
   kind: 'agent', client: null, conflicts: [], commits: [], mergeSha: null, error: null,
   createdAt: '2026-10-07T00:00:00.000Z', startedAt: null, finishedAt: null,
 };
+
+describe('subagent lifecycle failure containment', () => {
+  it.each(['completed', 'cancelled'] as const)('keeps %s callback failures inspectable without rejecting background completion', async (outcome) => {
+    const finished = gate();
+    const errors: unknown[] = [];
+    const pool = new SubagentPool({
+      agent: { runAgent: async () => { await finished.promise; return { text: 'Child result', toolCalls: 0 }; } } as unknown as AgentService,
+      instructions: '', tools: [], wt: { path: tmpdir() },
+      log: { error: (error: unknown) => { errors.push(error); } } as unknown as pino.Logger,
+      onChange: (snapshot) => { if (snapshot.status !== 'running') throw new Error('SQLite addEvent failed'); },
+    });
+    cleanup.push(() => pool.close());
+    const child = await spawn(pool, 'terminal-failure');
+    const cancellation = outcome === 'cancelled' ? invoke(pool.tools(), 'cancel_subagent', { id: child.id }) : undefined;
+    const status = outcome === 'cancelled' ? 'cancelled' : 'failed';
+    const waiting = waitFor(pool, [child.id]);
+    finished.resolve();
+    await expect(waiting).resolves.toMatchObject({
+      running: [], timedOut: false,
+      settled: [{ id: child.id, status, error: expect.stringContaining('SQLite addEvent failed'), finishedAt: expect.any(String) }],
+    });
+    if (cancellation) await expect(cancellation).resolves.toMatchObject({ status, error: expect.stringContaining('SQLite addEvent failed') });
+    await setImmediate();
+    await expect(pool.close()).resolves.toBeUndefined();
+    expect(await invoke(pool.tools(), 'subagent_status', { id: child.id })).toMatchObject({
+      subagents: [{ id: child.id, status, error: expect.stringContaining('SQLite addEvent failed') }],
+    });
+    expect(errors).toHaveLength(1);
+  });
+});
 
 describe('write subagent pool', () => {
   it('runs disjoint children concurrently, rejects overlaps and protects parent mutations until completion', async () => {
@@ -261,6 +299,85 @@ describe('write subagent pool', () => {
     await expect(spawn(pool, '   ')).rejects.toThrow();
     expect(requests).toEqual([]);
     expect(await invoke(pool.tools(), 'subagent_status', {})).toEqual({ subagents: [] });
+  });
+
+  it('rejects ill-formed UTF-16 claims and mutations instead of aliasing replacement-character files', async () => {
+    const { wt, makePool } = await fixture(() => 'Unexpected child');
+    const pool = makePool();
+    const invalid = 'wiki/\uD800.md';
+    const replacement = 'wiki/\uFFFD.md';
+    await wt.write(replacement, 'Original replacement-character file.\n');
+    await expect(spawn(pool, 'invalid-unicode', [invalid])).rejects.toThrow(/Invalid repository path/);
+    await expect(wt.write(invalid, 'Aliased write')).rejects.toThrow(/Invalid repository path/);
+    await expect(invoke(pool.parentTools(), 'write_file', { path: invalid, content: 'Aliased parent write' })).rejects.toThrow(/Invalid repository path/);
+    expect(await wt.read(replacement)).toBe('Original replacement-character file.\n');
+  });
+
+  it('treats Korean NFC and NFD claim variants as overlapping without renaming filesystem paths', async () => {
+    const entered = gate();
+    const release = gate();
+    const { wt, makePool } = await fixture(async () => { entered.resolve(); await release.promise; return 'Finished'; });
+    const nfc = 'wiki/한글.md';
+    const nfd = nfc.normalize('NFD');
+    await wt.write(nfd, 'Existing decomposed filename.\n');
+    const pool = makePool();
+    const child = await spawn(pool, 'korean', [nfd]);
+    await entered.promise;
+    await expect(spawn(pool, 'alias', [nfc])).rejects.toThrow(/overlap/i);
+    await expect(invoke(pool.parentTools(), 'write_file', { path: nfc, content: 'Parent alias' })).rejects.toThrow(/claimed/i);
+    expect(await wt.read(nfd)).toBe('Existing decomposed filename.\n');
+    release.resolve();
+    expect((await waitFor(pool, [child.id])).settled[0]).toMatchObject({ status: 'completed', files: [nfd] });
+  });
+
+  it.each(['cancel', 'close'] as const)('%s aborts an in-flight search against an embeddings endpoint that never responds', async (operation) => {
+    const entered = gate();
+    const disconnected = gate();
+    const responses: ServerResponse[] = [];
+    let embeddingRequests = 0;
+    const server = createServer((req, res) => {
+      if (req.url !== '/v1/embeddings') throw new Error(`Unexpected embedding route: ${req.url}`);
+      embeddingRequests++;
+      responses.push(res);
+      req.resume();
+      res.once('close', () => disconnected.resolve());
+      entered.resolve();
+      // Deliberately never send headers or a response body.
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Embedding endpoint did not bind');
+    const { makePool } = await fixture((_initial, turn) => turn === 0 ? [call('search', { query: '지식 검색' })] : 'Unexpected post-cancel turn', `http://127.0.0.1:${address.port}/v1`);
+    const pool = makePool();
+    const child = await spawn(pool, 'searching');
+    let deadline: NodeJS.Timeout | undefined;
+    try {
+      await entered.promise;
+      const cancellation = operation === 'close' ? pool.close() : invoke(pool.tools(), 'cancel_subagent', { id: child.id });
+      // This real HTTP integration needs a platform deadline: faking timers also
+      // advances the SDK's network timeout/retries and would mask missing signal propagation.
+      await Promise.race([
+        cancellation,
+        new Promise<never>((_resolve, reject) => { deadline = setTimeout(() => reject(new Error('Search cancellation remained blocked after 1 second')), 1_000); }),
+      ]);
+      await disconnected.promise;
+      expect(await invoke(pool.tools(), 'subagent_status', { id: child.id })).toMatchObject({
+        subagents: [{ id: child.id, status: 'cancelled', finishedAt: expect.any(String) }],
+      });
+      expect(embeddingRequests).toBe(1);
+    } finally {
+      clearTimeout(deadline);
+      // Release only during teardown so a red test can still settle its child loop.
+      for (const res of responses) if (!res.destroyed) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ data: [{ index: 0, embedding: [1, 0] }] }));
+      }
+      await pool.close();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve());
+        server.closeAllConnections();
+      });
+    }
   });
 
   it('waits for any or all children and supports immediate and bounded timeout snapshots', async () => {

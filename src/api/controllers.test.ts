@@ -91,6 +91,7 @@ describe('web REST API', () => {
     log: Mock<(opts?: { path?: string; ref?: string; limit?: number; sinceSha?: string; beforeSha?: string }) => Promise<CommitInfo[]>>;
     show: ReturnType<typeof vi.fn<(sha: string) => Promise<{ commit: CommitInfo; files: Array<{ status: 'M'; path: string }>; patch: string }>>>;
     diffNames: Mock<() => Promise<Array<{ status: 'M'; path: string }>>>;
+    changedPaths: Mock<(sha: string) => Promise<string[]>>;
   };
   let answer: ReturnType<typeof vi.fn<Answer>>;
   let users: {
@@ -126,6 +127,7 @@ describe('web REST API', () => {
       log: vi.fn(async (opts) => [commit(opts?.ref ?? head)]),
       show: vi.fn(async (sha) => ({ commit: commit(sha), files: [{ status: 'M' as const, path: 'wiki/Navigation.md' }], patch: '+Main branch content' })),
       diffNames: vi.fn(async () => [{ status: 'M' as const, path: 'wiki/Navigation.md' }]),
+      changedPaths: vi.fn(async (_sha: string) => ['wiki/Navigation.md']),
     };
     answer = vi.fn(async (_messages, delta, _signal, options) => {
       delta('Read ');

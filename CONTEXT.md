@@ -45,7 +45,7 @@ Node.js 기반으로 LLM Wiki를 관리하는 도구다.
 ### 접점
 
 - [인증](docs/auth.md) — Google Workspace 로그인과, 엔진이 인가 서버가 되는 MCP OAuth다.
-- [폴더별 접근 제어](docs/access-control.md) — 경로 규칙의 우선순위와 웹·MCP·검색·도니·이벤트·내보내기의 읽기·쓰기 범위, 공유 대화와 꿈꾸기의 한계를 설명한다.
+- [폴더별 접근 제어](docs/access-control.md) — 경로 규칙의 우선순위와 웹·MCP·검색·도니·이벤트·내보내기의 읽기·쓰기 범위, 공유 대화와 꿈꾸기의 한계를 설명한다. 작업 조회의 경로 기반 판정과 관리자 메타데이터 조회 계약도 설명한다.
 - [MCP](docs/mcp.md) — 지식 도구·리소스와 stateless Streamable HTTP 전송 계약을 설명한다.
 - [설치형 Skills](docs/skills.md) — Claude Code·Codex·Hermes의 설치형 지침과 설정 MCP 탭의 일곱 클라이언트 등록·OAuth·실제 도구 확인·문제 해결을 설명한다.
 - [웹](docs/web.md) — 끌어 놓기로 중첩 분할하는 최대 6개의 편집기 그룹과 오른쪽 도니 대화, 통합 설정을 제공한다. 그룹·탭 끌기 규칙과 공통 움직임 토큰, 대화 기록 요청의 작업 링크, 노트·이력·첨부 UX, 단축키와 테마·간격 규칙을 설명한다.

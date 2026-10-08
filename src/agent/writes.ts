@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { Logger } from 'pino';
 import type { WriteJob } from '../jobs/write-job.types.js';
 import type { KnowledgeRepo, Worktree } from '../knowledge/repo.js';
 import type { AgentService } from './agent.service.js';
@@ -32,10 +33,11 @@ export async function runWrite(
   wt: Worktree,
   author: { name: string; email: string },
   user?: AclUser,
+  log?: Pick<Logger, 'error'>,
 ): Promise<{ summary: string }> {
   const instructions = `${await agent.baseInstructions(user, user ? (path) => wt.onPhase?.('editing', { sourcePath: path }) : undefined)}\n\n${writeInstructions}`;
   const pool = new SubagentPool({
-    agent, instructions, tools: agent.worktreeTools(wt, author, user), wt,
+    agent, instructions, tools: agent.worktreeTools(wt, author, user), wt, log,
     onChange: (snapshot) => {
       // Task text never enters job events; result/error use the job's input visibility.
       const { startedAt: _startedAt, finishedAt: _finishedAt, ...subagent } = snapshot;

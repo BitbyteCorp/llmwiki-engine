@@ -64,7 +64,7 @@ describe('core database', () => {
       expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
       expect(db.pragma('journal_mode', { simple: true })).toBe('wal');
       expect(db.prepare('SELECT vec_length(vec_f32(?)) AS dimensions').get('[1,2,3]')).toEqual({ dimensions: 3 });
-      expect(db.prepare('SELECT count(*) AS total FROM schema_migrations').get()).toEqual({ total: 16 });
+      expect(db.prepare('SELECT count(*) AS total FROM schema_migrations').get()).toEqual({ total: 17 });
       expect(() => db.prepare('INSERT INTO users (email, role, created_at) VALUES (?, ?, ?)').run('bad@example.com', 'owner', new Date().toISOString())).toThrow();
     } finally {
       if (db.open) db.close();
@@ -98,14 +98,20 @@ describe('core database', () => {
       const imports = db.prepare('SELECT * FROM imports').all();
       const schemaSql = db.prepare("SELECT name, sql FROM sqlite_schema WHERE type IN ('index', 'trigger') ORDER BY name");
       const schema = schemaSql.all();
+      const expectedSchema = [...schema, {
+        name: 'write_jobs_dedupe_key_active',
+        sql: `CREATE UNIQUE INDEX write_jobs_dedupe_key_active
+  ON write_jobs(dedupe_key)
+  WHERE dedupe_key IS NOT NULL AND status <> 'failed'`,
+      }].sort((left, right) => String(left.name) < String(right.name) ? -1 : String(left.name) > String(right.name) ? 1 : 0);
       const foreignKeys = db.prepare("SELECT * FROM pragma_foreign_key_list('imports') UNION ALL SELECT * FROM pragma_foreign_key_list('write_job_events')").all();
       runMigrations(db);
       expect(db.prepare('SELECT rowid, * FROM write_jobs ORDER BY rowid').all()).toEqual(jobs.map((job) => ({
-        ...job, kind: job.kind === historicalJobKind ? 'agent' : job.kind,
+        ...job, dedupe_key: null, kind: job.kind === historicalJobKind ? 'agent' : job.kind,
       })));
       expect(db.prepare('SELECT * FROM write_job_events').all()).toEqual(events);
       expect(db.prepare('SELECT * FROM imports').all()).toEqual(imports);
-      expect(schemaSql.all()).toEqual(schema);
+      expect(schemaSql.all()).toEqual(expectedSchema);
       expect(db.prepare("SELECT * FROM pragma_foreign_key_list('imports') UNION ALL SELECT * FROM pragma_foreign_key_list('write_job_events')").all()).toEqual(foreignKeys);
       expect(db.pragma('foreign_keys', { simple: true })).toBe(1);
       expect(db.pragma('foreign_key_check')).toEqual([]);
@@ -119,7 +125,7 @@ describe('core database', () => {
       db.exec("DELETE FROM imports WHERE id = 'import'; DELETE FROM write_jobs WHERE id = 'historical'");
       expect(db.prepare('SELECT * FROM write_job_events').all()).toEqual([]);
       runMigrations(db);
-      expect(db.prepare('SELECT count(*) AS total FROM schema_migrations').get()).toEqual({ total: 16 });
+      expect(db.prepare('SELECT count(*) AS total FROM schema_migrations').get()).toEqual({ total: 17 });
     } finally {
       db.close();
     }

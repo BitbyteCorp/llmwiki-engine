@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import type { Request } from 'express';
+import { randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import type { Server } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -200,6 +201,31 @@ describe('chat write job monitoring', () => {
     expect(JSON.stringify((await f.detail(conversation.id, 2)).messages)).not.toContain('PRIVATE_JOB_RESULT');
   });
 
+  it('keeps large binary job details without generating patches for status provenance', async () => {
+    const args = { jobId: '' };
+    const f = await fixture([{ name: 'get_write_status', arguments: args }, 'The large import succeeded.'], 'editor');
+    const conversation = await f.create();
+    const wt = await f.repo.createWorktree('large-status-result');
+    let sha: string;
+    try {
+      await wt.write('assets/large.bin', randomBytes(52 * 1024 * 1024));
+      sha = (await wt.commit('Import large asset', { name: 'Fixture', email: 'fixture@example.test' }))!;
+      await wt.fastForwardMain();
+    } finally { await wt.dispose(); }
+    const job = f.jobs.submit({ userId: 1, input: 'Import the asset.', source: 'chat', client: conversation.id });
+    args.jobId = job.id;
+    f.jobRepository.markMerging(job.id, 'Imported the large asset.', [sha]);
+    f.jobRepository.markSucceeded(job.id, new Date().toISOString());
+    f.jobs.phase(job.id, 'done');
+    const show = vi.spyOn(f.repo, 'show');
+    await f.send(conversation.id, { content: 'Check my import.' });
+    const output = (f.fake.requests[1].body.input as Array<{ type: string; output?: string }>).find(item => item.type === 'function_call_output')!;
+    expect(JSON.parse(output.output!)).toMatchObject({
+      jobId: job.id, status: 'succeeded', summary: 'Imported the large asset.', commits: [sha],
+    });
+    expect(show).not.toHaveBeenCalled();
+  }, 30_000);
+
   it('omits summaries and subagent result text when current folder permissions hide the job input', async () => {
     const args = { jobId: '' };
     const f = await fixture([{ name: 'get_write_status', arguments: args }, 'Details are restricted.'], 'editor');
@@ -332,6 +358,71 @@ describe('conversation consumer contract', () => {
     expect(await f.send(conversation.id, { content: 'Save this fact and its storage advice in the wiki.', clientId: 'save-citrine' })).toEqual(result);
     expect(f.jobRepository.list()).toHaveLength(1);
     expect(done(result)).toMatchObject({ status: 'completed', content: 'The knowledge update is queued.' });
+  });
+
+  it('reuses each requested write across retry and regenerate while keeping calls in one answer distinct', async () => {
+    const writes = [
+      { name: 'write_knowledge', arguments: { content: 'First independent fact.' } },
+      { name: 'write_knowledge', arguments: { content: 'Second independent fact.' } },
+      'Both writes requested.',
+    ];
+    const f = await fixture([...writes, ...writes, ...writes], 'editor');
+    const conversation = await f.create();
+    const first = await f.send(conversation.id, { content: 'Save both facts.' });
+    const userId = first[0].data.userMessageId as string;
+    const ids = first.filter(frame => frame.event === 'tool' && frame.data.name === 'write_knowledge' && frame.data.state === 'end').map(frame => frame.data.jobId);
+    expect(new Set(ids).size).toBe(2);
+    f.jobRepository.markSucceeded(ids[0] as string, new Date().toISOString());
+    const retry = await f.stream(`/conversations/${conversation.id}/messages/${userId}/retry`);
+    const regenerated = await f.stream(`/conversations/${conversation.id}/messages/${done(retry).id}/regenerate`);
+    for (const result of [retry, regenerated]) {
+      expect(result.filter(frame => frame.event === 'tool' && frame.data.name === 'write_knowledge' && frame.data.state === 'end').map(frame => frame.data.jobId)).toEqual(ids);
+    }
+    for (const index of [5, 8]) {
+      const outputs = (f.fake.requests[index].body.input as Array<{ type: string; output?: string }>).filter(item => item.type === 'function_call_output');
+      expect(outputs.map(item => JSON.parse(item.output!))).toEqual([
+        { jobId: ids[0], status: 'succeeded', reused: true }, { jobId: ids[1], status: 'queued', reused: true },
+      ]);
+    }
+    expect(f.jobRepository.list()).toHaveLength(2);
+  });
+
+  it('does not reuse another member’s write when they regenerate the same user turn', async () => {
+    const write = { name: 'write_knowledge', arguments: { content: 'A requested fact.' } };
+    const f = await fixture([write, 'Requested.', write, 'Requested by the current member.'], 'editor');
+    const conversation = await f.create();
+    await f.request(`/conversations/${conversation.id}/members`, 'POST', { email: 'user4@example.test', role: 'editor' });
+    const first = await f.send(conversation.id, { content: 'Save this fact.' });
+    const regenerated = await f.stream(`/conversations/${conversation.id}/messages/${done(first).id}/regenerate`, 'POST', undefined, 4);
+    const jobs = f.jobRepository.list();
+    expect(jobs.map(job => job.userId).sort()).toEqual([1, 4]);
+    expect(new Set(jobs.map(job => job.id)).size).toBe(2);
+    expect(done(regenerated).content).toBe('Requested by the current member.');
+  });
+
+  it('requests new writes for edited content and keeps their revision stable on regeneration', async () => {
+    const write = { name: 'write_knowledge', arguments: { content: 'Requested fact.' } };
+    const f = await fixture([write, 'Requested.', write, 'Edited request accepted.', write, 'Already requested.'], 'editor');
+    const conversation = await f.create();
+    const first = await f.send(conversation.id, { content: 'Save the original fact.' });
+    const userId = first[0].data.userMessageId as string;
+    const jobId = (result: Frame[]) => result.find(frame => frame.event === 'tool' && frame.data.name === 'write_knowledge' && frame.data.state === 'end')!.data.jobId;
+    const edited = await f.stream(`/conversations/${conversation.id}/messages/${userId}`, 'PATCH', { content: 'Save the corrected fact instead.' });
+    expect(edited[0].data.userMessageId).toBe(userId);
+    expect(jobId(edited)).not.toBe(jobId(first));
+    const regenerated = await f.stream(`/conversations/${conversation.id}/messages/${done(edited).id}/regenerate`);
+    expect(jobId(regenerated)).toBe(jobId(edited));
+    expect(f.jobRepository.list()).toHaveLength(2);
+  });
+
+  it('limits an answer to five requested writes and reports additional calls as tool errors', async () => {
+    const writes = Array.from({ length: 6 }, (_, index) => ({ name: 'write_knowledge', arguments: { content: `Independent fact ${index + 1}.` } }));
+    const f = await fixture([...writes, 'Five writes requested.'], 'editor');
+    const conversation = await f.create();
+    await f.send(conversation.id, { content: 'Save these facts.' });
+    expect(f.jobRepository.list()).toHaveLength(5);
+    const outputs = (f.fake.requests[6].body.input as Array<{ type: string; output?: string }>).filter(item => item.type === 'function_call_output');
+    expect(JSON.parse(outputs.at(-1)!.output!)).toEqual({ error: 'At most 5 write_knowledge calls are allowed per answer' });
   });
 
   it('does not grant a global viewer knowledge writes even when they own the conversation', async () => {

@@ -1,4 +1,5 @@
 import { HttpException, Inject, Injectable, OnModuleDestroy, Optional } from '@nestjs/common';
+import { createHash } from 'node:crypto';
 import type { ResponseInputContent } from 'openai/resources/responses/responses';
 import type { Logger } from 'pino';
 import { DB, LOGGER } from '../common/tokens.js';
@@ -15,7 +16,7 @@ import type { Db } from '../db/index.js';
 import { chatUser, messageSources, readableTurns, redactMessage } from './acl-chat.js';
 import { WriteJobsService } from '../jobs/write-jobs.service.js';
 import type { ChatWriteStatus, ChatWriteSubagent } from '../agent/agent.types.js';
-import { KnowledgeRepo } from '../knowledge/repo.js';
+import { projectSubagent } from '../jobs/write-job.projection.js';
 
 @Injectable()
 export class ConversationsService implements OnModuleDestroy {
@@ -31,7 +32,6 @@ export class ConversationsService implements OnModuleDestroy {
     private readonly acl: AclService,
     @Inject(DB) private readonly db: Db,
     private readonly writeJobs: WriteJobsService,
-    private readonly repo: KnowledgeRepo,
     @Optional() private readonly audit?: AuditService,
   ) { this.presenceTimer.unref(); }
   onModuleDestroy(): void { clearInterval(this.presenceTimer); }
@@ -106,8 +106,10 @@ export class ConversationsService implements OnModuleDestroy {
       if(this.acl.policyKey(current)!==policyKey) notFound('Message not found');
     };
     const assistant=this.repository.addMessage(id,userId,'assistant','',[],{status:'running',model,effort})!;
+    const revision=createHash('sha256').update(user.content).digest('hex');
     return this.generations.start({conversationId:id,userMessageId:user.id,assistantMessageId:assistant.id,userId,clientId,model,effort},async(signal,emit)=>{
       let partial='';
+      let writeCalls=0;
       try {
         const turns=readableTurns(this.db,this.acl,actor,this.repository.messages(id,userId));
         const readable=turns.filter(turn=>turn.readable && turn.message.id!==assistant.id && (turn.message.role==='user'||turn.message.status==='completed'));
@@ -159,44 +161,21 @@ export class ConversationsService implements OnModuleDestroy {
           const job=this.writeJobs.get(jobId);
           if(!job || job.userId!==userId) throw new Error('not found');
           const current=chatUser(this.db,userId);
-          const visible=await this.writeJobs.visible(current,job);
+          const {job:visible,sourcePaths,restricted}=await this.writeJobs.projectVisibility(current,job);
           signal.throwIfAborted();
           this.access(id,userId,true);
           assertAccess();
           const events=this.writeJobs.events(jobId);
-          const paths=new Set(job.conflicts);
-          for(const event of events) {
-            if(typeof event.detail?.sourcePath==='string') paths.add(event.detail.sourcePath);
-            if(Array.isArray(event.detail?.sourcePaths)) for(const path of event.detail.sourcePaths) if(typeof path==='string') paths.add(path);
-          }
-          let restricted=visible!==job;
-          if(!restricted) {
-            try {
-              for(const sha of new Set([...job.commits,...(job.mergeSha ? [job.mergeSha] : [])])) {
-                const commit=await this.repo.show(sha);
-                for(let parent=0;parent<Math.max(1,commit.commit.parents.length);parent++) {
-                  const files=parent===0 ? commit.files : await this.repo.diffNames(commit.commit.parents[parent]!,commit.commit.sha);
-                  for(const file of files) {paths.add(file.path);if(file.oldPath) paths.add(file.oldPath);}
-                }
-              }
-            } catch { restricted=true; }
-          }
+          const paths=new Set(sourcePaths);
           const subagents=new Map<string,ChatWriteSubagent>();
           for(const event of events) {
-            const value=event.detail?.subagent;
-            if(!value || typeof value!=='object') continue;
-            const subagent=value as Record<string,unknown>;
-            if(typeof subagent.id!=='string' || typeof subagent.name!=='string'
-              || !['running','completed','failed','cancelled'].includes(String(subagent.status))
-              || !Array.isArray(subagent.files) || typeof subagent.toolCalls!=='number') continue;
-            const files=subagent.files.filter((path):path is string=>typeof path==='string');
-            const hidden=restricted || files.some(path=>!this.acl.canRead(current,path));
-            if(!hidden) for(const path of files) paths.add(path);
+            const subagent=projectSubagent(event.detail?.subagent,path=>this.acl.canRead(current,path),restricted);
+            if(!subagent) continue;
             subagents.set(subagent.id,{
-              id:subagent.id,name:subagent.name,status:subagent.status as ChatWriteSubagent['status'],
-              files:files.filter(path=>this.acl.canRead(current,path)),toolCalls:subagent.toolCalls,
-              ...(!hidden && typeof subagent.result==='string' ? {result:subagent.result} : {}),
-              ...(!hidden && typeof subagent.error==='string' ? {error:subagent.error} : {}),
+              id:subagent.id,name:subagent.name,status:subagent.status,
+              files:subagent.files,toolCalls:subagent.toolCalls,
+              ...(subagent.result!==undefined ? {result:subagent.result} : {}),
+              ...(subagent.error!==undefined ? {error:subagent.error} : {}),
             });
           }
           signal.throwIfAborted();
@@ -217,8 +196,11 @@ export class ConversationsService implements OnModuleDestroy {
               signal.throwIfAborted();
               this.access(id,userId,true);
               assertAccess();
-              const job=this.writeJobs.submit({userId,input:content,source:'chat',client:id,sourcePaths:[...sources]});
-              return {jobId:job.id,status:'queued' as const};
+              const ordinal=++writeCalls;
+              if(ordinal>5) throw new Error('At most 5 write_knowledge calls are allowed per answer');
+              const job=this.writeJobs.submit({userId,input:content,source:'chat',client:id,sourcePaths:[...sources],
+                dedupeKey:`chat:${id}:${user.id}:${ordinal}:${revision}:${userId}`});
+              return {jobId:job.id,status:job.status,...(job.reused ? {reused:true} : {})};
             },
             getWriteStatus:writeStatus,
             waitWrite:async(jobId:string,timeoutSeconds:number)=>{

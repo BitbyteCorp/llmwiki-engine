@@ -4,7 +4,7 @@
 
 ## 작업 종류와 출처
 
-`WriteJob.kind`는 `agent`, `direct`, `revert`다. `source`는 `mcp`, `web`, `chat`, `dreaming`, `import`, `revert` 중 하나이며, `client`에는 호출 클라이언트 이름을 선택적으로 기록한다. `WriteJobsService.submit({ userId, input, source, client? })`는 출처를 명시해야 한다. direct 작업의 입력에는 재실행에 필요한 `baseSha`, 연산, 메시지와 호출자 정보가 JSON으로 보존되고, revert 작업에는 대상 SHA와 선택 경로가 보존된다.
+`WriteJob.kind`는 `agent`, `direct`, `revert`다. `source`는 `mcp`, `web`, `chat`, `dreaming`, `import`, `revert` 중 하나이며, `client`에는 호출 클라이언트 이름을 선택적으로 기록한다. `WriteJobsService.submit({ userId, input, source, client?, sourcePaths?, dedupeKey? })`는 출처를 명시해야 하며 작업 정보와 `reused` 플래그를 반환한다. `dedupeKey`를 지정하면 같은 키의 실패하지 않은 작업을 재사용하고 새 작업이나 이벤트를 만들지 않는다. 키는 `017_write_job_dedupe.sql`의 영속 열과 부분 고유 인덱스로 보존하므로 재시작 뒤에도 중복 제출을 막으며, 실패한 작업은 키를 해제한다. 키를 생략한 제출은 각각 독립적인 작업이다. direct 작업의 입력에는 재실행에 필요한 `baseSha`, 연산, 메시지와 호출자 정보가 JSON으로 보존되고, revert 작업에는 대상 SHA와 선택 경로가 보존된다.
 
 `src/db/migrations/016_agent_job_kind.sql`은 [에이전트 이름과 식별자의 분리](agent.md#배경)에 맞춰 기존 에이전트 작업 종류를 `agent`로 바꾼다. 작업 행과 관련 이력을 보존하며 `write_jobs.kind`의 기본값은 `agent`, 허용 값은 `agent`, `direct`, `revert`로 변경한다. 테이블 재구축 중 인덱스·트리거 보존과 외래 키 검증은 [SQL 마이그레이션 러너의 재구축 규칙](development.md#sql-마이그레이션과-테이블-재구축)을 따른다.
 
@@ -30,9 +30,9 @@
 
 ### 대화에서 제출하는 쓰기
 
-웹 대화의 `write_knowledge`는 [도니의 기록 요청 규칙](agent.md#대화-중-지식-기록-도구)을 따라 `WriteJobsService.submit()`에 요청자의 `userId`, 기록할 `input`, `source: 'chat'`, 대화 ID인 `client`를 전달한다. 해당 생성에서 추적한 근거 노트 경로도 `sourcePaths`로 보존하여 작업 실행과 이력 조회의 읽기 권한 검사에 사용한다. 대화 구성원 역할과 별개인 전역 쓰기 권한은 [접근 제어](access-control.md#읽기와-쓰기-범위)를 따른다.
+웹 대화의 `write_knowledge`는 [도니의 기록 요청 규칙](agent.md#대화-중-지식-기록-도구)을 따라 `WriteJobsService.submit()`에 요청자의 `userId`, 기록할 `input`, `source: 'chat'`, 대화 ID인 `client`를 전달한다. `dedupeKey`는 `chat:<conversationId>:<userMessageId>:<호출 순번>:<내용 SHA-256>:<현재 요청자 ID>`이며 호출 순번은 답변마다 1부터 시작한다. 같은 내용의 턴을 재시도·재생성하면 같은 순번의 비실패 작업을 재사용하고, 편집한 내용과 다른 요청자는 새 작업으로 구분한다. 한 답변의 기록 요청은 최대 5회이며 초과 요청은 큐를 늘리지 않고 도구 오류를 반환한다. 해당 생성에서 추적한 근거 노트 경로도 `sourcePaths`로 보존하여 작업 실행과 이력 조회의 읽기 권한 검사에 사용한다. 대화 구성원 역할과 별개인 전역 쓰기 권한은 [접근 제어](access-control.md#읽기와-쓰기-범위)를 따른다.
 
-도구 결과 `{ jobId, status: 'queued' }`는 큐에 접수했다는 뜻이며 파일 저장·커밋·main 반영의 완료가 아니다. 도니는 이를 `기록 요청됨`으로 설명하고 `저장됨`이나 `반영 완료`라고 단정하지 않는다. 실제 완료와 실패는 위의 비동기 작업 상태와 [웹 작업 상세](web.md#쓰기-작업과-꿈꾸기일기)에서 확인한다. 답변 생성의 종료와 쓰기 작업의 완료는 별개다.
+새 작업의 도구 결과 `{ jobId, status: 'queued' }`는 큐에 접수했다는 뜻이며 파일 저장·커밋·main 반영의 완료가 아니다. 재사용 결과 `{ jobId, status, reused: true }`는 기존 작업의 현재 상태를 반환한다. 도니는 새 접수를 `기록 요청됨`, 재사용을 `이미 기록 요청됨`으로 설명하고 접수만으로 `저장됨`이나 `반영 완료`라고 단정하지 않는다. 실제 완료와 실패는 위의 비동기 작업 상태와 [웹 작업 상세](web.md#쓰기-작업과-꿈꾸기일기)에서 확인한다. 답변 생성의 종료와 쓰기 작업의 완료는 별개다.
 
 이 경로는 `proposal()`의 초안 미리보기와 다르다. 초안은 사용자가 diff를 확인한 뒤 직접 쓰기 API로 적용하지만, 명시적인 대화 기록 요청은 기존 에이전트 큐에 바로 제출한다. 야간의 수동 요청 없는 대화 추출과 이 경로의 관계는 [대화 기록과 학습](web.md#대화-기록과-학습)에 기록한다.
 
@@ -85,11 +85,11 @@ REST 계약은 다음과 같다.
 
 실패하면 main을 바꾸지 않고 오류와 만든 커밋을 기록한다. 워크트리 정리 전에 HEAD를 `refs/wiki/failed/<jobId>`에 보존하므로 작업 브랜치를 제거한 뒤에도 실패 커밋을 조회할 수 있다. 색인 실패는 이미 main에 반영된 쓰기를 실패로 되돌리지 않으며 단계 세부 정보와 로그에 남긴다. 정리 실패 역시 성공한 쓰기를 무효화하지 않는다.
 
-시작할 때 이전 실행의 running·merging 작업은 중단 사유와 failed 이벤트를 남긴다. 저장소 복구는 버려진 작업 브랜치의 커밋된 HEAD를 `refs/wiki/failed/<jobId>`에 먼저 보존하고 워크트리와 브랜치를 제거한다. 따라서 크래시 전에 커밋한 실패 작업은 이후에도 조회할 수 있지만 커밋하지 않은 작업 파일 수정은 복구하지 않는다. queued 에이전트 작업은 워커에서 다시 처리하고, queued direct/revert 재시도는 에이전트 큐 밖에서 재개한다. `main.ts`가 명시적으로 `WriteJobsService.start()`를 호출하므로 CLI 컨텍스트 생성만으로 에이전트 큐를 소비하지 않는다. 종료는 현재 에이전트 실행과 direct/revert 재시도를 기다린다.
+시작할 때 이전 실행의 running·merging 작업은 중단 사유와 failed 이벤트를 남긴다. 해당 작업의 자식별 최신 스냅샷이 running이면 같은 ID·이름·소유 경로·도구 호출 수를 보존한 cancelled 스냅샷과 `error: 'interrupted'`, 종료 시각을 추가한다. 부모 실패 처리와 자식 종료 이벤트는 같은 DB 트랜잭션으로 기록하며 재시작을 반복해도 종료 이벤트를 중복 추가하지 않는다. 저장소 복구는 버려진 작업 브랜치의 커밋된 HEAD를 `refs/wiki/failed/<jobId>`에 먼저 보존하고 워크트리와 브랜치를 제거한다. 따라서 크래시 전에 커밋한 실패 작업은 이후에도 조회할 수 있지만 커밋하지 않은 작업 파일 수정은 복구하지 않는다. queued 에이전트 작업은 워커에서 다시 처리하고, queued direct/revert 재시도는 에이전트 큐 밖에서 재개한다. `main.ts`가 명시적으로 `WriteJobsService.start()`를 호출하므로 CLI 컨텍스트 생성만으로 에이전트 큐를 소비하지 않는다. 종료는 현재 에이전트 실행과 direct/revert 재시도를 기다린다.
 
 `retry(id)`는 failed 작업의 원래 출처·클라이언트·입력을 유지한 **새 작업**을 만들고 queued 이벤트의 `detail.retryOf`에 원래 ID를 남긴다. 에이전트 작업은 일반 큐로, direct/revert는 바로 머지 락으로 실행한다. direct 재시도도 원래 baseSha를 사용하므로 충돌한 입력은 다시 stale_note로 실패할 수 있다. 원래 실패 이력은 변경하지 않는다. `cancel(id)`는 queued 상태에서만 원자적으로 상태를 failed, 오류를 `canceled`로 바꾸며 이미 실행 중인 작업은 취소하지 않는다.
 
-`GET /api/jobs`와 상세 조회는 소유자 또는 관리자만 허용한다. 상세 결과는 `{ job, user, commits, events }`이며 kind, source, client, conflicts는 job 안에 있다. 목록 커서는 작업 ID를 받으며 생성 시각과 ID를 함께 비교해 같은 시각의 행을 빠뜨리지 않는다. 기존 ISO 시각 커서도 허용한다. 다른 사용자의 커밋을 조회해도 해당 작업에 대한 권한이 없으면 연결된 job은 null이다. `POST /api/jobs/:id/retry`와 `/cancel`은 editor 이상인 소유자 또는 관리자에게 허용하며 `{ job }`을 반환한다.
+`GET /api/jobs`와 상세 조회는 소유자 또는 관리자만 허용한다. 상세 결과는 `{ job, user, commits, events }`이며 kind, source, client, conflicts는 job 안에 있다. 서브에이전트 이벤트의 소유 경로는 현재 요청자의 읽기 권한으로 필터링하고, 하나라도 읽을 수 없는 소유 경로가 있으면 그 자식의 결과와 오류도 숨긴다. 소유 선언이나 거절된 시도만으로는 원문 접근으로 간주하지 않으므로 공개 작업의 입력·요약 전체를 제한하지 않는다. 목록 커서는 작업 ID를 받으며 생성 시각과 ID를 함께 비교해 같은 시각의 행을 빠뜨리지 않는다. 기존 ISO 시각 커서도 허용한다. 다른 사용자의 커밋을 조회해도 해당 작업에 대한 권한이 없으면 연결된 job은 null이다. `POST /api/jobs/:id/retry`와 `/cancel`은 editor 이상인 소유자 또는 관리자에게 허용하며 `{ job }`을 반환한다.
 
 ## 관련 문서
 

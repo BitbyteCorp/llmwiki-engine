@@ -267,14 +267,39 @@ it('rejects sources revoked during generation and fails when the requester disap
   expect(await f.repo.headSha()).toBe(head);
 });
 
+it('restricts unresolved commit metadata for ordinary readers but preserves it for admins', async () => {
+  const f = await fixture();
+  const submitted = f.jobs.submit({ userId: f.editor.id, source: 'mcp', input: 'Unresolved commit input', sourcePaths: ['wiki/public.md'] });
+  const repository = f.module.get(WriteJobsRepository);
+  const missingSha = '0000000000000000000000000000000000000000';
+  repository.markMerging(submitted.id, 'Unresolved commit summary', [missingSha]);
+  repository.recordMerge(submitted.id, [missingSha], missingSha);
+  repository.markFailed(submitted.id, 'Original failure details', new Date().toISOString());
+  const job = f.jobs.get(submitted.id)!;
+
+  const ordinary = await f.jobs.projectVisibility(f.editor, job);
+  expect(ordinary.restricted).toBe(true);
+  expect(ordinary.job).toMatchObject({
+    input: '', summary: null, commits: [], conflicts: [], mergeSha: null,
+    error: 'Job details are unavailable under current folder permissions.',
+  });
+  expect(ordinary.sourcePaths).toEqual(['wiki/public.md']);
+
+  const admin = await f.jobs.projectVisibility(f.admin, job);
+  expect(admin.restricted).toBe(false);
+  expect(admin.job).toBe(job);
+  expect(admin.sourcePaths).toEqual(['wiki/public.md']);
+  expect(await f.jobs.visible(f.admin, job)).toBe(job);
+});
+
 it('rejects a stale job projection when its reader policy changes during Git inspection', async () => {
   const f = await fixture();
   const written = await f.apply([{ op: 'put', path: 'wiki/public.md', content: 'Job projection content' }]);
   const pending = Promise.withResolvers<void>();
   const release = Promise.withResolvers<void>();
-  const show = f.repo.show.bind(f.repo);
-  vi.spyOn(f.repo, 'show').mockImplementationOnce(async (...args) => {
-    const result = await show(...args);
+  const changedPaths = f.repo.changedPaths.bind(f.repo);
+  vi.spyOn(f.repo, 'changedPaths').mockImplementationOnce(async (...args) => {
+    const result = await changedPaths(...args);
     pending.resolve();
     await release.promise;
     return result;

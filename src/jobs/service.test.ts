@@ -79,6 +79,56 @@ afterEach(async () => {
 });
 
 describe('WriteJobsService with real git and a Dony double', () => {
+  it.each(['queued', 'running', 'merging', 'succeeded'] as const)('reuses persisted %s jobs by dedupe key without new events', async (status) => {
+    const { ctx, jobs } = await fixture();
+    const input = { userId: 1, input: 'Remember once', source: 'chat' as const, dedupeKey: 'conversation:turn:content' };
+    const first = jobs.submit(input);
+    ctx.db.prepare('UPDATE write_jobs SET status = ? WHERE id = ?').run(status, first.id);
+    const restarted = new WriteJobsService(new WriteJobsRepository(ctx.db), ctx.agent, ctx.indexer, ctx.repo, ctx.users, ctx.log, ctx.events, new AclService(ctx.db, ctx.users, new AuditService(ctx.db)));
+    const reused = restarted.submit(input);
+    expect(reused.id).toBe(first.id);
+    expect(reused).toMatchObject({ status, reused: true });
+    expect(first.reused).toBe(false);
+    expect(jobs.list().map(job => job.id)).toEqual([first.id]);
+    expect(jobs.events(first.id).map(event => event.phase)).toEqual(['queued']);
+  });
+
+  it('releases failed dedupe keys and leaves unkeyed submissions independent', async () => {
+    const { jobs } = await fixture();
+    const input = { userId: 1, input: 'Remember once', source: 'chat' as const, dedupeKey: 'conversation:turn:content' };
+    const first = jobs.submit(input);
+    jobs.cancel(first.id);
+    const replacement = jobs.submit(input);
+    expect(replacement.id).not.toBe(first.id);
+    expect(replacement.reused).toBe(false);
+    expect(jobs.submit(input)).toMatchObject({ id: replacement.id, reused: true });
+    const unkeyed = { userId: 1, input: input.input, source: input.source };
+    expect(jobs.submit(unkeyed).id).not.toBe(jobs.submit(unkeyed).id);
+  });
+
+  it('terminates latest running child snapshots exactly once when recovering interrupted parents', async () => {
+    const { ctx, jobs } = await fixture();
+    const repository = new WriteJobsRepository(ctx.db);
+    const job = jobs.submit({ userId: 1, input: 'Interrupted children', source: 'chat' });
+    repository.markRunning(job.id, job.createdAt);
+    const running = { id: 'running-child', name: 'Writer', status: 'running', files: ['wiki/plan.md'], toolCalls: 3, startedAt: job.createdAt };
+    const completed = { ...running, id: 'completed-child', name: 'Done' };
+    jobs.phase(job.id, 'editing', { subagent: { ...running, toolCalls: 1 } });
+    jobs.phase(job.id, 'editing', { subagent: completed });
+    jobs.phase(job.id, 'editing', { subagent: { ...completed, status: 'completed', result: 'Finished' } });
+    jobs.phase(job.id, 'editing', { subagent: running });
+    jobs.start();
+    await jobs.stop();
+    const recovered = jobs.events(job.id);
+    const terminals = recovered.filter(event => (event.detail?.subagent as { status?: string } | undefined)?.status === 'cancelled');
+    expect(terminals).toHaveLength(1);
+    expect(terminals[0]?.detail?.subagent).toEqual({ ...running, status: 'cancelled', error: 'interrupted', finishedAt: jobs.get(job.id)!.finishedAt });
+    expect(recovered.at(-1)).toMatchObject({ phase: 'failed', detail: { reason: 'interrupted' } });
+    jobs.start();
+    await jobs.stop();
+    expect(jobs.events(job.id)).toEqual(recovered);
+  });
+
   it('persists lifecycle, commits leftovers as requester, merges and indexes main', async () => {
     const { dir, ctx, jobs } = await fixture();
     const observed: string[] = [];

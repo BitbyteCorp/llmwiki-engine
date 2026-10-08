@@ -212,6 +212,7 @@ it('preserves legacy rows through history and agent migrations and accepts legac
     db.prepare("INSERT INTO write_jobs(id,user_id,source,input,status,summary,commits,error,created_at,finished_at) VALUES ('legacy',99,'mcp','original input','failed','original summary','[\"abc\"]','original error','2026-01-01T00:00:00.000Z','2026-01-02T00:00:00.000Z')").run();
     db.exec(await readFile(new URL('../db/migrations/007_history.sql', import.meta.url), 'utf8'));
     db.exec(await readFile(new URL('../db/migrations/016_agent_job_kind.sql', import.meta.url), 'utf8'));
+    db.exec(await readFile(new URL('../db/migrations/017_write_job_dedupe.sql', import.meta.url), 'utf8'));
     const repository = new WriteJobsRepository(db);
     expect(repository.get('legacy')).toMatchObject({ userId: 99, kind: 'agent', source: 'mcp', client: null, input: 'original input', status: 'failed', summary: 'original summary', commits: ['abc'], conflicts: [], error: 'original error' });
     repository.enqueue('new', 99, 'new input', '2026-02-01T00:00:00.000Z', 'web');

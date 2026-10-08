@@ -44,7 +44,7 @@ export interface AnswerOptions {
   /** Omitted only for trusted internal system callers. */
   user?: Pick<User, 'id' | 'role'>;
   /** Capability supplied by the chat caller after request authorization; absent for read-only requests. */
-  submitKnowledge?: (content: string) => Promise<{ jobId: string; status: 'queued' }>;
+  submitKnowledge?: (content: string) => Promise<{ jobId: string; status: WriteJob['status']; reused?: boolean }>;
   getWriteStatus?: (jobId: string) => Promise<ChatWriteStatus>;
   waitWrite?: (jobId: string, timeoutSeconds: number, signal?: AbortSignal) => Promise<ChatWriteStatus & { timedOut: boolean }>;
   onSource?: (path: string) => void;
@@ -60,7 +60,8 @@ export interface AgentTool<Result = string> {
   name: string;
   description: string;
   parameters: Record<string, unknown>;
-  run(args: unknown): Promise<Result>;
+  /** Read-only network work observes cancellation; started filesystem mutations must finish. */
+  run(args: unknown, signal?: AbortSignal): Promise<Result>;
   /** Public progress must describe the operation, never expose tool output. */
   summary?(args: unknown): { summary: string; path?: string; jobId?: string };
 }

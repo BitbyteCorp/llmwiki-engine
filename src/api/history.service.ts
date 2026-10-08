@@ -6,6 +6,7 @@ import { UsersService } from '../auth/users.service.js';
 import type { User } from '../auth/users.types.js';
 import { DB } from '../common/tokens.js';
 import type { WriteJob } from '../jobs/write-job.types.js';
+import { projectSubagent } from '../jobs/write-job.projection.js';
 import { WriteJobsService } from '../jobs/write-jobs.service.js';
 import { KnowledgeRepo } from '../knowledge/repo.js';
 import { notFound } from './api-error.js';
@@ -69,12 +70,15 @@ export class HistoryService {
     const policy = this.acl.policyKey(user);
     const job = this.jobs.get(id);
     if (!job || (user.role !== 'admin' && job.userId !== user.id)) notFound('Write job not found');
-    const visible = await this.jobs.visible(user, job);
+    const { job: visible, restricted } = await this.jobs.projectVisibility(user, job);
     const shas = [...new Set([...visible.commits, ...(visible.mergeSha ? [visible.mergeSha] : [])])];
     const details = await Promise.all(shas.map((sha) => visibleCommit(this.repo, this.acl, user, sha)));
     const commits = details.flatMap((detail) => detail ? [detail.commit] : []);
-    const restricted = visible.input !== job.input || visible.summary !== job.summary || visible.error !== job.error || JSON.stringify(visible.commits) !== JSON.stringify(job.commits) || JSON.stringify(visible.conflicts) !== JSON.stringify(job.conflicts);
-    const events = this.jobs.events(id).map((event) => restricted ? { ...event, detail: null } : event);
+    const events = this.jobs.events(id).map((event) => {
+      if (restricted) return { ...event, detail: null };
+      if (!event.detail || !('subagent' in event.detail)) return event;
+      return { ...event, detail: { ...event.detail, subagent: projectSubagent(event.detail.subagent, path => this.acl.canRead(user, path)) } };
+    });
     if (this.acl.policyKey(user) !== policy) notFound('Permissions changed during history read');
     return { job: visible, user: this.requester(job), commits, events };
   }

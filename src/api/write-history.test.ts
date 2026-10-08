@@ -146,6 +146,30 @@ describe('write and history HTTP acceptance with real Git and SQLite', () => {
     return (await json<{ commits: CommitInfo[] }>(await request(query('/history', values)))).commits;
   }
 
+  it('redacts unreadable child claims and results without treating refused claims as accessed sources', async () => {
+    app.get(AclService).create({ prefix: 'secret/', subjectType: 'everyone', subject: '', access: 'none' }, admin);
+    const submitted = jobs.submit({ userId: editor.id, input: 'Public request', source: 'chat' });
+    repository.markMerging(submitted.id, 'Public summary', []);
+    jobs.phase(submitted.id, 'editing', { subagent: {
+      id: 'child', name: 'Writer', status: 'failed', files: ['wiki/public.md', 'secret/plan.md'],
+      toolCalls: 1, startedAt: submitted.createdAt, result: 'secret/plan.md detail', error: 'Denied secret/plan.md',
+    } });
+    jobs.phase(submitted.id, 'editing', { subagent: {
+      id: 'public-child', name: 'Public writer', status: 'completed', files: ['wiki/public.md'], toolCalls: 2, result: 'Public result',
+    } });
+    const detail = await json<JobDetail>(await request(`/jobs/${submitted.id}`));
+    expect(detail.job).toMatchObject({ input: 'Public request', summary: 'Public summary' });
+    expect(detail.events.find(event => (event.detail?.subagent as { id?: string } | undefined)?.id === 'child')?.detail?.subagent).toMatchObject({
+      id: 'child', files: ['wiki/public.md'], status: 'failed', toolCalls: 1,
+    });
+    expect(JSON.stringify(detail)).not.toContain('secret/plan.md');
+    expect(detail.events.find(event => (event.detail?.subagent as { id?: string } | undefined)?.id === 'public-child')?.detail?.subagent).toMatchObject({ result: 'Public result' });
+    const unrestricted = await json<JobDetail>(await request(`/jobs/${submitted.id}`, {}, admin));
+    expect(unrestricted.events.find(event => (event.detail?.subagent as { id?: string } | undefined)?.id === 'child')?.detail?.subagent).toMatchObject({
+      files: ['wiki/public.md', 'secret/plan.md'], error: 'Denied secret/plan.md', result: 'secret/plan.md detail',
+    });
+  });
+
   it('denies viewer PUT, move, delete, revert, retry and cancel without changing notes or jobs', async () => {
     const baseSha = (await note('index.md')).updatedSha;
     const queued = jobs.submit({ userId: viewer.id, input: 'Queued private request', source: 'web' });

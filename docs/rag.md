@@ -44,7 +44,7 @@ frontmatter를 분리하고 H1~H6 제목을 기준으로 청크를 만든다. �
 
 ### 검색 결과와 필터
 
-`SearchService.search(query,opts)`는 도니·MCP·꿈꾸기를 위해 `SearchHit[]`를 계속 반환한다. `SearchService.query(query,opts)`는 `{ mode,degraded,hits,nextCursor }`를 반환한다. 기본 limit은 내부 서비스·HTTP·MCP 모두 **20**이며 1~100의 정수다. 빈 내부 질의는 빈 배열이며 HTTP의 빈 `q`는 400이다.
+`SearchService.search(query,opts,signal?)`는 도니·MCP·꿈꾸기를 위해 `SearchHit[]`를 계속 반환한다. `SearchService.query(query,opts,signal?)`는 `{ mode,degraded,hits,nextCursor }`를 반환한다. 선택적인 `AbortSignal`은 질의 확장·임베딩·재정렬의 모든 HTTP 요청과 임베딩 재시도 대기에 전달한다. 취소는 저하 모드로 복구하지 않고 호출자에게 전파하며 추가 요청·임베딩 배치를 시작하지 않는다. 기존 두 인자 호출은 그대로 유지한다. 기본 limit은 내부 서비스·HTTP·MCP 모두 **20**이며 1~100의 정수다. 빈 내부 질의는 빈 배열이며 HTTP의 빈 `q`는 400이다.
 
 hit의 필드는 `path`, `title`, `kind`, `score`, `heading`, `anchor`, `excerpt`, `highlights`, `tags`, `updatedAt`, `snippet`, `related`다. `excerpt`는 첫 매칭 주변의 약 260자 본문이며 잘린 양끝은 `…`로 표시한다. `highlights`의 `[start,end]`는 excerpt의 UTF-16 반열린 범위다. `snippet`은 기존 내부 호출자의 호환을 위해 가장 좋은 청크 본문 전체를 유지한다. `heading`은 섹션 경로이며 `anchor`는 웹의 heading id다. `updatedAt`과 작성자 필터는 frontmatter 날짜가 아니라 마지막으로 해당 노트를 수정한 git 커밋에서 인덱싱한다. 시간이 없는 경우 `updatedAt:null`이다.
 
@@ -108,7 +108,7 @@ similar는 준비된 청크 벡터의 노트별 평균을 정규화하여 cosine
 | `vector_mismatch` | 저장 모델·차원·스키마가 현재 설정과 다르거나 벡터 검색이 실패한다. |
 | `index_stale` | HEAD가 indexed SHA보다 진행했거나 대기 벡터가 있어 완전한 하이브리드를 제공할 수 없다. |
 
-키 누락을 먼저, 설정 불일치를 다음으로 보고하며 그 다음 신선도를 확인한다. 임베딩·벡터 실패는 검색 호출자에게 전파하지 않는다. 저하 상태에서도 필터, 짧은 한국어, tag 검색, cursor를 제공한다.
+키 누락을 먼저, 설정 불일치를 다음으로 보고하며 그 다음 신선도를 확인한다. 취소를 제외한 임베딩·벡터 실패는 검색 호출자에게 전파하지 않는다. 저하 상태에서도 필터, 짧은 한국어, tag 검색, cursor를 제공한다.
 
 ### 평가와 순위 선택
 

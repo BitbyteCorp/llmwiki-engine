@@ -12,7 +12,7 @@ import { EventsService } from '../events/events.service.js';
 import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
 import { AgentService } from '../agent/agent.service.js';
 import { IndexerService } from '../rag/indexer.service.js';
-import type { JobEvent, JobPhase, JobSource, WriteJob } from './write-job.types.js';
+import type { JobEvent, JobPhase, SubmittedWriteJob, SubmitWriteJob, WriteJob } from './write-job.types.js';
 import { NoteWriterService } from './note-writer.service.js';
 import { WriteJobsRepository } from './write-jobs.repository.js';
 
@@ -35,13 +35,17 @@ export class WriteJobsService implements OnApplicationShutdown {
     @Optional() private readonly writer?: NoteWriterService,
   ) {}
 
-  submit(input: { userId: number; input: string; source: JobSource; client?: string; sourcePaths?: string[] }): WriteJob {
-    return this.enqueue(input);
+  submit(input: SubmitWriteJob): SubmittedWriteJob {
+    if (input.dedupeKey !== undefined) {
+      const existing = this.repository.getByDedupeKey(input.dedupeKey);
+      if (existing) return { ...existing, reused: true };
+    }
+    return { ...this.enqueue(input), reused: false };
   }
 
-  private enqueue(input: { userId: number; input: string; source: JobSource; client?: string; sourcePaths?: string[] }, retryOf?: string): WriteJob {
+  private enqueue(input: SubmitWriteJob, retryOf?: string): WriteJob {
     const id = randomUUID();
-    this.repository.enqueue(id, input.userId, input.input, new Date().toISOString(), input.source, input.client);
+    this.repository.enqueue(id, input.userId, input.input, new Date().toISOString(), input.source, input.client, 'agent', input.dedupeKey);
     this.phase(id, 'queued', { sourceProvenanceComplete: true, ...(input.sourcePaths?.length ? { sourcePaths: input.sourcePaths } : {}), ...(retryOf ? { retryOf } : {}) });
     const job = this.get(id)!;
     this.kick();
@@ -77,6 +81,10 @@ export class WriteJobsService implements OnApplicationShutdown {
 
   phase(id: string, phase: JobPhase, detail: Record<string, unknown> | null = null): void {
     this.repository.addEvent(id, phase, detail);
+    this.publishPhase(id, phase);
+  }
+
+  private publishPhase(id: string, phase: JobPhase): void {
     const job = this.get(id)!;
     this.eventsService.publish({ type: 'job.updated', jobId: id, userId: job.userId, status: job.status, phase }, { userIds: [job.userId], admins: true });
   }
@@ -111,42 +119,34 @@ export class WriteJobsService implements OnApplicationShutdown {
 
   /** Public job projection: never return source text or metadata for hidden changes. */
   async visible(user: AclUser, job: WriteJob): Promise<WriteJob> {
-    if (user.role === 'admin') return job;
+    return (await this.projectVisibility(user, job)).job;
+  }
+
+  async projectVisibility(user: AclUser, job: WriteJob): Promise<{ job: WriteJob; sourcePaths: string[]; restricted: boolean }> {
     const policy = this.acl.policyKey(user);
     const paths = new Set(job.conflicts);
     for (const path of this.sourcePaths(job.id)) paths.add(path);
-    let hidden = job.kind === 'agent' && this.acl.list().length > 0 && !this.repository.events(job.id).some(event => event.phase === 'queued' && event.detail?.sourceProvenanceComplete === true);
+    let hidden = user.role !== 'admin' && job.kind === 'agent' && this.acl.list().length > 0 && !this.repository.events(job.id).some(event => event.phase === 'queued' && event.detail?.sourceProvenanceComplete === true);
     for (const sha of new Set([...job.commits, ...(job.mergeSha ? [job.mergeSha] : [])])) {
       try {
-        await this.collectCommitPaths(sha, paths);
-      } catch { hidden = true; }
+        for (const path of await this.repo.changedPaths(sha)) paths.add(path);
+      } catch { hidden ||= user.role !== 'admin'; }
     }
     if (job.kind !== 'agent') {
       try {
         const input = JSON.parse(job.input) as { ops?: Array<{ path?: string; from?: string; to?: string }>; paths?: string[]; sha?: string };
         for (const op of input.ops ?? []) for (const path of [op.path, op.from, op.to]) if (path) paths.add(path);
         for (const path of input.paths ?? []) paths.add(path);
-        if (input.sha) await this.collectCommitPaths(input.sha, paths);
-      } catch { hidden = true; }
+        if (input.sha) for (const path of await this.repo.changedPaths(input.sha)) paths.add(path);
+      } catch { hidden ||= user.role !== 'admin'; }
     }
     hidden ||= [...paths].some((path) => !this.acl.canRead(user, path));
     const current = this.users.getById(user.id);
     if (!current || this.acl.policyKey(current) !== policy) throw new ApiError(404, 'not_found', 'Job details changed; request them again');
-    if (!hidden) return job;
-    return { ...job, input: '', summary: null, error: job.status === 'failed' ? 'Job details are unavailable under current folder permissions.' : null, commits: [], conflicts: [], mergeSha: null };
-  }
-
-  private async collectCommitPaths(sha: string, paths: Set<string>): Promise<void> {
-    const detail = await this.repo.show(sha);
-    // A merge can look public against its first parent but reveal private
-    // changes or intent against another parent.
-    for (let parent = 0; parent < Math.max(1, detail.commit.parents.length); parent++) {
-      const files = parent === 0 ? detail.files : await this.repo.diffNames(detail.commit.parents[parent]!, detail.commit.sha);
-      for (const file of files) {
-        paths.add(file.path);
-        if (file.oldPath) paths.add(file.oldPath);
-      }
-    }
+    const visible = hidden
+      ? { ...job, input: '', summary: null, error: job.status === 'failed' ? 'Job details are unavailable under current folder permissions.' : null, commits: [], conflicts: [], mergeSha: null }
+      : job;
+    return { job: visible, sourcePaths: [...paths], restricted: hidden };
   }
 
   private sourcePaths(id: string): string[] {
@@ -169,7 +169,7 @@ export class WriteJobsService implements OnApplicationShutdown {
       'Engine restarted before the write job completed; retry this failed job.',
       new Date().toISOString(),
     );
-    for (const job of interrupted) this.phase(job.id, 'failed', { reason: 'interrupted' });
+    for (const job of interrupted) this.publishPhase(job.id, 'failed');
     this.enabled = true;
     this.writer?.resumeQueued();
     this.kick();

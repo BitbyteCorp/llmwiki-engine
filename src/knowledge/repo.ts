@@ -22,7 +22,7 @@ let mergeTail: Promise<void> = Promise.resolve();
 
 function missing(error: unknown): boolean { return error !== null && typeof error === 'object' && 'code' in error && error.code === 'ENOENT'; }
 export function repoPath(path: string, allowEmpty = false): string {
-  if ((path === '' && !allowEmpty) || isAbsolute(path) || win32.isAbsolute(path) || path.includes('\\') || path.includes('\0')) throw new Error(`Invalid repository path: ${path}`);
+  if (!path.isWellFormed() || (path === '' && !allowEmpty) || isAbsolute(path) || win32.isAbsolute(path) || path.includes('\\') || path.includes('\0')) throw new Error(`Invalid repository path: ${path}`);
   const segments = path.split('/');
   if (segments.some((part) => part === '..' || part.toLowerCase() === '.git')) throw new Error(`Invalid repository path: ${path}`);
   const normalized = segments.filter((part) => part !== '' && part !== '.').join('/');
@@ -311,6 +311,12 @@ export class KnowledgeRepo {
     const files = await this.changedFiles.get(`${from}:${to}`, async () =>
       changes(await this.git.run(this.path, ['diff', '--name-status', '-z', '--find-renames', from, to, '--'])));
     return files.map((file) => ({ ...file }));
+  }
+  /** Changed names against every parent, including root additions; never generate patches. */
+  async changedPaths(sha: string): Promise<string[]> {
+    const commit = await this.resolveRef(sha);
+    const output = await this.git.run(this.path, ['diff-tree', '--no-commit-id', '--name-only', '--no-renames', '-z', '-r', '-m', '--root', commit, '--']);
+    return [...new Set(output.split('\0').filter(Boolean))];
   }
   /** Regenerate a diff from an explicit, already-authorized set of paths. */
   async diffPatch(base: string | null, head: string, paths: string[]): Promise<string> {

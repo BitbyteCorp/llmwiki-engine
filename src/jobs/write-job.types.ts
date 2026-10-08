@@ -12,3 +12,13 @@ export interface WriteJob {
   summary: string | null; commits: string[]; conflicts: string[]; mergeSha: string | null; error: string | null;
   createdAt: string; startedAt: string | null; finishedAt: string | null;
 }
+
+export interface SubmitWriteJob {
+  userId: number;
+  input: string;
+  source: JobSource;
+  client?: string;
+  sourcePaths?: string[];
+  dedupeKey?: string;
+}
+export type SubmittedWriteJob = WriteJob & { reused: boolean };
