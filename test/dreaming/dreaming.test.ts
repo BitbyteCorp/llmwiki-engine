@@ -35,11 +35,63 @@ const execute = promisify(execFile);
 const resources: Array<{ root: string; db: Database.Database; app?: INestApplicationContext }> = [];
 const journalContent = '# Daily journal\n\nKnowledge reviewed and learned.\n';
 const userContent = 'The deployment process requires a review before release.';
-const similarContent = '# Release process\n\nA reviewer approves each release.\n';
+function wikiNote(type: 'hub' | 'note', description: string, tags: readonly string[], body: string): string {
+  return [
+    '---',
+    `type: ${type}`,
+    'aliases: []',
+    `description: ${description}`,
+    'author: [도니]',
+    'date created: 2026-10-10',
+    'date modified: 2026-10-10',
+    'tags:',
+    ...tags.map((tag) => `  - ${tag}`),
+    '---',
+    '',
+    body,
+  ].join('\n');
+}
+const similarContent = wikiNote(
+  'note',
+  '배포마다 검토자가 승인한다.',
+  ['release', 'review'],
+  '# Release process\n\nA reviewer approves each release.\n',
+);
+const engineeringIndexContent = wikiNote(
+  'hub',
+  '엔지니어링 분야의 배포 노트로 이동하는 탐색 경로다.',
+  ['engineering', 'reference'],
+  '# Engineering\n\n- [[release]]\n',
+);
+const deploymentContent = wikiNote(
+  'note',
+  '릴리스 전에 검토가 필요하다.',
+  ['release', 'review'],
+  '# Deployment\n\nReleases require review.\n',
+);
+const dreamingReleaseContent = wikiNote(
+  'note',
+  '꿈꾸기에서 검토한 배포 노트의 내용이다.',
+  ['release', 'review'],
+  'dreaming review\n',
+);
+const concurrentReleaseContent = wikiNote(
+  'note',
+  '동시에 들어온 배포 검토 결과다.',
+  ['release', 'review'],
+  'concurrent review\n',
+);
+const mergedReleaseContent = wikiNote(
+  'note',
+  '꿈꾸기와 동시 편집의 배포 검토 결과를 함께 담는다.',
+  ['release', 'review'],
+  'dreaming review\nconcurrent review\n',
+);
 const similarHit: SearchHit = {
   path: 'wiki/engineering/release.md', title: 'Release process', heading: '',
   snippet: 'A reviewer approves each release.', score: 0.9, kind: 'wiki', related: [],
   anchor: null, excerpt: 'A reviewer approves each release.', highlights: [], tags: [], updatedAt: null,
+  type: null, description: null,
 };
 type Author = { name: string; email: string };
 type MessageInput = { id: string; conversation_id: string; content: string; created_at: string };
@@ -86,7 +138,7 @@ class TempRepo {
     await this.git(['config', 'core.hooksPath', '/dev/null']);
     await mkdir(join(this.path, 'wiki/engineering'), { recursive: true });
     await writeFile(join(this.path, 'wiki/engineering/release.md'), similarContent);
-    await writeFile(join(this.path, 'wiki/engineering/index.md'), '# Engineering\n\n- [[release]]\n');
+    await writeFile(join(this.path, 'wiki/engineering/index.md'), engineeringIndexContent);
     await writeFile(join(this.path, 'index.md'), '# Knowledge\n\n- [[wiki/engineering/index]]\n');
     await writeFile(join(this.path, 'AGENTS.md'), 'Use verified facts.\n');
     await this.git(['add', '.']);
@@ -161,7 +213,7 @@ class TempRepo {
     await this.git(['push', 'origin', 'main']);
     return { pushed: true };
   }
-  async change(path = 'wiki/engineering/deployment.md', content = '# Deployment\n\nReleases require review.\n'): Promise<string> {
+  async change(path = 'wiki/engineering/deployment.md', content = deploymentContent): Promise<string> {
     await mkdir(dirname(join(this.path, path)), { recursive: true });
     await writeFile(join(this.path, path), content);
     await this.git(['add', '.']);
@@ -343,20 +395,20 @@ describe('DreamingService.runOnce', () => {
       options.onUsage?.({ inputTokens: 100, cachedInputTokens: 60, outputTokens: 20, reasoningTokens: 6 });
       await writeJournal(options);
       const write = options.tools.find(tool => tool.name === 'write_file')!;
-      await write.run({ path: 'wiki/engineering/release.md', content: 'dreaming review\n' });
-      await f.repo.change('wiki/engineering/release.md', 'concurrent review\n');
+      await write.run({ path: 'wiki/engineering/release.md', content: dreamingReleaseContent });
+      await f.repo.change('wiki/engineering/release.md', concurrentReleaseContent);
       options.onUsage?.({ inputTokens: 80, cachedInputTokens: 40, outputTokens: 12, reasoningTokens: 3 });
       return { text: 'Reviewed knowledge.', toolCalls: 2 };
     });
     f.agent.resolveConflicts.mockImplementationOnce(async (wt, files, _user, options) => {
       expect(files).toEqual(['wiki/engineering/release.md']);
       options?.onUsage?.({ inputTokens: 50, cachedInputTokens: 20, outputTokens: 10, reasoningTokens: 2 });
-      await wt.write('wiki/engineering/release.md', 'dreaming review\nconcurrent review\n');
+      await wt.write('wiki/engineering/release.md', mergedReleaseContent);
       options?.onUsage?.({ inputTokens: 30, cachedInputTokens: 10, outputTokens: 5, reasoningTokens: 1 });
     });
     const run = await f.dreaming.runOnce();
     expect(run.status).toBe('succeeded');
-    expect(await f.repo.readFile('wiki/engineering/release.md')).toBe('dreaming review\nconcurrent review\n');
+    expect(await f.repo.readFile('wiki/engineering/release.md')).toBe(mergedReleaseContent);
     expect(f.logs.find(log => log.msg === 'Dreaming completed' && log.runId === run.id)).toMatchObject({
       usage: { inputTokens: 260, cachedInputTokens: 130, outputTokens: 47, reasoningTokens: 12 },
     });
@@ -416,7 +468,7 @@ describe('DreamingService.runOnce', () => {
     expect(input.commits.map((commit) => commit.sha)).toEqual([toSha]);
     expect(input.changedNotes).toEqual([{
       change: { status: 'A', path: 'wiki/engineering/deployment.md' },
-      content: '# Deployment\n\nReleases require review.\n',
+      content: deploymentContent,
       similarNotes: [{ path: similarHit.path, title: similarHit.title, excerpt: similarHit.excerpt }],
     }]);
     expect(await f.repo.readFile(`journal/${kstDate}.md`)).toBe(journalContent);
@@ -597,7 +649,12 @@ describe('DreamingService.runOnce', () => {
     const sampledSha = await f.repo.change();
     const originalLog = f.repo.log.bind(f.repo);
     let concurrentSha: string | undefined;
-    const concurrentContent = '# Later knowledge\n\nThis arrived after the dream started.\n';
+    const concurrentContent = wikiNote(
+      'note',
+      '꿈꾸기 시작 후 도착한 지식을 보존한다.',
+      ['knowledge'],
+      '# Later knowledge\n\nThis arrived after the dream started.\n',
+    );
     f.repo.log = async (options) => {
       if (!concurrentSha) concurrentSha = await f.repo.change('wiki/engineering/later.md', concurrentContent);
       return originalLog(options);
@@ -624,7 +681,12 @@ describe('DreamingService.runOnce', () => {
     const f = await fixture();
     const messageId = f.addMessage();
     const sampledSha = await f.repo.headSha();
-    const concurrentContent = '# Concurrent note\n\n[[missing-concurrent-note]]\n';
+    const concurrentContent = wikiNote(
+      'note',
+      '아직 대상이 없는 위키링크를 기록한다.',
+      ['reference'],
+      '# Concurrent note\n\n[[missing-concurrent-note]]\n',
+    );
     let concurrentSha: string | undefined;
     f.runAgent.mockImplementationOnce(async (options) => {
       await writeJournal(options);
@@ -649,7 +711,12 @@ describe('DreamingService.runOnce', () => {
     f.addMessage();
     const sampledSha = await f.repo.headSha();
     const originalCreateWorktree = f.repo.createWorktree.bind(f.repo);
-    const concurrentContent = '# Inherited note\n\n[[missing-before-worktree]]\n';
+    const concurrentContent = wikiNote(
+      'note',
+      '워크트리 생성 전에 들어온 미해결 위키링크를 보존한다.',
+      ['reference'],
+      '# Inherited note\n\n[[missing-before-worktree]]\n',
+    );
     let concurrentSha: string | undefined;
     f.repo.createWorktree = async (name) => {
       concurrentSha = await f.repo.change('wiki/engineering/inherited.md', concurrentContent);
@@ -668,18 +735,30 @@ describe('DreamingService.runOnce', () => {
 
   it('retains captured unresolved targets when concurrent main repairs them', async () => {
     const f = await fixture();
-    const sampledSha = await f.repo.change('wiki/engineering/older.md', '# Older note\n\n[[missing-before-run]]\n');
+    const olderContent = wikiNote(
+      'note',
+      '아직 해결되지 않은 위키링크 대상을 보존한다.',
+      ['reference'],
+      '# Older note\n\n[[missing-before-run]]\n',
+    );
+    const repairedContent = wikiNote(
+      'note',
+      '해결되지 않은 위키링크를 제거한 결과를 기록한다.',
+      ['reference'],
+      '# Older note\n\nThe unresolved reference was removed.\n',
+    );
+    const sampledSha = await f.repo.change('wiki/engineering/older.md', olderContent);
     const journal = `${journalContent}\nStill unresolved: [[missing-before-run]]\n`;
     f.runAgent.mockImplementationOnce(async (options) => {
       await writeJournal(options, journal);
-      await f.repo.change('wiki/engineering/older.md', '# Older note\n\nThe unresolved reference was removed.\n');
+      await f.repo.change('wiki/engineering/older.md', repairedContent);
       return { text: 'Preserved an existing unresolved target.', toolCalls: 1 };
     });
 
     const run = await f.dreaming.runOnce();
 
     expect(run).toMatchObject({ status: 'succeeded', toSha: sampledSha, pushed: true, error: null });
-    expect(await f.repo.readFile('wiki/engineering/older.md')).toBe('# Older note\n\nThe unresolved reference was removed.\n');
+    expect(await f.repo.readFile('wiki/engineering/older.md')).toBe(repairedContent);
     expect(await f.repo.readFile(run.journalPath!)).toBe(journal);
     expect(run.mergeSha).toBe(await f.repo.headSha());
   });
@@ -687,14 +766,20 @@ describe('DreamingService.runOnce', () => {
   it('rejects a dreaming move that breaks a link introduced by concurrent main', async () => {
     const f = await fixture();
     const messageId = f.addMessage();
-    const concurrentContent = '# Concurrent note\n\n[[wiki/engineering/release]]\n[[missing-concurrent-note]]\n';
+    const concurrentContent = wikiNote(
+      'note',
+      '배포 노트와 미해결 위키링크를 함께 참조한다.',
+      ['reference'],
+      '# Concurrent note\n\n[[wiki/engineering/release]]\n[[missing-concurrent-note]]\n',
+    );
     let concurrentSha: string | undefined;
     f.runAgent.mockImplementationOnce(async (options) => {
       await writeJournal(options);
       const move = options.tools.find(tool => tool.name === 'move_file')!;
       await move.run({ from: 'wiki/engineering/release.md', to: 'wiki/engineering/renamed-release.md' });
       await options.tools.find(tool => tool.name === 'write_file')!.run({
-        path: 'wiki/engineering/index.md', content: '# Engineering\n\n- [[renamed-release]]\n',
+        path: 'wiki/engineering/index.md',
+        content: wikiNote('hub', '엔지니어링 분야의 배포 노트로 이동하는 탐색 경로다.', ['engineering', 'reference'], '# Engineering\n\n- [[renamed-release]]\n'),
       });
       concurrentSha = await f.repo.change('wiki/engineering/concurrent.md', concurrentContent);
       return { text: 'Moved release knowledge.', toolCalls: 3 };
@@ -724,7 +809,8 @@ describe('DreamingService.runOnce', () => {
     f.runAgent.mockImplementationOnce(async (options) => {
       await writeJournal(options);
       await options.tools.find(tool => tool.name === 'write_file')!.run({
-        path: 'wiki/engineering/UPPER.MD', content: '# Uppercase note\n\n[[missing-uppercase-target]]\n',
+        path: 'wiki/engineering/UPPER.MD',
+        content: wikiNote('note', '대문자 확장자 노트에서 미해결 위키링크를 기록한다.', ['reference'], '# Uppercase note\n\n[[missing-uppercase-target]]\n'),
       });
       return { text: 'Added an uppercase note.', toolCalls: 2 };
     });
@@ -739,8 +825,19 @@ describe('DreamingService.runOnce', () => {
 
   it('allows respelling an existing unresolved target with the same normalized identity', async () => {
     const f = await fixture();
-    const sampledSha = await f.repo.change('wiki/engineering/reference.MD', '# Reference\n\n[[Missing.MD]]\n');
-    const updated = '# Reference\n\n[[missing]]\n';
+    const unresolvedReferenceContent = wikiNote(
+      'note',
+      '대소문자와 확장자 표기를 정규화할 미해결 위키링크를 기록한다.',
+      ['reference'],
+      '# Reference\n\n[[Missing.MD]]\n',
+    );
+    const updated = wikiNote(
+      'note',
+      '대소문자와 확장자 표기를 정규화할 미해결 위키링크를 기록한다.',
+      ['reference'],
+      '# Reference\n\n[[missing]]\n',
+    );
+    const sampledSha = await f.repo.change('wiki/engineering/reference.MD', unresolvedReferenceContent);
     f.runAgent.mockImplementationOnce(async (options) => {
       await writeJournal(options);
       await options.tools.find(tool => tool.name === 'write_file')!.run({ path: 'wiki/engineering/reference.MD', content: updated });
@@ -756,11 +853,23 @@ describe('DreamingService.runOnce', () => {
 
   it('rejects a new basename collision that makes an existing resolved link ambiguous', async () => {
     const f = await fixture();
-    const head = await f.repo.change('wiki/engineering/reference.md', '# Reference\n\n[[release]]\n');
+    const referenceContent = wikiNote(
+      'note',
+      '배포 노트로 향하는 위키링크를 기록한다.',
+      ['reference'],
+      '# Reference\n\n[[release]]\n',
+    );
+    const otherReleaseContent = wikiNote(
+      'note',
+      '다른 주제의 배포 검토를 설명한다.',
+      ['release', 'review'],
+      '# Another release\n\nA different topic.\n',
+    );
+    const head = await f.repo.change('wiki/engineering/reference.md', referenceContent);
     f.runAgent.mockImplementationOnce(async (options) => {
       await writeJournal(options);
       await options.tools.find(tool => tool.name === 'write_file')!.run({
-        path: 'wiki/other/release.md', content: '# Another release\n\nA different topic.\n',
+        path: 'wiki/other/release.md', content: otherReleaseContent,
       });
       return { text: 'Added another release note.', toolCalls: 2 };
     });
@@ -770,14 +879,14 @@ describe('DreamingService.runOnce', () => {
     expect(run).toMatchObject({ status: 'failed', mergeSha: null, error: 'Dreaming introduced broken links: release' });
     expect(await f.repo.headSha()).toBe(head);
     expect(await f.repo.readFile('wiki/other/release.md')).toBeNull();
-    expect(await f.repo.readFile('wiki/engineering/reference.md')).toBe('# Reference\n\n[[release]]\n');
+    expect(await f.repo.readFile('wiki/engineering/reference.md')).toBe(referenceContent);
     expect(f.indexer.syncToHead).not.toHaveBeenCalled();
   });
 
   it('allows a new embed targeting an existing asset', async () => {
     const f = await fixture();
     await f.repo.change('assets/diagram.png', 'image bytes');
-    const content = '# Diagram\n\n![[assets/diagram.png]]\n';
+    const content = wikiNote('note', '문서에 기존 이미지 첨부를 임베드한다.', ['media', 'reference'], '# Diagram\n\n![[assets/diagram.png]]\n');
     f.runAgent.mockImplementationOnce(async (options) => {
       await writeJournal(options);
       await options.tools.find(tool => tool.name === 'write_file')!.run({ path: 'wiki/engineering/diagram.md', content });
@@ -795,7 +904,7 @@ describe('DreamingService.runOnce', () => {
   it('rejects a move that breaks an existing asset embed', async () => {
     const f = await fixture();
     await f.repo.change('assets/diagram.png', 'image bytes');
-    const content = '# Diagram\n\n![[assets/diagram.png]]\n';
+    const content = wikiNote('note', '문서에 기존 이미지 첨부를 임베드한다.', ['media', 'reference'], '# Diagram\n\n![[assets/diagram.png]]\n');
     const head = await f.repo.change('wiki/engineering/diagram.md', content);
     f.runAgent.mockImplementationOnce(async (options) => {
       await writeJournal(options);
@@ -816,7 +925,7 @@ describe('DreamingService.runOnce', () => {
   it('rejects a new asset basename collision that makes an existing embed ambiguous', async () => {
     const f = await fixture();
     await f.repo.change('assets/diagram.png', 'image bytes');
-    const content = '# Diagram\n\n![[diagram.png]]\n';
+    const content = wikiNote('note', '파일명으로 이미지 첨부를 임베드한다.', ['media', 'reference'], '# Diagram\n\n![[diagram.png]]\n');
     const head = await f.repo.change('wiki/engineering/diagram.md', content);
     f.runAgent.mockImplementationOnce(async (options) => {
       await writeJournal(options);
@@ -840,7 +949,10 @@ describe('DreamingService.runOnce', () => {
     const head = await f.repo.headSha();
     f.runAgent.mockImplementationOnce(async (options) => {
       const tool = options.tools.find((candidate) => candidate.name === 'write_file')!;
-      await tool.run({ path: 'wiki/engineering/partial.md', content: '# Unfinished work\n' });
+      await tool.run({
+        path: 'wiki/engineering/partial.md',
+        content: wikiNote('note', '완료되지 않은 작업 내용을 담는다.', ['knowledge'], '# Unfinished work\n'),
+      });
       if (content !== null) await writeJournal(options, content);
       return { text: 'No valid journal.', toolCalls: 1 };
     });

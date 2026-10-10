@@ -2,8 +2,9 @@ import { posix } from 'node:path';
 import matter from 'gray-matter';
 import type { KnowledgeRepo } from '../knowledge/repo.js';
 import { domainOf, isDomainSchemaPath, isUnclassifiedWikiNote, listDomains } from '../knowledge/domains.js';
+import { ENGINE_FIELDS, isMetadataTarget, validateNoteMetadata, type MetadataIssue } from '../knowledge/note-metadata.js';
 import type { CatalogService } from '../rag/catalog.service.js';
-import { wikilinkTargets } from '../rag/chunking.js';
+import { aliasesFromFrontmatter, wikilinkTargets } from '../rag/chunking.js';
 import type { ComparisonService, DuplicateNotes } from '../rag/comparison.service.js';
 import { normalizeLinkTarget, NoteTargetResolver } from '../rag/link-resolver.js';
 
@@ -23,6 +24,9 @@ export interface StructureSignals {
   missingDomainHubs: string[];
   unlinkedDomainHubs: string[];
   unclassifiedNotes: string[];
+  invalidMetadata: Array<{ path: string; issues: MetadataIssue[] }>;
+  /** Full inspected-main backlog, even when candidate lists are capped or scoped. */
+  invalidMetadataCount: number;
 }
 
 function wikiNote(path: string): boolean {
@@ -43,13 +47,32 @@ export async function collectStructureSignals(
   const files = (await repo.diffNames(null, sha)).map(({ path }) => path).sort();
   const wikiFiles = files.filter(wikiNote);
   const wikiPaths = new Set(wikiFiles);
-  const noteResolver = new NoteTargetResolver(files.filter((path) => /\.md$/i.test(path)));
+  const noteFiles = files.filter((path) => /\.md$/i.test(path));
+  const notes = new Map<string, { content: string; bodyChars: number }>();
+  const aliasesByPath = new Map<string, readonly string[]>();
+  for (const path of noteFiles) {
+    const content = await repo.readFile(path, sha);
+    if (content === null) continue;
+    let bodyChars: number;
+    try {
+      // gray-matter caches before parsing; explicit options avoid caching failed YAML.
+      const parsed = matter(content, {});
+      bodyChars = parsed.content.trim().length;
+      const aliases = aliasesFromFrontmatter(parsed.data.aliases);
+      if (aliases.length) aliasesByPath.set(path, aliases);
+    } catch {
+      // Invalid YAML stays a metadata repair candidate, not a failed inspection.
+      bodyChars = content.trim().length;
+    }
+    notes.set(path, { content, bodyChars });
+  }
+  const noteResolver = new NoteTargetResolver(noteFiles, aliasesByPath);
   const fileResolver = new NoteTargetResolver(files);
   const domains = listDomains(files);
   const domainHubPaths = new Set(domains.map(({ hubPath }) => hubPath));
   const rootLinks = new Set<string>();
   if (domains.some(({ hasHub }) => hasHub)) {
-    const rootIndex = await repo.readFile('index.md', sha);
+    const rootIndex = notes.get('index.md')?.content;
     for (const { text } of wikilinkTargets(rootIndex ?? '')) {
       const { path } = noteResolver.resolve(text);
       if (path !== null) rootLinks.add(path);
@@ -92,15 +115,25 @@ export async function collectStructureSignals(
     unlinkedDomainHubs: domains.filter(({ hasHub, hubPath }) => hasHub && !rootLinks.has(hubPath))
       .slice(0, SIGNAL_LIMIT).map(({ hubPath }) => hubPath),
     unclassifiedNotes: wikiFiles.filter(isUnclassifiedWikiNote).slice(0, SIGNAL_LIMIT),
+    invalidMetadata: [],
+    invalidMetadataCount: 0,
   };
 
   for (const path of wikiFiles) {
-    const markdown = await repo.readFile(path, sha);
-    if (markdown === null) continue;
+    const note = notes.get(path);
+    if (!note) continue;
+    const { content: markdown, bodyChars } = note;
+    if (isMetadataTarget(path)) {
+      const issues = validateNoteMetadata(path, markdown)
+        .filter(({ field }) => !(ENGINE_FIELDS as readonly string[]).includes(field));
+      if (issues.length) {
+        signals.invalidMetadataCount++;
+        if (signals.invalidMetadata.length < SIGNAL_LIMIT) signals.invalidMetadata.push({ path, issues });
+      }
+    }
     if (markdown.length > 20_000 && signals.oversizedNotes.length < SIGNAL_LIMIT) {
       signals.oversizedNotes.push({ path, chars: markdown.length });
     }
-    const bodyChars = matter(markdown).content.trim().length;
     if (bodyChars < 200 && signals.tinyNotes.length < SIGNAL_LIMIT) {
       signals.tinyNotes.push({ path, chars: bodyChars });
     }
@@ -157,7 +190,8 @@ export function selectDreamMode(
 ): { mode: 'local' | 'structural' | 'sweep' | null; focus: string | null } {
   if (signals.duplicates.length || signals.orphans.length >= 5 || signals.oversizedFolders.length
     || signals.ambiguous.length || signals.unresolved.length >= 5 || signals.missingHubs.length
-    || signals.missingDomainHubs.length || signals.unlinkedDomainHubs.length || signals.unclassifiedNotes.length) {
+    || signals.missingDomainHubs.length || signals.unlinkedDomainHubs.length || signals.unclassifiedNotes.length
+    || signals.invalidMetadataCount > 0) {
     return { mode: 'structural', focus: null };
   }
   if (hasChanges) return { mode: 'local', focus: null };
@@ -206,5 +240,7 @@ export function restrictStructureSignals(signals: StructureSignals, paths: strin
     unlinkedDomainHubs: signals.unlinkedDomainHubs.filter((hub) => touchesDomain(hub) || selectedPaths.has('index.md'))
       .slice(0, SIGNAL_LIMIT),
     unclassifiedNotes: signals.unclassifiedNotes.filter(touches).slice(0, SIGNAL_LIMIT),
+    invalidMetadata: signals.invalidMetadata.filter(({ path }) => touches(path)).slice(0, SIGNAL_LIMIT),
+    invalidMetadataCount: signals.invalidMetadataCount,
   };
 }

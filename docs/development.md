@@ -89,6 +89,8 @@ SQLite는 기존 `CHECK` 제약을 `ALTER TABLE`로 변경할 수 없으므로 �
 
 경로·도메인·위키링크·크기 신호는 보고서의 `headSha`에 고정한 main을 사용한다. 중복·고아·태그 허브 신호는 기존 SQLite catalog를 읽으며, `indexedSha`가 main과 다르면 `catalog: "stale"`로 표시한다. DB나 색인 체크포인트가 없으면 이 세 신호는 깨끗하다는 빈 목록이 아니라 `catalog: "unavailable"`과 JSON의 `null`로 보고한다. lint는 저장소 초기화·seed 적용·DB 마이그레이션·재인덱싱·임베딩 생성을 수행하지 않는다.
 
+메타데이터 점검은 같은 `headSha`의 노트 원문을 사용하며 catalog의 유무나 신선도에 의존하지 않는다. JSON의 `signals.invalidMetadata`에는 경로와 필드별 문제 목록을, `signals.invalidMetadataCount`에는 전체 문제 노트 수를 담는다. 목록의 상한·후보 범위와 꿈꾸기 선택 기준은 [꿈꾸기의 구조 신호](dreaming.md#모드와-구조-신호), 필수 속성과 기존 노트의 복구 원칙은 [노트 메타데이터 표준](note-metadata.md)을 따른다.
+
 ### OpenAI 로컬 테스트 fixture
 `test/fake-openai.ts`의 `startFakeOpenAI(script?: readonly FakeTurn[])`는 `Promise<{ url, close, requests }>`를 반환한다. 서버는 루프백 주소의 임시 포트를 사용하며 `url`에는 이미 `/v1`이 포함된다. OpenAI SDK의 `baseURL` 또는 엔진의 `OPENAI_BASE_URL`에 그대로 전달하고 테스트 종료 시 `await close()`로 정리한다.
 

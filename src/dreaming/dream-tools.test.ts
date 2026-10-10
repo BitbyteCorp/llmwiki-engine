@@ -293,6 +293,75 @@ describe('dream broken-link detection', () => {
     )).toEqual(new Set(['Topic']));
   });
 
+  it('resolves unique frontmatter aliases for note links and embeds', () => {
+    const notes = [
+      { path: 'wiki/source.md', content: '[[키값 캐시]] [[KV CACHE.md#Details|cache]] ![[KV cache]] [[Missing]]' },
+      { path: 'wiki/cache.MD', content: '---\naliases: [키값 캐시, " KV cache ", kv CACHE]\n---\n# Cache' },
+    ];
+    expect(unresolvedLinkTargets(notes.map((note) => note.path), notes)).toEqual(new Set(['Missing']));
+  });
+
+  it('keeps ambiguous aliases unresolved with the original target spelling', () => {
+    const notes = [
+      { path: 'wiki/source.md', content: '[[Shared Alias.MD#Details|label]] ![[SHARED ALIAS]]' },
+      { path: 'wiki/first.md', content: '---\naliases: [Shared Alias]\n---\n# First' },
+      { path: 'wiki/second.md', content: '---\naliases: [shared alias]\n---\n# Second' },
+    ];
+    expect(unresolvedLinkTargets(notes.map((note) => note.path), notes))
+      .toEqual(new Set(['Shared Alias.MD']));
+  });
+
+  it('prioritizes exact basenames and paths over competing aliases', () => {
+    const notes = [
+      { path: 'wiki/source.md', content: '[[Topic]] [[WIKI/TOPIC.MD]]' },
+      { path: 'wiki/Topic.md', content: '# Topic' },
+      { path: 'wiki/first.md', content: '---\naliases: [Topic, wiki/Topic]\n---\n# First' },
+      { path: 'wiki/second.md', content: '---\naliases: [Topic, wiki/Topic]\n---\n# Second' },
+    ];
+    expect(unresolvedLinkTargets(notes.map((note) => note.path), notes)).toEqual(new Set());
+  });
+
+  it('does not use a unique alias to disambiguate colliding exact basenames', () => {
+    const notes = [
+      { path: 'wiki/source.md', content: '[[Topic]]' },
+      { path: 'wiki/Topic.md', content: '# Topic' },
+      { path: 'archive/Topic.md', content: '# Archived topic' },
+      { path: 'wiki/other.md', content: '---\naliases: [Topic]\n---\n# Other' },
+    ];
+    expect(unresolvedLinkTargets(notes.map((note) => note.path), notes)).toEqual(new Set(['Topic']));
+  });
+
+  it('consumes a one-shot notes generator once and resolves aliases declared after their links', () => {
+    let yielded = 0;
+    function* notes(): Generator<Note> {
+      yielded++;
+      yield { path: 'wiki/source.md', content: '[[Later alias]] [[Still missing]]' };
+      yielded++;
+      yield { path: 'wiki/target.md', content: '---\naliases: [Later alias]\n---\n# Target' };
+    }
+    expect(unresolvedLinkTargets(['wiki/source.md', 'wiki/target.md'], notes()))
+      .toEqual(new Set(['Still missing']));
+    expect(yielded).toBe(2);
+  });
+
+  it('never resolves attachment targets using note aliases', () => {
+    const notes = [
+      { path: 'wiki/source.md', content: '![[image.png]] [[source.pdf]] ![[assets/present.png]] [[Image note]]' },
+      { path: 'wiki/image.md', content: '---\naliases: [image.png, source.pdf, Image note]\n---\n# Image' },
+    ];
+    expect(unresolvedLinkTargets([...notes.map((note) => note.path), 'assets/present.png'], notes))
+      .toEqual(new Set(['image.png', 'source.pdf']));
+  });
+
+  it('ignores aliases in invalid YAML while still inspecting links and resolving exact paths', () => {
+    const notes = [
+      { path: 'wiki/source.md', content: '[[Broken alias]] [[target]]' },
+      { path: 'wiki/target.md', content: '---\naliases: [Broken alias\n---\n# Target\n[[Missing from invalid note]]' },
+    ];
+    expect(unresolvedLinkTargets(notes.map((note) => note.path), notes))
+      .toEqual(new Set(['Broken alias', 'Missing from invalid note']));
+  });
+
   it('resolves existing asset embeds by qualified path or unique basename across repository files', () => {
     const paths = [
       'wiki/source.md', 'assets/image.png', 'raw/import/source.pdf', 'diagram.svg',

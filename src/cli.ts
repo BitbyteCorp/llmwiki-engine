@@ -22,10 +22,10 @@ try {
   registerAuthCommands(program, getApp);
   registerRagCommands(program, getApp);
   registerDreamCommands(program, getApp);
+  registerLintCommands(program);
   registerExportCommands(program);
   registerBackupCommands(program);
   registerSkillCommands(program);
-  registerLintCommands(program);
   await program.parseAsync(process.argv);
 } catch (error) {
   logger.error({ err: error }, 'llmwiki command failed');

@@ -112,6 +112,10 @@ describe('read-only CLI lint', () => {
     expect(output).toContain('wiki/loose.md');
     expect(output).toContain('Unresolved wikilinks (1)');
     expect(output).toContain('Missing');
+    expect(output).toContain('Invalid note metadata (2; showing 2)');
+    expect(output).toContain('description: 필수 속성이 없다');
+    expect(output).toContain('tags: 필수 속성이 없다');
+    expect(output).not.toContain('author: 필수 속성이 없다');
     expect(output).not.toContain('DiskOnly');
     expect(output).toContain('Exit 0 even when findings are present');
     expect(process.exitCode).toBe(exitCode);
@@ -141,6 +145,21 @@ describe('read-only CLI lint', () => {
         missingDomainHubs: [], unlinkedDomainHubs: [], unclassifiedNotes: [],
         unresolved: [{ path: 'wiki/health/note.md', target: 'Missing' }],
         duplicates: [], orphans: [], missingHubs: [],
+        invalidMetadataCount: 2,
+        invalidMetadata: [
+          { path: 'wiki/health/index.md', issues: [
+            { field: 'type', message: '필수 속성이 없다' },
+            { field: 'aliases', message: '필수 속성이 없다' },
+            { field: 'description', message: '필수 속성이 없다' },
+            { field: 'tags', message: '필수 속성이 없다' },
+          ] },
+          { path: 'wiki/health/note.md', issues: [
+            { field: 'type', message: '필수 속성이 없다' },
+            { field: 'aliases', message: '필수 속성이 없다' },
+            { field: 'description', message: '필수 속성이 없다' },
+            { field: 'tags', message: '필수 속성이 없다' },
+          ] },
+        ],
       },
     });
     expect(await snapshot(dataDir)).toEqual(before);
@@ -163,6 +182,7 @@ describe('read-only CLI lint', () => {
         missingDomainHubs: ['wiki/health/index.md'], unclassifiedNotes: ['wiki/loose.md'],
         unresolved: [{ path: 'wiki/health/note.md', target: 'Missing' }],
         duplicates: null, orphans: null, missingHubs: null,
+        invalidMetadataCount: 2,
       },
     });
     expect(await snapshot(dataDir)).toEqual(before);
@@ -193,6 +213,35 @@ describe('read-only CLI lint', () => {
       },
     });
     expect(await snapshot(dataDir)).toEqual(before);
+  });
+
+  it('reports full metadata backlog and capped findings without needing a catalog', async () => {
+    await fixture({
+      ...Object.fromEntries(Array.from({ length: 25 }, (_, index) =>
+        [`wiki/concepts/cache-${String(index).padStart(2, '0')}.md`, '# Cache'])),
+      'wiki/concepts/valid.md': '---\ntype: concept\naliases: []\ndescription: "캐시 개념을 설명한다."\ntags: [cache]\n---\n# Cache',
+    });
+    const logged = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await command().parseAsync(['node', 'test', 'lint', '--json']);
+
+    const report = JSON.parse(String(logged.mock.calls[0]?.[0]));
+    expect(report.catalog).toBe('unavailable');
+    expect(report.signals.invalidMetadataCount).toBe(25);
+    expect(report.signals.invalidMetadata).toHaveLength(20);
+    expect(report.signals.invalidMetadata[0]).toEqual({
+      path: 'wiki/concepts/cache-00.md',
+      issues: ['type', 'aliases', 'description', 'tags'].map((field) => ({ field, message: '필수 속성이 없다' })),
+    });
+    expect(report.signals.invalidMetadata.at(-1).path).toBe('wiki/concepts/cache-19.md');
+
+    await command().parseAsync(['node', 'test', 'lint']);
+
+    const output = String(logged.mock.calls[1]?.[0]);
+    expect(output).toContain('Invalid note metadata (25; showing 20)');
+    expect(output).toContain('wiki/concepts/cache-19.md');
+    expect(output).not.toContain('wiki/concepts/cache-20.md');
+    expect(output).not.toContain('wiki/concepts/valid.md');
   });
 
   it('rejects a missing knowledge repository without creating the configured DATA_DIR', async () => {

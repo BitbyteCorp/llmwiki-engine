@@ -7,7 +7,8 @@ import { collectStructureSignals, restrictStructureSignals, selectDreamMode, typ
 function emptySignals(overrides: Partial<StructureSignals> = {}): StructureSignals {
   return {
     duplicates: [], orphans: [], unresolved: [], ambiguous: [], oversizedFolders: [], oversizedNotes: [],
-    tinyNotes: [], missingHubs: [], missingDomainHubs: [], unlinkedDomainHubs: [], unclassifiedNotes: [], ...overrides,
+    tinyNotes: [], missingHubs: [], missingDomainHubs: [], unlinkedDomainHubs: [], unclassifiedNotes: [],
+    invalidMetadata: [], invalidMetadataCount: 0, ...overrides,
   };
 }
 
@@ -44,6 +45,7 @@ describe('dream mode selection', () => {
     { missingDomainHubs: ['wiki/engineering/index.md'] },
     { unlinkedDomainHubs: ['wiki/research/index.md'] },
     { unclassifiedNotes: ['wiki/loose.md'] },
+    { invalidMetadataCount: 1, invalidMetadata: [{ path: 'wiki/concepts/cache.md', issues: [{ field: 'tags', message: '필수 속성이 없다' }] }] },
   ])('prioritizes structural repair over local changes and sweeps for %j', (signals) => {
     expect(selectDreamMode(emptySignals(signals), true, sweepFolders, new Map())).toEqual({ mode: 'structural', focus: null });
     expect(selectDreamMode(emptySignals(signals), false, sweepFolders, new Map())).toEqual({ mode: 'structural', focus: null });
@@ -83,6 +85,123 @@ describe('dream mode selection', () => {
 });
 
 describe('structural signal collection', () => {
+  const semanticMetadata = 'type: concept\naliases: []\ndescription: "캐시 개념을 설명한다."\ntags: [cache]';
+  const validMetadata = `${semanticMetadata}\nauthor: [도니]\ndate created: 2026-10-01\ndate modified: 2026-10-10`;
+  const metadataNote = (metadata: string) => `---\n${metadata}\n---\n# 캐시\n\n캐시 개념을 설명한다.`;
+
+  it('resolves frontmatter aliases from the complete committed note snapshot', async () => {
+    const { signals } = await fixture({
+      'wiki/concepts/source.md': '[[CACHE TERM#Overview|Cache]] [[raw alias]]',
+      'wiki/concepts/cache.md': metadataNote(semanticMetadata.replace('aliases: []', 'aliases: [" cache term ", "CACHE TERM"]')),
+      'raw/reference.md': '---\naliases: ["raw alias"]\n---\n# Original reference',
+    });
+    expect(signals.unresolved).toEqual([]);
+    expect(signals.ambiguous).toEqual([]);
+  });
+
+  it('reports ambiguous aliases with all candidate paths while retaining exact basename precedence', async () => {
+    const { signals } = await fixture({
+      'wiki/concepts/source.md': '[[Shared Alias|Display]] [[cache]]',
+      'wiki/concepts/one.md': metadataNote(semanticMetadata.replace('aliases: []', 'aliases: ["shared alias", "cache"]')),
+      'wiki/concepts/two.md': metadataNote(semanticMetadata.replace('aliases: []', 'aliases: ["shared alias"]')),
+      'wiki/concepts/cache.md': metadataNote(semanticMetadata),
+    });
+    expect(signals.unresolved).toEqual([]);
+    expect(signals.ambiguous).toEqual([{
+      path: 'wiki/concepts/source.md', target: 'Shared Alias',
+      candidates: ['wiki/concepts/one.md', 'wiki/concepts/two.md'],
+    }]);
+  });
+
+  it('recognizes root hub links through unique aliases but not ambiguous hub aliases', async () => {
+    const { signals } = await fixture({
+      'index.md': '[[Engineering HQ]] [[Domain HQ]]',
+      'wiki/engineering/index.md': '---\naliases: ["Engineering HQ"]\n---\n# Engineering',
+      'wiki/research/index.md': '---\naliases: ["Domain HQ"]\n---\n# Research',
+      'wiki/health/index.md': '---\naliases: ["Domain HQ"]\n---\n# Health',
+    });
+    expect(signals.missingDomainHubs).toEqual([]);
+    expect(signals.unlinkedDomainHubs).toEqual(['wiki/health/index.md', 'wiki/research/index.md']);
+  });
+
+  it('does not use note aliases to resolve attachment targets or malformed alias frontmatter', async () => {
+    const { signals } = await fixture({
+      'wiki/concepts/source.md': '![[guide.pdf]] [[Broken Alias]]',
+      'wiki/concepts/guide.md': '---\naliases: ["guide.pdf"]\n---\n# Guide',
+      'wiki/concepts/broken.md': '---\naliases: [Broken Alias\n---\n# Invalid YAML',
+    });
+    expect(signals.unresolved).toEqual([
+      { path: 'wiki/concepts/source.md', target: 'guide.pdf' },
+      { path: 'wiki/concepts/source.md', target: 'Broken Alias' },
+    ]);
+    expect(signals.ambiguous).toEqual([]);
+  });
+
+  it('reports semantic metadata errors from wiki notes while excluding schemas and other roots', async () => {
+    const { signals } = await fixture({
+      'wiki/concepts/cache.md': metadataNote(`${validMetadata}\nupdated: 2026-10-01\nstatus: draft`),
+      'wiki/entities/tool.md': metadataNote(validMetadata),
+      'wiki/engineering/AGENTS.md': 'Schema without metadata',
+      'wiki/concepts/AGENTS.md': 'Shared schema without metadata',
+      'wiki/engineering/nested/AGENTS.md': 'Nested instructions without metadata',
+      'raw/source.md': 'Source without metadata',
+      'journal/2026-10-10.md': 'Journal without metadata',
+      'index.md': 'Root without metadata',
+    });
+    expect(signals.invalidMetadataCount).toBe(2);
+    expect(signals.invalidMetadata).toEqual([
+      { path: 'wiki/concepts/cache.md', issues: [
+        { field: 'status', message: '사용하지 않는 속성이다' },
+        { field: 'updated', message: '사용하지 않는 속성이다' },
+      ] },
+      { path: 'wiki/entities/tool.md', issues: [{ field: 'type', message: '이 위치의 노트는 entity여야 한다' }] },
+    ]);
+  });
+
+  it('ignores absent or invalid engine fields but keeps other errors on the same note', async () => {
+    const { signals } = await fixture({
+      'wiki/concepts/complete.md': metadataNote(`${validMetadata}\narxiv: "2601.00001"`),
+      'wiki/concepts/missing-engine.md': metadataNote(semanticMetadata),
+      'wiki/concepts/invalid-engine.md': metadataNote(`${semanticMetadata}\nauthor: bot\ndate created: wrong\ndate modified: yesterday`),
+      'wiki/concepts/needs-tags.md': metadataNote('type: concept\naliases: []\ndescription: "태그가 없는 캐시 개념이다."'),
+    });
+    expect(signals.invalidMetadataCount).toBe(1);
+    expect(signals.invalidMetadata).toEqual([
+      { path: 'wiki/concepts/needs-tags.md', issues: [{ field: 'tags', message: '필수 속성이 없다' }] },
+    ]);
+  });
+
+  it('has no metadata signal for valid notes or notes waiting only for engine autofill', async () => {
+    const { signals } = await fixture({
+      'wiki/concepts/complete.md': metadataNote(validMetadata),
+      'wiki/concepts/engine-pending.md': metadataNote(semanticMetadata),
+    });
+    expect(signals.invalidMetadata).toEqual([]);
+    expect(signals.invalidMetadataCount).toBe(0);
+    expect(selectDreamMode(signals, true, [], new Map())).toEqual({ mode: 'local', focus: null });
+  });
+
+  it('reports malformed YAML without aborting size and link inspection', async () => {
+    const { signals } = await fixture({
+      'wiki/concepts/cache.md': '---\naliases: [broken\n---\n# Cache\n[[Missing]]',
+    });
+    expect(signals.invalidMetadata).toEqual([
+      { path: 'wiki/concepts/cache.md', issues: [{ field: 'frontmatter', message: 'frontmatter YAML를 해석할 수 없다' }] },
+    ]);
+    expect(signals.invalidMetadataCount).toBe(1);
+    expect(signals.unresolved).toEqual([{ path: 'wiki/concepts/cache.md', target: 'Missing' }]);
+  });
+
+  it('caps metadata candidates at twenty sorted paths while reporting the whole backlog', async () => {
+    const notes = Object.fromEntries(Array.from({ length: 25 }, (_, index) =>
+      [`wiki/concepts/${String(index).padStart(2, '0')}.md`, '# Legacy cache']));
+    const { signals } = await fixture(notes);
+    expect(signals.invalidMetadataCount).toBe(25);
+    expect(signals.invalidMetadata.map(({ path }) => path)).toEqual(Object.keys(notes).slice(0, 20));
+    expect(signals.invalidMetadata.every(({ issues }) => issues.map(({ field }) => field).join(',')
+      === 'type,aliases,description,tags')).toBe(true);
+  });
+
   it('finds missing domain hubs without treating shared folders or nested folders as domains', async () => {
     const { signals } = await fixture({
       'wiki/engineering/nested/guide.md': 'Guide',
@@ -356,6 +475,7 @@ describe('structural signal scopes', () => {
       oversizedFolders: [signals.oversizedFolders[0]], oversizedNotes: [signals.oversizedNotes[0]], tinyNotes: [],
       missingHubs: [signals.missingHubs[0]],
       missingDomainHubs: [], unlinkedDomainHubs: [], unclassifiedNotes: [],
+      invalidMetadata: [], invalidMetadataCount: 0,
     });
     expect(restrictStructureSignals(signals, [], [])).toEqual(emptySignals());
   });
@@ -367,6 +487,7 @@ describe('structural signal scopes', () => {
       oversizedFolders: [signals.oversizedFolders[0]], oversizedNotes: [signals.oversizedNotes[0]], tinyNotes: [],
       missingHubs: [signals.missingHubs[0]],
       missingDomainHubs: [], unlinkedDomainHubs: [], unclassifiedNotes: [],
+      invalidMetadata: [], invalidMetadataCount: 0,
     });
     expect(signals.orphans).toEqual(['wiki/a/note.md', 'wiki/a/nested/note.md', 'wiki/b/note.md']);
   });
@@ -388,6 +509,20 @@ describe('structural signal scopes', () => {
     }));
     expect(restrictStructureSignals(domains, ['wiki/loose.md'])).toEqual(emptySignals({
       unclassifiedNotes: ['wiki/loose.md'],
+    }));
+  });
+
+  it('scopes metadata candidates to direct notes but preserves the inspected-main backlog count', () => {
+    const metadata = emptySignals({
+      invalidMetadataCount: 25,
+      invalidMetadata: ['wiki/a/note.md', 'wiki/a/nested/note.md', 'wiki/b/note.md'].map((path) =>
+        ({ path, issues: [{ field: 'tags', message: '필수 속성이 없다' }] })),
+    });
+    expect(restrictStructureSignals(metadata, [], ['wiki/a/'])).toEqual(emptySignals({
+      invalidMetadata: [metadata.invalidMetadata[0]!], invalidMetadataCount: 25,
+    }));
+    expect(restrictStructureSignals(metadata, ['wiki/b/note.md'])).toEqual(emptySignals({
+      invalidMetadata: [metadata.invalidMetadata[2]!], invalidMetadataCount: 25,
     }));
   });
 });

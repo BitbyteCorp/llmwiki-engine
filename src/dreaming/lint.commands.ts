@@ -79,9 +79,9 @@ function humanReport(report: LintReport): string {
     lines.push(report.catalog === 'stale'
       ? 'Index-backed duplicate, orphan and tag-hub findings use the stale indexed SHA above.'
       : 'Index-backed duplicate, orphan and tag-hub checks are unavailable (not clean).',
-    'Path, domain, wikilink and size findings always use the committed main SHA above.');
+    'Path, domain, wikilink, metadata and size findings always use the committed main SHA above.');
   }
-  lines.push('Each signal list is capped at 20 findings (not a full count).');
+  lines.push('Each signal list is capped at 20 findings; only invalidMetadataCount reports the full metadata backlog.');
   const section = (label: string, findings: string[] | null) => {
     if (findings === null) {
       lines.push('', `${label} (unavailable)`);
@@ -101,6 +101,11 @@ function humanReport(report: LintReport): string {
   section('Oversized notes', signals.oversizedNotes.map(({ path, chars }) => `${path}: ${chars} characters`));
   section('Tiny notes', signals.tinyNotes.map(({ path, chars }) => `${path}: ${chars} body characters`));
   section('Missing tag hubs', signals.missingHubs?.map(({ tag, count, paths }) => `#${tag}: ${count} notes (${paths.join(', ')})`) ?? null);
+  lines.push('', `Invalid note metadata (${signals.invalidMetadataCount}; showing ${signals.invalidMetadata.length})`);
+  for (const { path, issues } of signals.invalidMetadata) {
+    lines.push(`  - ${path}`);
+    for (const { field, message } of issues) lines.push(`      ${field}: ${message}`);
+  }
   return lines.join('\n');
 }
 

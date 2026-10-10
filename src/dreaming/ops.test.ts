@@ -7,6 +7,7 @@ import { promisify } from 'node:util';
 import { Module } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import Database from 'better-sqlite3';
+import matter from 'gray-matter';
 import pino from 'pino';
 import { afterEach, expect, it, vi } from 'vitest';
 import { AclService } from '../acl/acl.service.js';
@@ -30,6 +31,10 @@ import { DreamRunsRepository } from './dream-runs.repository.js';
 import { DreamingService } from './dreaming.service.js';
 
 const git = promisify(execFile);
+
+function wikiNote(body: string, type: 'note' | 'hub' = 'note'): string {
+  return `---\ntype: ${type}\naliases: []\ndescription: "꿈꾸기 작업의 동작을 점검하는 테스트 지식 노트다."\ntags: [dreaming-ops]\n---\n${body}`;
+}
 
 const resources: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
@@ -71,7 +76,7 @@ async function fixture(slackWebhookUrl?: string, openaiBaseUrl?: string) {
   const runAgent = vi.fn(async (options: RunAgentOptions) => {
     const input = JSON.parse(options.input as string) as { date: string };
     await options.tools.find((tool) => tool.name === 'write_file')!.run({ path: `journal/${input.date}.md`, content: '# SECRET_NOTE_CONTENT\n' });
-    await options.tools.find((tool) => tool.name === 'write_file')!.run({ path: 'wiki/result.md', content: '# Reviewed knowledge\n' });
+    await options.tools.find((tool) => tool.name === 'write_file')!.run({ path: 'wiki/result.md', content: wikiNote('# Reviewed knowledge\n') });
     return { text: 'SECRET_SUMMARY', toolCalls: 2 };
   });
   const agent = {
@@ -219,7 +224,7 @@ it.each(['none', 'provider', 'dreaming', 'conflict'] as const)('logs aggregate d
   const fake = await startFakeOpenAI(async (request) => {
     if (String(request.body.prompt_cache_key).includes(':conflict:')) {
       if (conflictTurn++ === 0) return {
-        functionCalls: [{ name: 'write_file', arguments: { path: 'wiki/shared.md', content: 'reviewed fact\nconcurrent fact\n' } }],
+        functionCalls: [{ name: 'write_file', arguments: { path: 'wiki/shared.md', content: wikiNote('reviewed fact\nconcurrent fact\n') } }],
         usage: { inputTokens: 50, cachedInputTokens: 20, outputTokens: 10, reasoningTokens: 3 },
       };
       return { text: 'Conflict resolved', status: failure === 'conflict' ? 'failed' : 'completed',
@@ -232,7 +237,7 @@ it.each(['none', 'provider', 'dreaming', 'conflict'] as const)('logs aggregate d
       return {
         functionCalls: [
           { name: 'write_file', arguments: { path: journalPath, content: '# Reviewed knowledge\n' } },
-          { name: 'write_file', arguments: { path: 'wiki/shared.md', content: 'reviewed fact\n' } },
+          { name: 'write_file', arguments: { path: 'wiki/shared.md', content: wikiNote('reviewed fact\n') } },
         ],
         status: failure === 'dreaming' ? 'failed' : 'completed',
         usage: { inputTokens: 100, cachedInputTokens: 40, outputTokens: 20, reasoningTokens: 5 },
@@ -240,7 +245,7 @@ it.each(['none', 'provider', 'dreaming', 'conflict'] as const)('logs aggregate d
     }
     const concurrent = await f.repo.createWorktree('concurrent-dream');
     try {
-      await concurrent.write('wiki/shared.md', 'concurrent fact\n');
+      await concurrent.write('wiki/shared.md', wikiNote('concurrent fact\n'));
       await concurrent.commit('Concurrent fact', author);
       await f.repo.withMergeLock(() => concurrent.fastForwardMain());
     } finally {
@@ -251,7 +256,7 @@ it.each(['none', 'provider', 'dreaming', 'conflict'] as const)('logs aggregate d
   resources.push(() => fake.close());
   const f = await fixture(undefined, fake.url);
   const baseline = await f.repo.createWorktree('baseline-dream');
-  await baseline.write('wiki/shared.md', 'original fact\n');
+  await baseline.write('wiki/shared.md', wikiNote('original fact\n'));
   await baseline.commit('Baseline shared fact', author);
   await f.repo.withMergeLock(() => baseline.fastForwardMain());
   await baseline.dispose();
@@ -266,7 +271,7 @@ it.each(['none', 'provider', 'dreaming', 'conflict'] as const)('logs aggregate d
     .toMatchObject({ usage });
   expect(f.runs.get(run.id)).toEqual(run);
   expect(run.summary).toBe(failure === 'provider' || failure === 'dreaming' ? null : 'Reviewed knowledge');
-  expect(await f.repo.readFile('wiki/shared.md')).toBe(failure === 'none'
+  expect(matter((await f.repo.readFile('wiki/shared.md'))!).content).toBe(failure === 'none'
     ? 'reviewed fact\nconcurrent fact\n'
     : failure === 'conflict' ? 'concurrent fact\n' : 'original fact\n');
 }, 20000);
@@ -424,7 +429,7 @@ it('keeps local success but persists backup failure and sends a private success 
   expect(run).toMatchObject({ status: 'succeeded', error: null, pushed: false, summary: 'SECRET_SUMMARY',
     push: { status: 'failed', remote: null, sha: null } });
   expect(run.push.reason).toContain('SECRET_MISSING_REMOTE');
-  expect(await f.repo.readFile('wiki/result.md')).toBe('# Reviewed knowledge\n');
+  expect(matter((await f.repo.readFile('wiki/result.md'))!).content).toBe('# Reviewed knowledge\n');
   expect(f.runs.get(run.id)).toEqual(run);
   expect(f.runs.backupStatus()).toEqual({ lastAttempt: run, lastSuccess: null });
   expect(JSON.parse(payloads[0]).text).toMatch(/^Dreaming succeeded; duration_ms=\d+; merge_sha=[a-f0-9]+; push=failed; push_sha=none$/);
@@ -497,8 +502,8 @@ it('runs an idle night sweep in the least recently reviewed wiki folder', async 
   f.db.prepare('DELETE FROM messages').run();
   const wt = await f.repo.createWorktree('idle-seed');
   const author = { name: 'Test', email: 'test@example.test' };
-  await wt.write('wiki/topic/a.md', '# Topic\n\nA unique fact.\n');
-  await wt.write('wiki/topic/index.md', '[[wiki/topic/a]]\n');
+  await wt.write('wiki/topic/a.md', wikiNote('# Topic\n\nA unique fact.\n'));
+  await wt.write('wiki/topic/index.md', wikiNote('[[wiki/topic/a]]\n', 'hub'));
   await wt.write('index.md', '[[wiki/topic/index]]\n');
   await wt.commit('Seed sweep folder', author);
   await f.repo.withMergeLock(() => wt.fastForwardMain());
@@ -523,8 +528,8 @@ it.each([false, true])('validates backlinks before merging a moved note (fixed: 
   const f = await fixture();
   const author = { name: 'Test', email: 'test@example.test' };
   const seed = await f.repo.createWorktree('linked-seed');
-  await seed.write('wiki/topic/old.md', '# Durable fact\n');
-  await seed.write('wiki/topic/source.md', '[[wiki/topic/old]]\n');
+  await seed.write('wiki/topic/old.md', wikiNote('# Durable fact\n'));
+  await seed.write('wiki/topic/source.md', wikiNote('[[wiki/topic/old]]\n'));
   await seed.write('index.md', '[[wiki/topic/source]]\n');
   await seed.commit('Seed linked notes', author);
   await f.repo.withMergeLock(() => seed.fastForwardMain());
@@ -534,7 +539,7 @@ it.each([false, true])('validates backlinks before merging a moved note (fixed: 
     const input = JSON.parse(options.input as string) as { journalPath: string };
     await options.tools.find((tool) => tool.name === 'move_file')!.run({ from: 'wiki/topic/old.md', to: 'wiki/topic/new.md' });
     if (fixLinks) await options.tools.find((tool) => tool.name === 'write_file')!.run({
-      path: 'wiki/topic/source.md', content: '[[wiki/topic/new]]\n',
+      path: 'wiki/topic/source.md', content: wikiNote('[[wiki/topic/new]]\n'),
     });
     await options.tools.find((tool) => tool.name === 'write_file')!.run({
       path: input.journalPath, content: '# 일기\n\n## 구조 정리\nwiki/topic/old.md → wiki/topic/new.md: 탐색 개선이다.\n',
@@ -547,14 +552,14 @@ it.each([false, true])('validates backlinks before merging a moved note (fixed: 
   if (fixLinks) {
     expect(run.status).toBe('succeeded');
     expect(await f.repo.readFile('wiki/topic/old.md')).toBeNull();
-    expect(await f.repo.readFile('wiki/topic/new.md')).toBe('# Durable fact\n');
-    expect(await f.repo.readFile('wiki/topic/source.md')).toBe('[[wiki/topic/new]]\n');
+    expect(matter((await f.repo.readFile('wiki/topic/new.md'))!).content).toBe('# Durable fact\n');
+    expect(matter((await f.repo.readFile('wiki/topic/source.md'))!).content).toBe('[[wiki/topic/new]]\n');
     expect(f.runs.unlearnedUserMessages(new Date().toISOString())).toEqual([]);
   } else {
     expect(run).toMatchObject({ status: 'failed', mergeSha: null, push: { status: 'skipped' } });
     expect(run.error).toBe('Dreaming introduced broken links: wiki/topic/old');
     expect(await f.repo.headSha()).toBe(beforeHead);
-    expect(await f.repo.readFile('wiki/topic/old.md')).toBe('# Durable fact\n');
+    expect(matter((await f.repo.readFile('wiki/topic/old.md'))!).content).toBe('# Durable fact\n');
     expect(f.runs.unlearnedUserMessages(new Date().toISOString())).toMatchObject([{ content: 'SECRET_USER_INPUT' }]);
   }
 });

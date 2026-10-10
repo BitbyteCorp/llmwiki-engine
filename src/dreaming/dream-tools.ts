@@ -1,10 +1,11 @@
 import { posix } from 'node:path';
+import matter from 'gray-matter';
 import { z } from 'zod';
 import { matchesAclPrefix, type AclService } from '../acl/acl.service.js';
 import type { AgentTool } from '../agent/agent.types.js';
 import { isDomainSchemaPath } from '../knowledge/domains.js';
 import { repoPath } from '../knowledge/repo.js';
-import { wikilinkTargets } from '../rag/chunking.js';
+import { aliasesFromFrontmatter, wikilinkTargets } from '../rag/chunking.js';
 import { NoteTargetResolver } from '../rag/link-resolver.js';
 
 export const MAX_STRUCTURAL_CHANGES = 20;
@@ -88,10 +89,20 @@ export function unresolvedLinkTargets(
   paths: string[],
   notes: Iterable<{ path: string; content: string }>,
 ): Set<string> {
-  const noteResolver = new NoteTargetResolver(paths.filter((path) => /\.md$/i.test(path)));
+  const noteList = [...notes];
+  const aliasesByPath = new Map<string, string[]>();
+  for (const note of noteList) {
+    if (!/\.md$/i.test(note.path)) continue;
+    try {
+      aliasesByPath.set(note.path, aliasesFromFrontmatter(matter(note.content, {}).data.aliases));
+    } catch {
+      // Invalid YAML must not prevent inspection of this note's links.
+    }
+  }
+  const noteResolver = new NoteTargetResolver(paths.filter((path) => /\.md$/i.test(path)), aliasesByPath);
   const fileResolver = new NoteTargetResolver(paths);
   const unresolved = new Set<string>();
-  for (const note of notes) {
+  for (const note of noteList) {
     for (const target of wikilinkTargets(note.content)) {
       const extension = posix.extname(target.text).toLowerCase();
       const resolver = extension && extension !== '.md' ? fileResolver : noteResolver;

@@ -336,6 +336,9 @@ ACL 경계를 넘어 제한된 노트·사용자 자료의 내용이나 의미�
 - sweep: structure.focus 폴더 하나만 점검한다.
 도메인 구조 신호를 우선 고친다: missingDomainHubs의 경로에 해당 도메인의 큐레이션 허브를 만들고 루트 index.md에서 연결한다. unlinkedDomainHubs는 기존 허브를 루트 index.md에 연결한다. unclassifiedNotes는 wiki/ 바로 아래에 두지 않고 주제에 맞는 wiki/<domain>/로 옮기며, 둘 이상 도메인에서 재사용하거나 도메인과 무관한 개념·용어는 wiki/concepts/, 사람·조직·도구·제품은 wiki/entities/의 정본으로 배치한다. 같은 지식은 한 정본만 유지한다.
 새 도메인은 영문 소문자 kebab-case 폴더, wiki/<domain>/index.md 허브, 루트 index.md의 허브 링크를 함께 만든다. 폴더로 도메인을 나타내며 frontmatter에 domain/category 필드를 추가하지 않는다. wiki/<domain>/ 안의 파일을 쓰거나 편집하기 전에는 해당 도메인의 AGENTS.md가 있으면 읽고 그 도메인 안에서만 적용한다.
+정리 순서는 도메인 배치·허브, 깨지거나 모호한 링크, 그 밖의 구조 문제, 남은 메타데이터 순서다. 큰 기존 메타데이터 backlog가 탐색 경로와 링크 수리를 밀어내지 않게 한다. 앞선 수리로 이미 편집하는 노트의 메타데이터도 함께 고치고, 그 뒤 invalidMetadata의 후보를 차례로 보완한다. invalidMetadataCount는 점검한 main 전체의 미완료 노트 수이며 후보 목록은 최대 20개다. 상한이나 근거 부족으로 남은 후보와 backlog를 일기의 "구조 정리" 절에 남긴다.
+invalidMetadata는 author, date created, date modified처럼 엔진이 채우는 속성을 제외한 오류다. 후보 노트의 본문과 기존 링크를 먼저 읽고 거기에 있는 사실만으로 type, aliases, description, tags를 채운다. description은 300자 이하의 한국어 1~2문장 요약이며, aliases는 실제 다른 이름·약어·번역의 문자열 목록(없으면 []), tags는 하나 이상의 넓고 재사용 가능한 영문 소문자 kebab-case 태그다. 메타데이터를 채우려고 새 사실을 지어내지 않는다.
+type은 hub, concept, entity, guide, decision, reference, project, note 중 고른다. wiki/concepts/의 노트는 concept, wiki/entities/의 노트는 entity, wiki/<domain>/index.md는 hub로 맞춘다. updated는 제거하고 날짜는 엔진에 맡긴다. status/category/domain은 제거하되 지식 의미를 담고 있다면 필요한 의미만 본문에 보존한다. author와 생성·수정 날짜는 추측하거나 계산하지 않으며 엔진이 커밋 시 채운다. 그 밖의 도메인 추가 속성은 보존하며 related/source/confidence/importance 같은 유효한 속성을 버리지 않는다.
 구조 변경은 탐색이나 검색이 분명히 좋아질 때만 한다. 취향 때문에 이름을 바꾸거나 폴더를 다시 나누지 않는다.
 - 합치기: 같은 사실을 다루는 노트는 하나의 정본으로 합치고 나머지는 삭제한다. 삭제한 노트를 가리키던 모든 위키링크는 정본을 가리키게 고친다.
 - 옮기기·이름 바꾸기: 저장소의 기존 폴더와 파일명 관례를 따른다. 도메인 생성은 위 규칙을 따르며, 도메인 안의 세부 주제 폴더는 같은 주제의 노트가 3개 이상일 때만 만든다.
