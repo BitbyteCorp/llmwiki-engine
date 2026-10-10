@@ -3,6 +3,7 @@ import { cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, sta
 import { dirname, isAbsolute, join, relative, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { commitTrailers, type CommitMetadata } from './commit-trailers.js';
+import { isMetadataTarget, noteMetadataDate, stampNoteMetadata } from './note-metadata.js';
 import { apiIdToLegacyUuid, legacyUuidToApi } from '../common/ids.js';
 import type { Config } from '../config.js';
 import type { Logger } from 'pino';
@@ -624,9 +625,34 @@ export class Worktree {
     await walk(this.path);
     return files.sort();
   }
-  async commit(message: string, author: Author): Promise<string | null> {
-    this.author = author;
+  private async stageWithNoteMetadata(author?: Author, base = 'HEAD'): Promise<void> {
     await this.git.run(this.path, ['add', '--all']);
+    const tokens = (await this.git.run(this.path, [
+      'diff', '--cached', '--name-status', '-z', '--find-renames', base, '--',
+    ])).split('\0');
+    const date = noteMetadataDate();
+    const requesterName = this.metadata?.source === 'dreaming' || !author || author.email === this.git.cfg.gitBotEmail
+      ? undefined : author.name;
+    const stamped: string[] = [];
+    for (let i = 0; i < tokens.length && tokens[i];) {
+      const status = tokens[i++]!;
+      let path = tokens[i++]!;
+      if (status.startsWith('R') || status.startsWith('C')) path = tokens[i++]!;
+      // A pure move changes no note content: retain dates/authors exactly, even across folders.
+      if (status === 'D' || status === 'R100' || !isMetadataTarget(path)) continue;
+      const file = await confined(this.path, path);
+      if (!(await lstat(file)).isFile()) continue;
+      const content = await readFile(file, 'utf8');
+      const updated = stampNoteMetadata(content, { date, requesterName, botName: this.git.cfg.gitBotName });
+      if (updated === content) continue;
+      await writeFile(file, updated, 'utf8');
+      stamped.push(path);
+    }
+    if (stamped.length) await this.git.run(this.path, ['add', '--', ...stamped]);
+  }
+  async commit(message: string, author?: Author): Promise<string | null> {
+    this.author = author;
+    await this.stageWithNoteMetadata(author);
     const staged = await this.git.run(this.path, ['diff', '--cached', '--name-only', '-z']);
     if (!staged) return null;
     await this.git.run(this.path, ['commit', '-m', this.message(message)], this.git.identity(author));
@@ -645,10 +671,12 @@ export class Worktree {
   async conflictedFiles(): Promise<string[]> {
     return (await this.git.run(this.path, ['diff', '--name-only', '--diff-filter=U', '-z'])).split('\0').filter(Boolean);
   }
-  async finishMerge(author: Author): Promise<string> {
+  async finishMerge(author?: Author): Promise<string> {
     if (!await this.git.hasRef(this.path, 'MERGE_HEAD')) throw new Error('No merge is in progress');
     this.author = author;
-    await this.git.run(this.path, ['add', '--all']);
+    // Compare with incoming main, not our first parent, to avoid crediting this requester
+    // for unrelated concurrent notes that Git merged cleanly from main.
+    await this.stageWithNoteMetadata(author, 'MERGE_HEAD');
     await this.git.run(this.path, ['commit', '-m', this.message(`Resolve merge of main into ${this.branch}`)], this.git.identity(author));
     return this.git.sha(this.path, 'HEAD');
   }

@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
 import pino from 'pino';
+import matter from 'gray-matter';
 import { afterEach, expect, it, vi } from 'vitest';
 import { AclModule } from '../acl/acl.module.js';
 import { AclService } from '../acl/acl.service.js';
@@ -35,6 +36,10 @@ interface FakeProvider {
 
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const dispose of cleanup.splice(0).reverse()) await dispose(); });
+
+function note(body: string): string {
+  return `---\ntype: note\naliases: []\ndescription: Durable knowledge used by ACL tests.\ntags: [knowledge]\n---\n${body}`;
+}
 async function fixture(script: FakeScript = []) {
   // The shared test fixture is outside the production TypeScript root; static imports fail rootDir validation.
   const { startFakeOpenAI }: { startFakeOpenAI(script?: FakeScript): Promise<FakeProvider> } = await import(new URL('../../test/fake-openai.ts', import.meta.url).href);
@@ -61,9 +66,9 @@ async function fixture(script: FakeScript = []) {
   const writer = module.get(NoteWriterService);
   const jobs = module.get(WriteJobsService);
   const seed = await writer.apply({ userId: admin.id, source: 'web', baseSha: await repo.headSha(), ops: [
-    { op: 'put', path: 'wiki/public.md', content: '# Public\nDurable public fact.' },
-    { op: 'put', path: 'wiki/private/secret.md', content: '# Private\nHIDDEN_PAYLOAD' },
-    { op: 'put', path: 'wiki/readonly/note.md', content: '# Readonly\n' },
+    { op: 'put', path: 'wiki/public.md', content: note('# Public\nDurable public fact.') },
+    { op: 'put', path: 'wiki/private/secret.md', content: note('# Private\nHIDDEN_PAYLOAD') },
+    { op: 'put', path: 'wiki/readonly/note.md', content: note('# Readonly\n') },
   ] });
   async function apply(ops: NoteOp[], userId = editor.id) {
     return writer.apply({ userId, source: 'web', baseSha: await repo.headSha(), ops });
@@ -90,10 +95,10 @@ it('rejects direct puts/deletes and both move endpoints atomically while preserv
   expect(await f.repo.headSha()).toBe(head);
   expect(await f.repo.readFile('wiki/new.md')).toBeNull();
   await f.apply([{ op: 'put', path: 'wiki/private/secret.md', content: 'admin revision' }], f.admin.id);
-  expect(await f.repo.readFile('wiki/private/secret.md')).toBe('admin revision');
+  expect(matter((await f.repo.readFile('wiki/private/secret.md'))!).content).toBe('admin revision');
   f.acl.create({ prefix: 'wiki/private/', subjectType: 'user', subject: String(f.other.id), access: 'write' }, f.admin);
   await f.apply([{ op: 'put', path: 'wiki/private/secret.md', content: 'authorized revision' }], f.other.id);
-  expect(await f.repo.readFile('wiki/private/secret.md')).toBe('authorized revision');
+  expect(matter((await f.repo.readFile('wiki/private/secret.md'))!).content).toBe('authorized revision');
 });
 
 it('requires every touched revert path writable, including previews and rename source/destination', async () => {
@@ -111,7 +116,7 @@ it('requires every touched revert path writable, including previews and rename s
   expect(await f.repo.headSha()).toBe(head);
   const moved = await f.apply([{ op: 'move', from: 'wiki/public.md', to: 'wiki/private/moved.md' }], f.admin.id);
   await expect(f.writer.applyRevert({ userId: f.editor.id, sha: moved.mergeSha, paths: ['wiki/public.md'], preview: true })).rejects.toMatchObject({ status: 404 });
-  expect(await f.repo.readFile('wiki/private/moved.md')).toBe('public revision');
+  expect(matter((await f.repo.readFile('wiki/private/moved.md'))!).content).toBe('public revision');
 });
 
 it('runs the real Dony tools with requester read/write ACLs, never sending hidden context to the provider', async () => {
@@ -121,14 +126,14 @@ it('runs the real Dony tools with requester read/write ACLs, never sending hidde
       { name: 'read_file', arguments: { path: 'wiki/private/secret.md' } },
       { name: 'search', arguments: { query: 'HIDDEN_PAYLOAD' } },
       { name: 'write_file', arguments: { path: 'wiki/readonly/note.md', content: 'denied' } },
-      { name: 'write_file', arguments: { path: 'wiki/result.md', content: '# Allowed result\n' } },
+      { name: 'write_file', arguments: { path: 'wiki/result.md', content: note('# Allowed result\n') } },
     ] }, 'Saved allowed knowledge.',
   ]);
   f.jobs.start();
   const result = await f.completed(f.jobs.submit({ userId: f.editor.id, source: 'mcp', input: 'Capture durable knowledge' }).id);
   expect(result.status).toBe('succeeded');
-  expect(await f.repo.readFile('wiki/result.md')).toBe('# Allowed result\n');
-  expect(await f.repo.readFile('wiki/readonly/note.md')).toBe('# Readonly\n');
+  expect(matter((await f.repo.readFile('wiki/result.md'))!).content).toBe('# Allowed result\n');
+  expect(matter((await f.repo.readFile('wiki/readonly/note.md'))!).content).toBe('# Readonly\n');
   const outputs = (f.fake.requests.filter(request => request.path.endsWith('/responses'))[1]!.body.input as Array<{ type: string; output?: string }>).filter(item => item.type === 'function_call_output').map(item => item.output!);
   expect(outputs[0]).not.toContain('wiki/private/secret.md');
   expect(JSON.parse(outputs[1]!)).toHaveProperty('error');
@@ -176,17 +181,17 @@ it('rechecks changed policy after conflict resolution and does not reject unrela
   f.jobs.start();
   const denied = await f.completed(f.jobs.submit({ userId: f.editor.id, source: 'mcp', input: 'Edit' }).id);
   expect(denied.status).toBe('failed');
-  expect(await f.repo.readFile('wiki/public.md')).toBe('upstream edit');
+  expect(matter((await f.repo.readFile('wiki/public.md'))!).content).toBe('upstream edit');
   vi.spyOn(agent, 'runWrite').mockImplementationOnce(async (_job, wt) => {
-    await wt.write('wiki/allowed.md', 'requester knowledge');
+    await wt.write('wiki/allowed.md', note('requester knowledge'));
     await f.apply([{ op: 'put', path: 'wiki/private/secret.md', content: 'upstream private edit' }], f.admin.id);
     return { summary: 'allowed request' };
   });
   f.jobs.start();
   const allowed = await f.completed(f.jobs.submit({ userId: f.editor.id, source: 'mcp', input: 'Save' }).id);
   expect(allowed.status).toBe('succeeded');
-  expect(await f.repo.readFile('wiki/allowed.md')).toBe('requester knowledge');
-  expect(await f.repo.readFile('wiki/private/secret.md')).toBe('upstream private edit');
+  expect(matter((await f.repo.readFile('wiki/allowed.md'))!).content).toBe('requester knowledge');
+  expect(matter((await f.repo.readFile('wiki/private/secret.md'))!).content).toBe('upstream private edit');
 });
 
 it('fails a real model write when the ACL is revoked while its final provider response is pending', async () => {

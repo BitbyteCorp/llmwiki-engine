@@ -6,8 +6,14 @@ import { Badge } from '@/components/ui/badge'
 const labels: Record<string, string> = {
   updated: '수정', created: '생성', date: '날짜', importance: '중요도',
   type: '유형', author: '작성자', source: '출처', status: '상태',
+  'date created': '생성', 'date modified': '수정', aliases: '별칭',
+  description: '설명', related: '관련', confidence: '신뢰도',
 }
 const importanceLabels: Record<string, string> = { high: '높음', medium: '보통', low: '낮음' }
+const typeLabels: Record<string, string> = {
+  hub: '허브', concept: '개념', entity: '엔티티', guide: '가이드',
+  decision: '결정', reference: '참고', project: '프로젝트', note: '노트',
+}
 
 function scalar(value: unknown): string | null {
   if (typeof value === 'string') return value.trim() || null
@@ -24,9 +30,12 @@ export function Properties({ frontmatter }: { frontmatter: Record<string, unknow
   const tags = [...new Set(rawTags.map(tag => tag.trim().replace(/^#+/, '')).filter(Boolean))]
   const fields = Object.entries(frontmatter).flatMap(([key, value]) => {
     if (key === 'title' || key === 'tags') return []
-    const text = scalar(value)
+    const text = (key === 'aliases' || key === 'related') && Array.isArray(value)
+      ? value.filter((item): item is string => typeof item === 'string').map(item => item.trim()).filter(Boolean).join(', ') || null
+      : scalar(value)
     if (text === null) return []
-    return [{ key, label: Object.hasOwn(labels, key) ? labels[key] : key, text: key === 'importance' && Object.hasOwn(importanceLabels, text) ? importanceLabels[text] : text }]
+    const valueLabels = key === 'importance' || key === 'confidence' ? importanceLabels : key === 'type' ? typeLabels : null
+    return [{ key, label: Object.hasOwn(labels, key) ? labels[key] : key, text: valueLabels && Object.hasOwn(valueLabels, text) ? valueLabels[text] : text }]
   })
   if (!tags.length && !fields.length) return null
   return (

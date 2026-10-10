@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import pino from 'pino';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { loadConfig } from '../config.js';
 import { legacyUuidToApi } from '../common/ids.js';
 import { commitTrailers } from './commit-trailers.js';
@@ -14,22 +14,40 @@ import { KnowledgeRepo, repoPath } from './repo.js';
 const dirs: string[] = [];
 const author = { name: 'Writer', email: 'writer@example.test' };
 const metadata = { jobId: 'job-123', source: 'web', requester: author.email, client: 'editor' };
+const noteFrontmatter = `---
+type: note
+aliases: ["History fixture"]
+description: Exercises exact note history and recovery.
+author: ["Writer"]
+date created: 2020-01-01
+date modified: 2026-10-10
+tags: [history]
+source: ["https://example.test/history"]
+confidence: high
+---
+`;
+function note(body: string): string { return noteFrontmatter + body; }
 async function fixture() {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-10-10T00:00:00.000Z'));
   const dir = await mkdtemp(join(tmpdir(), 'knowledge-history-'));
   dirs.push(dir);
   const repo = await KnowledgeRepo.open(loadConfig({ NODE_ENV: 'test', DATA_DIR: dir }), pino({ level: 'silent' }));
   return { repo, dir };
 }
-afterEach(async () => { await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
+afterEach(async () => {
+  await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  vi.useRealTimers();
+});
 
 it('follows renames with historical paths even across a page cursor', async () => {
   const { repo } = await fixture();
   const wt = await repo.createWorktree('rename');
-  await wt.write('wiki/old.md', 'first\nsecond\nthird\n');
+  await wt.write('wiki/old.md', note('first\nsecond\nthird\n'));
   const first = (await wt.commit('Create', author))!;
   await wt.move('wiki/old.md', 'wiki/new.md');
   const renamed = (await wt.commit('Move', author))!;
-  await wt.write('wiki/new.md', 'first\nsecond\nthird\nfourth\n');
+  await wt.write('wiki/new.md', note('first\nsecond\nthird\nfourth\n'));
   const last = (await wt.commit('Update', author))!;
   await wt.fastForwardMain();
   const rows = await repo.log('wiki/new.md', { follow: true });
@@ -51,19 +69,19 @@ it('records trailers and attributes grouped blame ranges to the introducing jobs
   expect(seed.trailers).toEqual({ 'Wiki-Job': 'initialize', 'Wiki-Source': 'dreaming', 'Wiki-Requester': 'dony@llmwiki.local' });
   const wt = await repo.createWorktree('blame');
   wt.setCommitMetadata(metadata);
-  await wt.write('wiki/lines.md', 'one\ntwo\nthree\nfour\n');
+  await wt.write('wiki/lines.md', note('one\ntwo\nthree\nfour\n'));
   const first = (await wt.commit('Create lines', author))!;
   wt.setCommitMetadata({ ...metadata, jobId: 'job-456', source: 'revert' });
-  await wt.write('wiki/lines.md', 'one\nTWO\nthree\nfour\n');
+  await wt.write('wiki/lines.md', note('one\nTWO\nthree\nfour\n'));
   const last = (await wt.commit('Edit line', author))!;
   await wt.fastForwardMain();
   expect((await repo.show(first)).commit).toMatchObject({ committerName: '도니', committerEmail: 'dony@llmwiki.local', committedAt: expect.any(String), trailers: { 'Wiki-Job': metadata.jobId, 'Wiki-Source': 'web', 'Wiki-Requester': author.email, 'Wiki-Client': 'editor' } });
   expect(await repo.blame('wiki/lines.md', 'main')).toEqual({ ref: last, ranges: [
-    { start: 1, end: 1, sha: first, authorName: author.name, date: expect.any(String), summary: 'Create lines', jobId: 'job-123', source: 'web' },
-    { start: 2, end: 2, sha: last, authorName: author.name, date: expect.any(String), summary: 'Edit line', jobId: 'job-456', source: 'revert' },
-    { start: 3, end: 4, sha: first, authorName: author.name, date: expect.any(String), summary: 'Create lines', jobId: 'job-123', source: 'web' },
+    { start: 1, end: 12, sha: first, authorName: author.name, date: expect.any(String), summary: 'Create lines', jobId: 'job-123', source: 'web' },
+    { start: 13, end: 13, sha: last, authorName: author.name, date: expect.any(String), summary: 'Edit line', jobId: 'job-456', source: 'revert' },
+    { start: 14, end: 15, sha: first, authorName: author.name, date: expect.any(String), summary: 'Create lines', jobId: 'job-123', source: 'web' },
   ] });
-  expect((await repo.blame('wiki/lines.md', first)).ranges).toMatchObject([{ start: 1, end: 4, sha: first }]);
+  expect((await repo.blame('wiki/lines.md', first)).ranges).toMatchObject([{ start: 1, end: 15, sha: first }]);
   expect(commitTrailers(metadata).split('\n')).toEqual(['Wiki-Job: job-123', 'Wiki-Source: web', `Wiki-Requester: ${author.email}`, 'Wiki-Client: editor']);
   expect(() => commitTrailers({ ...metadata, client: 'editor\nWiki-Source: spoof' })).toThrow();
 });
@@ -84,7 +102,7 @@ it('normalizes historical UUID job trailers and blame while new commits write AP
   expect((await repo.show(legacySha)).commit.trailers['Wiki-Job']).toBe(jobId);
   expect((await repo.blame('wiki/legacy.md')).ranges).toMatchObject([{ sha: legacySha, jobId }]);
   wt.setCommitMetadata({ ...metadata, jobId: uuid });
-  await wt.write('wiki/legacy.md', 'new line\n');
+  await wt.write('wiki/legacy.md', note('new line\n'));
   const currentSha = (await wt.commit('Current write', author))!;
   const message = (await git('git', ['show', '-s', '--format=%B', currentSha], { cwd: wt.path })).stdout;
   expect(message).toContain(`Wiki-Job: ${jobId}`);
@@ -97,21 +115,21 @@ it('resolves UUID-named failed refs by API ID and prefers a newer API-named ref'
   const uuid = '550e8400-e29b-41d4-a716-446655440000';
   const jobId = legacyUuidToApi(uuid);
   const wt = await repo.createWorktree('legacy-failure');
-  await wt.write('wiki/failed.md', 'legacy failure\n');
+  await wt.write('wiki/failed.md', note('legacy failure\n'));
   const legacySha = (await wt.commit('Legacy failure', author))!;
   const git = promisify(execFile);
   await git('git', ['update-ref', `refs/wiki/failed/${uuid}`, legacySha], { cwd: join(dir, 'knowledge') });
   await wt.dispose();
   const ref = `refs/wiki/failed/${jobId}`;
   expect(await repo.resolveRef(ref)).toBe(legacySha);
-  expect(await repo.readFile('wiki/failed.md', ref)).toBe('legacy failure\n');
+  expect(await repo.readFile('wiki/failed.md', ref)).toBe(note('legacy failure\n'));
   const replacement = await repo.createWorktree('new-failure');
-  await replacement.write('wiki/failed.md', 'new failure\n');
+  await replacement.write('wiki/failed.md', note('new failure\n'));
   const newSha = (await replacement.commit('New failure', author))!;
   await replacement.preserveFailed(jobId);
   await replacement.dispose();
   expect(await repo.resolveRef(ref)).toBe(newSha);
-  expect(await repo.readFile('wiki/failed.md', ref)).toBe('new failure\n');
+  expect(await repo.readFile('wiki/failed.md', ref)).toBe(note('new failure\n'));
 });
 
 it('compares either merge parent and enriches automatic and resolved merges', async () => {
@@ -119,9 +137,9 @@ it('compares either merge parent and enriches automatic and resolved merges', as
   const left = await repo.createWorktree('left');
   const right = await repo.createWorktree('right');
   right.setCommitMetadata(metadata);
-  await left.write('wiki/left.md', 'left\n');
+  await left.write('wiki/left.md', note('left\n'));
   const leftSha = (await left.commit('Left', author))!;
-  await right.write('wiki/right.md', 'right\n');
+  await right.write('wiki/right.md', note('right\n'));
   const rightSha = (await right.commit('Right', author))!;
   await left.fastForwardMain();
   await right.mergeMain();
@@ -135,10 +153,10 @@ it('compares either merge parent and enriches automatic and resolved merges', as
   const a = await repo.createWorktree('conflict-a');
   const b = await repo.createWorktree('conflict-b');
   b.setCommitMetadata(metadata);
-  await a.write('wiki/left.md', 'a\n'); await a.commit('A', author); await a.fastForwardMain();
-  await b.write('wiki/left.md', 'b\n'); await b.commit('B', author);
+  await a.write('wiki/left.md', note('a\n')); await a.commit('A', author); await a.fastForwardMain();
+  await b.write('wiki/left.md', note('b\n')); await b.commit('B', author);
   expect(await b.mergeMain()).toMatchObject({ ok: false });
-  await b.write('wiki/left.md', 'resolved\n');
+  await b.write('wiki/left.md', note('resolved\n'));
   const resolved = await b.finishMerge(author);
   expect((await repo.show(resolved)).commit.trailers['Wiki-Job']).toBe('job-123');
 });
@@ -148,20 +166,20 @@ it('applies a path-limited inverse atop later edits, including binary data and i
   const wt = await repo.createWorktree('inverse');
   const original = Buffer.from([0, 255, 1, 2, 3]);
   await wt.write('assets/file.bin', original);
-  await wt.write('wiki/note.md', 'first\nsecond\nthird\nfourth\nfifth\nsixth\n');
-  await wt.write('wiki/keep.md', 'before\n');
+  await wt.write('wiki/note.md', note('first\nsecond\nthird\nfourth\nfifth\nsixth\n'));
+  await wt.write('wiki/keep.md', note('before\n'));
   await wt.commit('Initial', author);
   await wt.write('assets/file.bin', Buffer.from([0, 254, 3, 4]));
-  await wt.write('wiki/note.md', 'FIRST\nsecond\nthird\nfourth\nfifth\nsixth\n');
-  await wt.write('wiki/keep.md', 'after\n');
+  await wt.write('wiki/note.md', note('FIRST\nsecond\nthird\nfourth\nfifth\nsixth\n'));
+  await wt.write('wiki/keep.md', note('after\n'));
   const change = (await wt.commit('Change', author))!;
-  await wt.write('wiki/note.md', 'FIRST\nsecond\nthird\nfourth\nfifth\nSIXTH\n');
+  await wt.write('wiki/note.md', note('FIRST\nsecond\nthird\nfourth\nfifth\nSIXTH\n'));
   await wt.commit('Later independent edit', author);
-  await wt.write('wiki/note.md', 'FIRST\nsecond\nthird\nfourth\nFIFTH\nSIXTH\n');
+  await wt.write('wiki/note.md', note('FIRST\nsecond\nthird\nfourth\nFIFTH\nSIXTH\n'));
   await wt.revert(change, ['assets/file.bin', 'wiki/note.md']);
   expect(await readFile(join(wt.path, 'assets/file.bin'))).toEqual(original);
-  expect(await wt.read('wiki/note.md')).toBe('first\nsecond\nthird\nfourth\nFIFTH\nSIXTH\n');
-  expect(await wt.read('wiki/keep.md')).toBe('after\n');
+  expect(await wt.read('wiki/note.md')).toBe(note('first\nsecond\nthird\nfourth\nFIFTH\nSIXTH\n'));
+  expect(await wt.read('wiki/keep.md')).toBe(note('after\n'));
   const diff = await wt.diff();
   expect(diff.files).toEqual([{ status: 'M', path: 'assets/file.bin' }, { status: 'M', path: 'wiki/note.md' }]);
   expect(diff.patch).toContain('GIT binary patch');
@@ -173,9 +191,9 @@ it('applies a path-limited inverse atop later edits, including binary data and i
 it('reports inverse conflicts and preserves failed commits beyond disposal and reopening', async () => {
   const { repo, dir } = await fixture();
   const wt = await repo.createWorktree('failed');
-  await wt.write('wiki/note.md', 'original\n'); await wt.commit('Original', author);
-  await wt.write('wiki/note.md', 'change\n'); const change = (await wt.commit('Change', author))!;
-  await wt.write('wiki/note.md', 'later\n'); const last = (await wt.commit('Later', author))!;
+  await wt.write('wiki/note.md', note('original\n')); await wt.commit('Original', author);
+  await wt.write('wiki/note.md', note('change\n')); const change = (await wt.commit('Change', author))!;
+  await wt.write('wiki/note.md', note('later\n')); const last = (await wt.commit('Later', author))!;
   await expect(wt.revert(change)).rejects.toMatchObject({ status: 409, code: 'revert_conflict', message: expect.stringContaining('current worktree') });
   expect(await wt.preserveFailed('failed-job')).toBe(last);
   await wt.dispose();
@@ -186,7 +204,7 @@ it('reports inverse conflicts and preserves failed commits beyond disposal and r
 it('confines compare, blame, inverse paths and worktree diffs', async () => {
   const { repo, dir } = await fixture();
   const wt = await repo.createWorktree('boundary');
-  await wt.write('wiki/new.md', 'new\n');
+  await wt.write('wiki/new.md', note('new\n'));
   const untracked = await wt.diff();
   expect(untracked.files).toEqual([{ status: 'A', path: 'wiki/new.md' }]);
   const sha = (await wt.commit('New', author))!;
@@ -233,14 +251,14 @@ it('retains interrupted committed work before boot recovery removes its branch a
   const main = await repo.headSha();
   const interrupted = await repo.createWorktree('interrupted-job');
   interrupted.setCommitMetadata({ ...metadata, jobId: 'interrupted-job' });
-  await interrupted.write('wiki/interrupted.md', 'committed intent\n');
+  await interrupted.write('wiki/interrupted.md', note('committed intent\n'));
   const sha = (await interrupted.commit('Interrupted', author))!;
-  await interrupted.write('wiki/interrupted.md', 'uncommitted draft\n');
+  await interrupted.write('wiki/interrupted.md', note('uncommitted draft\n'));
   const reopened = await KnowledgeRepo.open(loadConfig({ NODE_ENV: 'test', DATA_DIR: dir }), pino({ level: 'silent' }));
   expect(await reopened.headSha()).toBe(main);
   expect(await reopened.resolveRef('refs/wiki/failed/interrupted-job')).toBe(sha);
   expect((await reopened.show('refs/wiki/failed/interrupted-job')).commit.trailers['Wiki-Job']).toBe('interrupted-job');
-  expect(await reopened.readFile('wiki/interrupted.md', 'refs/wiki/failed/interrupted-job')).toBe('committed intent\n');
+  expect(await reopened.readFile('wiki/interrupted.md', 'refs/wiki/failed/interrupted-job')).toBe(note('committed intent\n'));
   const replacement = await reopened.createWorktree('interrupted-job');
   expect(await replacement.read('wiki/interrupted.md')).toBeNull();
   await replacement.dispose();

@@ -77,7 +77,7 @@ main과 과거 커밋의 읽기는 작업 디스크 파일을 직접 읽지 않�
 ```
 
 - `raw/<sha256>/`는 불변 원문 파일과 추출 마크다운을 담는다. 원문 수집 경로와 해시 규칙은 [수집](ingestion.md)을 따른다.
-- `wiki/`는 도니가 유지하는 노트를 담으며, frontmatter, 태그, 위키링크를 사용해 Obsidian 볼트로 열 수 있다. 도메인과 공유 영역의 배치, 전체·도메인 허브의 역할은 [지식 도메인 구조](knowledge-domains.md#노트-배치와-탐색)를 따른다.
+- `wiki/`는 도니가 유지하는 노트를 담으며, [노트 메타데이터](note-metadata.md)의 frontmatter와 태그, 위키링크를 사용해 Obsidian 볼트로 열 수 있다. 도메인과 공유 영역의 배치, 전체·도메인 허브의 역할은 [지식 도메인 구조](knowledge-domains.md#노트-배치와-탐색)를 따른다.
 - `journal/YYYY-MM-DD.md`는 꿈꾸기가 날짜별로 쓰는 일기다. LLM Wiki 표준의 `log.md`를 대신하며, 세부 변경 이력은 git 커밋 이력이 담는다.
 - `MEMORY.md`는 [메모리 파일의 문맥 제공 규칙](#메모리-파일의-문맥-제공-규칙)을 따르는 파일이다.
 - 지식 저장소 안의 schema는 도니의 [작성 규칙](writing-rules.md)을 담으며, 루트와 도메인 schema의 적용 범위는 [지식 도메인 구조](knowledge-domains.md#도메인-schema)를 따른다. 엔진 저장소의 작업 규칙 파일과 구분한다.
@@ -102,6 +102,7 @@ Obsidian 규칙의 LiveSync는 사용하지 않으며, git 동기화로 대체�
 - [엔진 아키텍처](architecture.md)는 지식 저장소 클론과 작업 워크트리의 영속 위치를 설명한다.
 - [지식 도메인 구조](knowledge-domains.md)는 분야별 배치와 공유 정본, 허브·schema 및 기존 저장소의 수동 전환을 설명한다.
 - [작성 규칙](writing-rules.md)은 지식 저장소 안의 문서 작성 기준을 설명한다.
+- [노트 메타데이터](note-metadata.md)는 지식 노트의 공통 frontmatter 표준을 설명한다.
 - [쓰기 흐름](write-flow.md)과 [꿈꾸기](dreaming.md)는 지식 변경과 정리 절차를 설명한다.
 - [MCP](mcp.md)는 지식의 읽기·쓰기·검색 인터페이스를 설명한다.
 - [RAG](rag.md)는 지식 저장소에서 검색 인덱스를 만드는 방식을 설명한다.

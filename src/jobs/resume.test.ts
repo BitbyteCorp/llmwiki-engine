@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import pino from 'pino';
+import matter from 'gray-matter';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AclService } from '../acl/acl.service.js';
 import { AgentService } from '../agent/agent.service.js';
@@ -33,6 +34,10 @@ const git = promisify(execFile);
 const author = { name: 'Resume Requester', email: 'resume@example.test' };
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => { for (const dispose of cleanup.splice(0).reverse()) await dispose(); });
+
+function note(body: string): string {
+  return `---\ntype: note\naliases: []\ndescription: Durable knowledge retained across retries.\ntags: [knowledge]\n---\n${body}`;
+}
 
 async function fixture(responder: FakeResponder) {
   // The shared provider lives outside the production TypeScript root.
@@ -330,23 +335,23 @@ describe('write job continuation with real Dony and git', () => {
       if (lane.includes(':subagent:')) {
         const usage = { inputTokens: 30, cachedInputTokens: 10, outputTokens: 8, reasoningTokens: 2 };
         return childTurn++ === 0
-          ? { functionCalls: [{ name: 'write_file', arguments: { path: 'wiki/child.md', content: 'delegated fact\n' } }], usage }
+          ? { functionCalls: [{ name: 'write_file', arguments: { path: 'wiki/child.md', content: note('delegated fact\n') } }], usage }
           : { text: 'Child finished', usage, status: failure === 'child' ? 'failed' : 'completed' };
       }
       if (lane.includes(':conflict:')) {
         const usage = { inputTokens: 50, cachedInputTokens: 20, outputTokens: 10, reasoningTokens: 3 };
         return conflictTurn++ === 0
-          ? { functionCalls: [{ name: 'write_file', arguments: { path: 'wiki/shared.md', content: 'requested fact\nconcurrent fact\n' } }], usage }
+          ? { functionCalls: [{ name: 'write_file', arguments: { path: 'wiki/shared.md', content: note('requested fact\nconcurrent fact\n') } }], usage }
           : { text: 'Conflict resolved', usage, status: failure === 'conflict' ? 'failed' : 'completed' };
       }
       const usage = { inputTokens: 100, cachedInputTokens: 50, outputTokens: 20, reasoningTokens: 4 };
       const turn = parentTurn++;
       if (turn === 0) return { functionCalls: [{ name: 'spawn_subagent', arguments: { name: 'Writer', task: 'Record delegated fact', files: ['wiki/child.md'] } }], usage };
       if (turn === 1) return { functionCalls: [{ name: 'wait_subagents', arguments: {} }], usage };
-      if (turn === 2) return { functionCalls: [{ name: 'write_file', arguments: { path: 'wiki/shared.md', content: 'requested fact\n' } }], usage };
+      if (turn === 2) return { functionCalls: [{ name: 'write_file', arguments: { path: 'wiki/shared.md', content: note('requested fact\n') } }], usage };
       const concurrent = await f.repo.createWorktree('concurrent');
       try {
-        await concurrent.write('wiki/shared.md', 'concurrent fact\n');
+        await concurrent.write('wiki/shared.md', note('concurrent fact\n'));
         await concurrent.commit('Concurrent fact', author);
         await f.repo.withMergeLock(() => concurrent.fastForwardMain());
       } finally {
@@ -355,7 +360,7 @@ describe('write job continuation with real Dony and git', () => {
       return { text: 'Record combined knowledge', usage };
     });
     const baseline = await f.repo.createWorktree('baseline');
-    await baseline.write('wiki/shared.md', 'original fact\n');
+    await baseline.write('wiki/shared.md', note('original fact\n'));
     await baseline.commit('Baseline shared fact', author);
     await f.repo.withMergeLock(() => baseline.fastForwardMain());
     await baseline.dispose();
@@ -365,12 +370,12 @@ describe('write job continuation with real Dony and git', () => {
     const usage = { inputTokens: 560, cachedInputTokens: 260, outputTokens: 116, reasoningTokens: 26 };
     expect(result.status).toBe(failure === 'conflict' ? 'failed' : 'succeeded');
     if (failure === 'conflict') {
-      expect(await f.repo.readFile('wiki/shared.md')).toBe('concurrent fact\n');
+      expect(matter((await f.repo.readFile('wiki/shared.md'))!).content).toBe('concurrent fact\n');
       expect(f.jobs.events(job.id).at(-1)).toMatchObject({ phase: 'failed', detail: { usage, error: result.error } });
       expect(f.logs.find(log => log.msg === 'Write job failed' && log.jobId === job.id)).toMatchObject({ usage });
     } else {
-      expect(await f.repo.readFile('wiki/child.md')).toBe('delegated fact\n');
-      expect(await f.repo.readFile('wiki/shared.md')).toBe('requested fact\nconcurrent fact\n');
+      expect(matter((await f.repo.readFile('wiki/child.md'))!).content).toBe('delegated fact\n');
+      expect(matter((await f.repo.readFile('wiki/shared.md'))!).content).toBe('requested fact\nconcurrent fact\n');
       expect(f.jobs.events(job.id).at(-1)).toMatchObject({ phase: 'done', detail: { usage } });
       expect(f.logs.find(log => log.msg === 'Write job completed' && log.jobId === job.id)).toMatchObject({ usage });
     }
@@ -386,7 +391,7 @@ describe('write job continuation with real Dony and git', () => {
     let retrying = false;
     let retryTurns = 0;
     const path = 'wiki/uncommitted.md';
-    const content = '# Preserved knowledge\nThe completed tool turn survives provider failure.\n';
+    const content = note('# Preserved knowledge\nThe completed tool turn survives provider failure.\n');
     const f = await fixture((_request, index) => {
       if (!retrying) {
         if (index === 0) return { functionCalls: [{ name: 'write_file', arguments: { path, content }, call_id: 'before-failure' }], usage: { inputTokens: 100, cachedInputTokens: 40, outputTokens: 20, reasoningTokens: 5 } };
@@ -421,7 +426,7 @@ describe('write job continuation with real Dony and git', () => {
     const requests = f.fake.requests.filter(request => request.path.endsWith('/responses'));
     expect(output(requests[firstRetryRequest]!, 'before-failure')).toEqual({ path, written: true });
     expect(output(requests[firstRetryRequest + 1]!, 'restored-file')).toMatchObject({ path, content });
-    expect(await f.repo.readFile(path)).toBe(content);
+    expect(matter((await f.repo.readFile(path))!).content).toBe('# Preserved knowledge\nThe completed tool turn survives provider failure.\n');
     expect((await f.repo.show(succeeded.commits[0]!)).commit.trailers['Wiki-Job']).toBe(retry.id);
     expect(f.jobs.get(original.id)).toEqual(failed);
     expect(f.checkpoints.get(`job:${original.id}`)).toBeUndefined();
@@ -432,7 +437,7 @@ describe('write job continuation with real Dony and git', () => {
     let retrying = false;
     let retryTurns = 0;
     const path = 'wiki/already-committed.md';
-    const content = '# Prior commit\nThis work must not be recreated or lost.\n';
+    const content = note('# Prior commit\nThis work must not be recreated or lost.\n');
     const f = await fixture((_request, index) => {
       if (!retrying) {
         if (index === 0) return { name: 'write_file', arguments: { path, content } };
@@ -449,7 +454,7 @@ describe('write job continuation with real Dony and git', () => {
     expect(failed.commits).toHaveLength(1);
     const priorCommit = failed.commits[0]!;
     expect(await f.repo.readFile(path)).toBeNull();
-    expect(await f.repo.readFile(path, `refs/wiki/failed/${original.id}`)).toBe(content);
+    expect(matter((await f.repo.readFile(path, `refs/wiki/failed/${original.id}`))!).content).toBe('# Prior commit\nThis work must not be recreated or lost.\n');
     f.checkpoints.delete(`job:${original.id}`);
     const firstRetryRequest = f.fake.requests.filter(request => request.path.endsWith('/responses')).length;
     retrying = true;
@@ -460,9 +465,9 @@ describe('write job continuation with real Dony and git', () => {
     const succeeded = await settled(f.jobs, retry.id);
     expect(succeeded.status).toBe('succeeded');
     const requests = f.fake.requests.filter(request => request.path.endsWith('/responses'));
-    expect(output(requests[firstRetryRequest + 1]!, 'committed-file')).toMatchObject({ path, content });
+    expect(output(requests[firstRetryRequest + 1]!, 'committed-file')).toMatchObject({ path, content: expect.stringContaining('# Prior commit\nThis work must not be recreated or lost.\n') });
     expect(succeeded.commits).toContain(priorCommit);
-    expect(await f.repo.readFile(path)).toBe(content);
+    expect(matter((await f.repo.readFile(path))!).content).toBe('# Prior commit\nThis work must not be recreated or lost.\n');
     await git('git', ['merge-base', '--is-ancestor', priorCommit, 'main'], { cwd: join(f.dir, 'knowledge') });
     expect((await f.repo.show(priorCommit)).commit.trailers['Wiki-Job']).toBe(original.id);
     expect(f.checkpoints.get(`job:${retry.id}`)).toBeUndefined();
@@ -472,7 +477,7 @@ describe('write job continuation with real Dony and git', () => {
     let retrying = false;
     let retryTurns = 0;
     const path = 'wiki/interrupted.md';
-    const content = '# Interrupted knowledge\nUncommitted work survives engine startup.\n';
+    const content = note('# Interrupted knowledge\nUncommitted work survives engine startup.\n');
     const f = await fixture((_request, index) => {
       if (!retrying) {
         if (index === 0) return { name: 'write_file', arguments: { path, content }, call_id: 'interrupted-write' };
@@ -508,7 +513,7 @@ describe('write job continuation with real Dony and git', () => {
     const requests = f.fake.requests.filter(request => request.path.endsWith('/responses'));
     expect(output(requests[firstRetryRequest]!, 'interrupted-write')).toEqual({ path, written: true });
     expect(output(requests[firstRetryRequest + 1]!, 'recovered-file')).toMatchObject({ path, content });
-    expect(await reopenedRepo.readFile(path)).toBe(content);
+    expect(matter((await reopenedRepo.readFile(path))!).content).toBe('# Interrupted knowledge\nUncommitted work survives engine startup.\n');
     expect(f.checkpoints.get(`job:${original.id}`)).toBeUndefined();
     expect(f.checkpoints.get(`job:${retry.id}`)).toBeUndefined();
   }, 20000);
@@ -516,7 +521,7 @@ describe('write job continuation with real Dony and git', () => {
   it('keeps the failed job checkpoint when persisting the retry event fails atomically', async () => {
     let retrying = false;
     const path = 'wiki/atomic-retry.md';
-    const content = '# Atomic retry\nA failed enqueue must leave this work retryable.\n';
+    const content = note('# Atomic retry\nA failed enqueue must leave this work retryable.\n');
     const f = await fixture((_request, index) => {
       if (retrying) return 'Publish atomically retried knowledge';
       if (index === 0) return { name: 'write_file', arguments: { path, content }, call_id: 'atomic-write' };
@@ -547,7 +552,7 @@ describe('write job continuation with real Dony and git', () => {
     expect(f.checkpoints.get(`job:${retry.id}`)).toEqual(checkpoint);
     f.jobs.start();
     expect((await settled(f.jobs, retry.id)).status).toBe('succeeded');
-    expect(await f.repo.readFile(path)).toBe(content);
+    expect(matter((await f.repo.readFile(path))!).content).toBe('# Atomic retry\nA failed enqueue must leave this work retryable.\n');
     expect(f.checkpoints.get(`job:${retry.id}`)).toBeUndefined();
   }, 20000);
 });

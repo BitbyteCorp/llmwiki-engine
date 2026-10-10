@@ -49,16 +49,11 @@
 
 ### Frontmatter
 
-- Frontmatter는 최소한으로 유지하며 Obsidian에서 유용한 속성만 둔다.
-- 노트의 유지·관리 맥락을 눈에 보이게 남길 필요가 있으면 `updated`를 둔다.
-- 운영 규칙이나 검토 기준을 나타내는 노트에는 `importance`를 둔다.
-- `importance`의 값은 `high`, `medium`, `low`만 사용한다.
-- 폴더와 태그가 이미 같은 정보를 표현하면 `category`, `domain`, `status`와 같은 중복 분류 속성을 추가하지 않는다.
-- `belongs_to`, `has`, `related`, `related_to`와 같은 사용자 정의 관계 속성을 추가하지 않는다.
+Frontmatter의 필수·선택 속성, 엔진 자동 속성, 허용 값과 적용 범위는 [노트 메타데이터](note-metadata.md)를 따른다. 분야별 schema도 이 공통 표준을 완화하지 않는다.
 
 ### 태그 정책
 
-- 태그는 `planning`과 같은 영어 소문자로 작성한다.
+- 태그는 `planning`, `decision-making`과 같은 영어 소문자 kebab-case로 작성한다.
 - 태그는 지식 저장소 전반의 노트를 연결할 수 있도록 일반적이고 재사용 가능한 수준으로 유지한다.
 - `v2`, `prototype-v2`, `incident-2026-10-10`과 같은 버전·일회성 작업 태그나 임시 프로젝트 상태 라벨을 사용하지 않는다.
 - 버전, 실험 단계, 주장 범위, 프로젝트별 결정 맥락은 태그가 아니라 노트 제목이나 본문에 적는다.
@@ -67,7 +62,7 @@
 
 ### 분야별 속성
 
-논문 노트의 출처·읽기 상태·버전 속성 규칙은 공통 schema가 아니라 [연구 도메인 schema 예시](knowledge-domains.md#연구-도메인-schema-예시)에 둔다. 다른 분야의 전용 속성도 그 도메인의 schema에서 정한다.
+논문의 외부 식별자와 분야 전용 속성 규칙은 [연구 도메인 schema 예시](knowledge-domains.md#연구-도메인-schema-예시)에 둔다. 다른 분야의 전용 속성도 공통 [노트 메타데이터](note-metadata.md)를 확장하는 범위에서 그 도메인의 schema로 정한다.
 
 ### 사실성과 읽기 맥락
 
@@ -85,5 +80,6 @@
 
 - [지식 저장소](knowledge-repository.md)는 작성 규칙을 담는 schema와 노트 배치를 설명한다.
 - [지식 도메인 구조](knowledge-domains.md)는 노트 경로와 공유 정본, 허브 및 분야별 schema를 설명한다.
+- [노트 메타데이터](note-metadata.md)는 공통 frontmatter 표준과 엔진 자동 속성을 설명한다.
 - [쓰기 흐름](write-flow.md)은 검색 후 기존 노트를 확장하거나 새 노트를 만드는 절차를 설명한다.
 - [꿈꾸기](dreaming.md)는 이 규칙을 적용해 누적된 지식을 정리하는 작업을 설명한다.

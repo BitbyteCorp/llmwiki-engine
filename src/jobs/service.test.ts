@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import pino from 'pino';
+import matter from 'gray-matter';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AclService } from '../acl/acl.service.js';
 import { AuditService } from '../audit/audit.service.js';
@@ -15,6 +16,10 @@ import { openDb, runMigrations, type Db } from '../db/index.js';
 import { EventsService } from '../events/events.service.js';
 import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
 import type { AgentService } from '../agent/agent.service.js';
+import type { RunAgentOptions } from '../agent/agent.types.js';
+import { makeWorktreeTools } from '../agent/worktree.js';
+import { metadataDate, validateNoteMetadata } from '../knowledge/note-metadata.js';
+import type { SearchService } from '../rag/search.service.js';
 import type { IndexerService } from '../rag/indexer.service.js';
 import type { WriteJob } from './write-job.types.js';
 import { WriteJobsRepository } from './write-jobs.repository.js';
@@ -24,10 +29,15 @@ const git = promisify(execFile);
 const author = { name: 'Requesting User', email: 'user@example.com' };
 const fixtures: Array<{ dir: string; db: Db; jobs: WriteJobsService }> = [];
 
+function note(body: string): string {
+  return `---\ntype: note\naliases: [Durable knowledge]\ndescription: A durable fact for future lookup.\ntags: [knowledge]\nrelated: ["[[Existing note]]"]\nsource: [https://example.com/evidence]\nconfidence: high\nimportance: medium\ncustom: keep-me\n---\n${body}`;
+}
+
 async function fixture(jobsAutostart = true) {
   const dir = await mkdtemp(join(tmpdir(), 'llmwiki-jobs-'));
   const config = loadConfig({ NODE_ENV: 'test', DATA_DIR: dir, JOBS_AUTOSTART: String(jobsAutostart) });
-  const log = pino({ level: 'silent' });
+  const logs: Record<string, unknown>[] = [];
+  const log = pino({ level: 'info' }, { write: line => { logs.push(JSON.parse(line)); } });
   const db = openDb(':memory:');
   runMigrations(db);
   db.prepare('INSERT INTO users(id,email,name,role,created_at) VALUES (1,?,?,?,?)')
@@ -35,10 +45,13 @@ async function fixture(jobsAutostart = true) {
   const repo = await KnowledgeRepo.open(config, log);
   const agent = {
     runWrite: vi.fn(async (_job: WriteJob, wt: Worktree) => {
-      await wt.write('wiki/result.md', 'saved knowledge\n');
+      await wt.write('wiki/result.md', note('saved knowledge\n'));
       return { summary: 'Save useful knowledge\nDetails of the update.' };
     }),
     resolveConflicts: vi.fn(async () => {}),
+    runAgent: vi.fn(async (_options: RunAgentOptions) => ({ text: 'Metadata unchanged', toolCalls: 0 })),
+    baseInstructions: vi.fn(async () => 'Write durable knowledge.'),
+    worktreeTools: vi.fn((...args: Parameters<AgentService['worktreeTools']>) => makeWorktreeTools({} as SearchService, args[0], args[1], acl, args[2])),
   } as unknown as AgentService;
   const indexer = {
     syncToHead: vi.fn(async () => ({ indexedSha: await repo.headSha(), changedFiles: 1 })),
@@ -47,7 +60,7 @@ async function fixture(jobsAutostart = true) {
   const events = new EventsService();
   const acl = new AclService(db, users, new AuditService(db));
   const jobs = new WriteJobsService(new WriteJobsRepository(db), agent, indexer, repo, users, log, events, acl, undefined, config);
-  const ctx = { config, db, log, repo, agent, indexer, users, jobs, events };
+  const ctx = { config, db, log, logs, repo, agent, indexer, users, jobs, events };
   fixtures.push({ dir, db, jobs });
   return { dir, ctx, jobs };
 }
@@ -187,7 +200,7 @@ describe('WriteJobsService with real git and a Dony double', () => {
     });
     vi.mocked(ctx.indexer.syncToHead).mockImplementation(async () => {
       observed.push(jobs.list()[0]!.status);
-      expect(await ctx.repo.readFile('wiki/result.md')).toBe('saved knowledge\n');
+      expect(matter((await ctx.repo.readFile('wiki/result.md'))!).content).toBe('saved knowledge\n');
       return { indexedSha: await ctx.repo.headSha(), changedFiles: 2 };
     });
     jobs.start();
@@ -227,11 +240,48 @@ describe('WriteJobsService with real git and a Dony double', () => {
     jobs.start();
     const result = await completed(jobs, jobs.submit({ userId: 1, input: 'merge', source: 'mcp' }).id);
     expect(result.status).toBe('succeeded');
-    expect(await ctx.repo.readFile('wiki/shared.md')).toBe('requested update\nconcurrent update\n');
+    expect(matter((await ctx.repo.readFile('wiki/shared.md'))!).content).toBe('requested update\nconcurrent update\n');
     const merge = await ctx.repo.show(result.mergeSha!);
     expect(merge.commit.parents).toHaveLength(2);
     expect(merge.commit.authorEmail).toBe(author.email);
     expect(result.commits).toContain(result.mergeSha);
+  });
+
+  it.each([false, true])('reports conflict-created metadata issues without another repair (initially invalid: %s)', async initiallyInvalid => {
+    const { ctx, jobs } = await fixture();
+    await advance(ctx.repo, 'metadata-conflict-baseline', note('original fact\n'));
+    vi.mocked(ctx.agent.runWrite).mockImplementation(async (_job, wt) => {
+      await wt.write('wiki/shared.md', initiallyInvalid ? 'requested fact\n' : note('requested fact\n'));
+      await advance(ctx.repo, 'metadata-conflict-concurrent', note('concurrent fact\n'));
+      return { summary: 'Combine concurrent knowledge' };
+    });
+    vi.mocked(ctx.agent.runAgent).mockImplementation(async options => {
+      await options.tools.find(tool => tool.name === 'write_file')!.run({
+        path: 'wiki/shared.md', content: note('requested fact\n'),
+      });
+      return { text: 'Metadata repaired before merge', toolCalls: 1 };
+    });
+    vi.mocked(ctx.agent.resolveConflicts).mockImplementation(async (wt, paths) => {
+      expect(paths).toEqual(['wiki/shared.md']);
+      await wt.write('wiki/shared.md', 'requested fact\nconcurrent fact\n');
+    });
+    jobs.start();
+    const result = await completed(jobs, jobs.submit({ userId: 1, input: 'combine', source: 'mcp' }).id);
+    expect(result.status).toBe('succeeded');
+    expect(ctx.agent.resolveConflicts).toHaveBeenCalledTimes(1);
+    expect(ctx.agent.runAgent).toHaveBeenCalledTimes(initiallyInvalid ? 1 : 0);
+    expect(matter((await ctx.repo.readFile('wiki/shared.md'))!).content).toBe('requested fact\nconcurrent fact\n');
+    const metadataIssues = [{
+      path: 'wiki/shared.md',
+      issues: expect.arrayContaining([
+        expect.objectContaining({ field: 'type' }),
+        expect.objectContaining({ field: 'aliases' }),
+        expect.objectContaining({ field: 'description' }),
+        expect.objectContaining({ field: 'tags' }),
+      ]),
+    }];
+    expect(jobs.events(result.id).at(-1)).toMatchObject({ phase: 'done', detail: { metadataIssues } });
+    expect(ctx.logs.find(log => log.msg === 'Write job completed' && log.jobId === result.id)).toMatchObject({ metadataIssues });
   });
 
   it('rejects unresolved conflict markers without advancing main', async () => {
@@ -280,7 +330,7 @@ describe('WriteJobsService with real git and a Dony double', () => {
     const result = await completed(jobs, jobs.submit({ userId: 1, input: 'save', source: 'mcp' }).id);
     expect(result.status).toBe('succeeded');
     expect(result.error).toBeNull();
-    expect(await ctx.repo.readFile('wiki/result.md')).toBe('saved knowledge\n');
+    expect(matter((await ctx.repo.readFile('wiki/result.md'))!).content).toBe('saved knowledge\n');
   });
 
   it('allows a no-change job without creating an empty user commit', async () => {
@@ -353,5 +403,136 @@ describe('WriteJobsService with real git and a Dony double', () => {
     expect(result.status).toBe('failed');
     expect(result.error).toContain('no longer exists');
     expect(ctx.agent.runWrite).not.toHaveBeenCalled();
+  });
+
+  it('stamps valid agent-created notes without changing metadata or body or invoking repair', async () => {
+    const { ctx, jobs } = await fixture();
+    const body = '# Durable knowledge\r\n\r\nExact body spacing.  \r\n';
+    vi.mocked(ctx.agent.runWrite).mockImplementation(async (_job, wt) => {
+      await wt.write('wiki/result.md', note(body));
+      return { summary: 'Save metadata-rich knowledge' };
+    });
+    jobs.start();
+    const result = await completed(jobs, jobs.submit({ userId: 1, input: 'save', source: 'mcp' }).id);
+    expect(result.status).toBe('succeeded');
+    const content = (await ctx.repo.readFile('wiki/result.md'))!;
+    const parsed = matter(content);
+    expect(parsed.content).toBe(body);
+    expect(parsed.data).toMatchObject({
+      ...matter(note(body)).data,
+      author: [author.name],
+    });
+    expect(metadataDate(parsed.data['date created'])).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(metadataDate(parsed.data['date modified'])).toBe(metadataDate(parsed.data['date created']));
+    expect(validateNoteMetadata('wiki/result.md', content)).toEqual([]);
+    expect(ctx.agent.runAgent).not.toHaveBeenCalled();
+    expect(jobs.events(result.id).at(-1)?.detail).not.toHaveProperty('metadataIssues');
+  });
+
+  it('invokes repair exactly once, commits the valid result and includes repair usage', async () => {
+    const { ctx, jobs } = await fixture();
+    const body = '# Useful fact\nKeep this knowledge.\n';
+    vi.mocked(ctx.agent.runWrite).mockImplementation(async (_job, wt, _author, _user, options) => {
+      options?.onUsage?.({ inputTokens: 10, cachedInputTokens: 2, outputTokens: 3, reasoningTokens: 1 });
+      await wt.write('wiki/result.md', body);
+      return { summary: 'Save useful fact' };
+    });
+    vi.mocked(ctx.agent.runAgent).mockImplementation(async options => {
+      expect(JSON.parse(options.input as string).notes).toEqual([{
+        path: 'wiki/result.md',
+        issues: expect.arrayContaining([expect.objectContaining({ field: 'type' })]),
+      }]);
+      options.onUsage?.({ inputTokens: 7, cachedInputTokens: 1, outputTokens: 2, reasoningTokens: 1 });
+      await options.tools.find(tool => tool.name === 'write_file')!.run({ path: 'wiki/result.md', content: note(body) });
+      return { text: 'Repaired', toolCalls: 1 };
+    });
+    jobs.start();
+    const result = await completed(jobs, jobs.submit({ userId: 1, input: 'save', source: 'mcp' }).id);
+    expect(result.status).toBe('succeeded');
+    expect(ctx.agent.runAgent).toHaveBeenCalledTimes(1);
+    expect(result.commits).toHaveLength(2);
+    const content = (await ctx.repo.readFile('wiki/result.md'))!;
+    expect(matter(content).content).toBe(body);
+    expect(validateNoteMetadata('wiki/result.md', content)).toEqual([]);
+    const usage = { inputTokens: 17, cachedInputTokens: 3, outputTokens: 5, reasoningTokens: 2 };
+    expect(jobs.events(result.id).at(-1)).toMatchObject({ phase: 'done', detail: { usage } });
+    expect(jobs.events(result.id).at(-1)?.detail).not.toHaveProperty('metadataIssues');
+    expect(ctx.logs.find(log => log.msg === 'Write job completed' && log.jobId === result.id)).toMatchObject({ usage, metadataIssues: [] });
+  });
+
+  it.each(['invalid', 'error'] as const)('merges preserved knowledge and records remaining issues after one %s repair', async outcome => {
+    const { ctx, jobs } = await fixture();
+    const body = '# Useful fact\nKnowledge survives imperfect metadata.\n';
+    vi.mocked(ctx.agent.runWrite).mockImplementation(async (_job, wt) => {
+      await wt.write('wiki/result.md', body);
+      return { summary: 'Preserve useful fact' };
+    });
+    vi.mocked(ctx.agent.runAgent).mockImplementation(async options => {
+      options.onUsage?.({ inputTokens: 7, cachedInputTokens: 1, outputTokens: 2, reasoningTokens: 1 });
+      if (outcome === 'error') throw new Error('Repair provider unavailable');
+      await options.tools.find(tool => tool.name === 'write_file')!.run({
+        path: 'wiki/result.md', content: `---\ntype: note\n---\n${body}`,
+      });
+      return { text: 'Incomplete repair', toolCalls: 1 };
+    });
+    jobs.start();
+    const result = await completed(jobs, jobs.submit({ userId: 1, input: 'save', source: 'mcp' }).id);
+    expect(result.status).toBe('succeeded');
+    expect(result.error).toBeNull();
+    expect(ctx.agent.runAgent).toHaveBeenCalledTimes(1);
+    expect(result.commits).toHaveLength(outcome === 'invalid' ? 2 : 1);
+    expect(matter((await ctx.repo.readFile('wiki/result.md'))!).content).toBe(body);
+    const metadataIssues = [{
+      path: 'wiki/result.md',
+      issues: expect.arrayContaining([expect.objectContaining({ field: 'description' }), expect.objectContaining({ field: 'tags' })]),
+    }];
+    const usage = { inputTokens: 7, cachedInputTokens: 1, outputTokens: 2, reasoningTokens: 1 };
+    expect(jobs.events(result.id).at(-1)).toMatchObject({ phase: 'done', detail: { metadataIssues, usage } });
+    expect(ctx.logs.find(log => log.msg === 'Write job completed' && log.jobId === result.id)).toMatchObject({ metadataIssues, usage });
+    if (outcome === 'error') {
+      expect(jobs.events(result.id)).toContainEqual(expect.objectContaining({
+        phase: 'editing', detail: { metadataRepair: 'error', error: 'Repair provider unavailable' },
+      }));
+    }
+  });
+
+  it('does not repair schema, raw, journal, root metadata or deleted notes', async () => {
+    const { ctx, jobs } = await fixture();
+    const seed = await ctx.repo.createWorktree('deleted-note-baseline');
+    await seed.write('wiki/deleted.md', 'legacy invalid note\n');
+    await seed.commit('Seed legacy note', author);
+    await ctx.repo.withMergeLock(() => seed.fastForwardMain());
+    await seed.dispose();
+    vi.mocked(ctx.agent.runWrite).mockImplementation(async (_job, wt) => {
+      await wt.remove('wiki/deleted.md');
+      await wt.write('wiki/domain/AGENTS.md', '# Domain writing rules\n');
+      await wt.write('AGENTS.md', '# Global writing rules\n');
+      await wt.write('raw/source.md', '# Original source\n');
+      await wt.write('journal/2026-10-10.md', '# Journal\n');
+      return { summary: 'Update non-note files' };
+    });
+    jobs.start();
+    const result = await completed(jobs, jobs.submit({ userId: 1, input: 'save', source: 'mcp' }).id);
+    expect(result.status).toBe('succeeded');
+    expect(ctx.agent.runAgent).not.toHaveBeenCalled();
+    expect(await ctx.repo.readFile('wiki/deleted.md')).toBeNull();
+    expect(await ctx.repo.readFile('wiki/domain/AGENTS.md')).toBe('# Domain writing rules\n');
+    expect(await ctx.repo.readFile('raw/source.md')).toBe('# Original source\n');
+    expect(await ctx.repo.readFile('journal/2026-10-10.md')).toBe('# Journal\n');
+    expect(jobs.events(result.id).at(-1)?.detail).not.toHaveProperty('metadataIssues');
+  });
+
+  it('never sends engine-owned field issues to the repair model', async () => {
+    const { ctx, jobs } = await fixture();
+    vi.mocked(ctx.agent.runWrite).mockImplementation(async (_job, wt) => {
+      await wt.write('wiki/result.md', `---\ntype: note\naliases: []\ndescription: Preserve a valid knowledge record.\ntags: [knowledge]\nauthor: invalid-legacy-author\ndate created: invalid-legacy-date\n---\n# Preserved knowledge\n`);
+      return { summary: 'Keep engine ownership separate' };
+    });
+    jobs.start();
+    const result = await completed(jobs, jobs.submit({ userId: 1, input: 'save', source: 'mcp' }).id);
+    expect(result.status).toBe('succeeded');
+    expect(ctx.agent.runAgent).not.toHaveBeenCalled();
+    expect(matter((await ctx.repo.readFile('wiki/result.md'))!).content).toBe('# Preserved knowledge\n');
+    expect(jobs.events(result.id).at(-1)?.detail).not.toHaveProperty('metadataIssues');
   });
 });

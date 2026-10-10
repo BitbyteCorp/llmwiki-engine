@@ -5,7 +5,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { setImmediate } from 'node:timers/promises';
 import pino from 'pino';
-import { afterEach, describe, expect, it } from 'vitest';
+import matter from 'gray-matter';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AgentService } from '../../src/agent/agent.service.js';
 import type { AgentCheckpoint, AgentTool, TokenUsage } from '../../src/agent/agent.types.js';
 import { SubagentPool, type SubagentSnapshot } from '../../src/agent/subagents.js';
@@ -27,6 +28,7 @@ const releaseGates: Array<() => void> = [];
 afterEach(async () => {
   for (const release of releaseGates.splice(0)) release();
   for (const dispose of cleanup.splice(0).reverse()) await dispose();
+  vi.useRealTimers();
 });
 
 function gate() {
@@ -704,6 +706,9 @@ describe('runWrite subagent integration', () => {
   });
 
   it('waits for both delegated writes, emits lifecycle phases, and commits their real worktree changes', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-10T00:00:00.000Z'));
+    const noteContent = (name: string) => `---\ntype: note\naliases: []\ndescription: "${name}의 독립 지식을 기록한다."\nauthor: ["Tester"]\ndate created: 2026-10-10\ndate modified: 2026-10-10\ntags: [knowledge-management]\n---\n# ${name}\n독립 지식을 기록한다.\n`;
     const { agent, wt, repo, author } = await fixture((initial, turn, body) => {
       if (initial.jobId) {
         if (turn === 0) return [
@@ -714,19 +719,24 @@ describe('runWrite subagent integration', () => {
         if (turn === 2) return [call('commit', { message: '독립 노트를 함께 검토하고 기록한다' })];
         return '두 노트를 기록했다.';
       }
-      return turn === 0 ? [call('write_file', { path: initial.files![0], content: `# ${initial.name}\n독립 지식을 기록한다.\n` })] : `${initial.name} 완료`;
+      return turn === 0 ? [call('write_file', { path: initial.files![0], content: noteContent(initial.name!) })] : `${initial.name} 완료`;
     });
     const phases: Array<{ phase: string; detail: Record<string, unknown> }> = [];
     wt.onPhase = (phase, detail) => phases.push({ phase, detail });
     await expect(agent.runWrite(job, wt, author)).resolves.toEqual({ summary: '두 노트를 기록했다.' });
-    expect(await wt.read('wiki/alpha.md')).toBe('# alpha\n독립 지식을 기록한다.\n');
-    expect(await wt.read('wiki/beta.md')).toBe('# beta\n독립 지식을 기록한다.\n');
+    for (const name of ['alpha', 'beta']) {
+      const content = (await wt.read(`wiki/${name}.md`))!;
+      expect(content).toBe(noteContent(name));
+      expect(matter(content).content).toBe(`# ${name}\n독립 지식을 기록한다.\n`);
+    }
     const children = phases.map((entry) => entry.detail.subagent).filter((value): value is SubagentSnapshot => !!value && typeof value === 'object' && 'id' in value);
     for (const name of ['alpha', 'beta']) {
       expect(children.filter((child) => child.name === name).map((child) => child.status)).toEqual(['running', 'completed']);
     }
     await repo.withMergeLock(() => wt.fastForwardMain());
-    expect(await repo.readFile('wiki/alpha.md')).toBe('# alpha\n독립 지식을 기록한다.\n');
+    for (const name of ['alpha', 'beta']) {
+      expect(await repo.readFile(`wiki/${name}.md`)).toBe(noteContent(name));
+    }
     expect((await repo.log({ limit: 1 }))[0]).toMatchObject({ subject: '독립 노트를 함께 검토하고 기록한다', authorName: author.name, authorEmail: author.email });
   });
 

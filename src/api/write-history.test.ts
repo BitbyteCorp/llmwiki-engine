@@ -49,8 +49,20 @@ interface NoteResponse { path: string; content: string; frontmatter: Record<stri
 type JobPayload = WriteJob & { resumable: boolean };
 interface JobDetail { job: JobPayload; user: { email: string; name: string | null }; commits: CommitInfo[]; events: JobEvent[] }
 interface CommitDetail { commit: CommitInfo; files: FileChange[]; patch: string; job: JobPayload | null }
-const original = '---\ntitle: Navigation\n---\n# Navigation\n\nOld directions.\n';
-const updated = '---\ntitle: Navigation\n---\n# Navigation\n\nNew directions.\n';
+const noteFrontmatter = `---
+type: note
+aliases: []
+description: Exercises exact note history and recovery.
+author: ["Editor"]
+date created: 2020-01-01
+date modified: 2026-10-10
+tags: [history]
+---
+`;
+function noteContent(body: string): string { return noteFrontmatter + body; }
+const navigationFrontmatter = noteFrontmatter.replace('type: note\n', 'title: Navigation\ntype: note\n');
+const original = navigationFrontmatter + '# Navigation\n\nOld directions.\n';
+const updated = navigationFrontmatter + '# Navigation\n\nNew directions.\n';
 
 describe('write and history HTTP acceptance with real Git and SQLite', () => {
   let directory: string;
@@ -69,6 +81,8 @@ describe('write and history HTTP acceptance with real Git and SQLite', () => {
   let agent: { runWrite: Mock<AgentService['runWrite']>; resolveConflicts: Mock<AgentService['resolveConflicts']> };
 
   beforeEach(async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-10T00:00:00.000Z'));
     directory = await mkdtemp(join(tmpdir(), 'llmwiki-write-history-http-'));
     const config = loadConfig({ NODE_ENV: 'test', DATA_DIR: directory, PUBLIC_URL: 'http://localhost:3000' });
     const log = pino({ level: 'silent' });
@@ -127,6 +141,7 @@ describe('write and history HTTP acceptance with real Git and SQLite', () => {
     if (app) await app.close();
     if (db?.open) db.close();
     if (directory) await rm(directory, { recursive: true, force: true });
+    vi.useRealTimers();
   });
 
   function request(path: string, init: RequestInit = {}, user: User = editor): Promise<Response> {
@@ -270,10 +285,13 @@ describe('write and history HTTP acceptance with real Git and SQLite', () => {
   });
 
   it('exposes resumability for preserved failed work and continues both committed and unfinished changes under a new identity', async () => {
+    const preserved = noteContent('Committed before failure\n');
+    const unfinished = noteContent('Uncommitted before failure\n');
+    const continued = noteContent('Uncommitted before failure\nCompleted continuation\n');
     agent.runWrite.mockImplementationOnce(async (_job, wt, author) => {
-      await wt.write('wiki/preserved.md', 'Committed before failure\n');
+      await wt.write('wiki/preserved.md', preserved);
       await wt.commit('Preserved progress', author);
-      await wt.write('wiki/unfinished.md', 'Uncommitted before failure\n');
+      await wt.write('wiki/unfinished.md', unfinished);
       throw new Error('Provider interrupted after editing');
     });
     const submitted = jobs.submit({ userId: editor.id, input: 'Continue preserved progress', source: 'chat', client: 'conversation-editor' });
@@ -302,16 +320,16 @@ describe('write and history HTTP acceptance with real Git and SQLite', () => {
     const adminCanceled = await json<{ job: JobPayload }>(await request(`/admin/jobs/${adminRetry.job.id}/cancel`, { method: 'POST' }, admin), 201);
     expect(adminCanceled.job).toMatchObject({ status: 'failed', error: 'canceled', resumable: true });
     agent.runWrite.mockImplementationOnce(async (_job, wt) => {
-      expect(await wt.read('wiki/preserved.md')).toBe('Committed before failure\n');
-      expect(await wt.read('wiki/unfinished.md')).toBe('Uncommitted before failure\n');
-      await wt.write('wiki/unfinished.md', 'Uncommitted before failure\nCompleted continuation\n');
+      expect(await wt.read('wiki/preserved.md')).toBe(preserved);
+      expect(await wt.read('wiki/unfinished.md')).toBe(unfinished);
+      await wt.write('wiki/unfinished.md', continued);
       return { summary: 'Continue preserved progress' };
     });
     jobs.start();
     await vi.waitFor(() => expect(jobs.get(retried.job.id)?.status).toBe('succeeded'), { timeout: 15000 });
     await jobs.stop();
-    expect(await repo.readFile('wiki/preserved.md')).toBe('Committed before failure\n');
-    expect(await repo.readFile('wiki/unfinished.md')).toBe('Uncommitted before failure\nCompleted continuation\n');
+    expect(await repo.readFile('wiki/preserved.md')).toBe(preserved);
+    expect(await repo.readFile('wiki/unfinished.md')).toBe(continued);
     expect((await json<JobDetail>(await request(`/jobs/${submitted.id}`))).job).toEqual(failed.job);
     const completed = await json<JobDetail>(await request(`/jobs/${retried.job.id}`));
     expect(completed.job).toMatchObject({ status: 'succeeded', resumable: false });
@@ -346,11 +364,12 @@ describe('write and history HTTP acceptance with real Git and SQLite', () => {
       method: 'POST', body: JSON.stringify({ from: 'wiki/missing.md', to: 'wiki/destination.md', baseSha }),
     }), 404, 'note_missing');
     await error(await request(query('/notes', { path: 'wiki/missing.md', baseSha }), { method: 'DELETE' }), 404, 'note_missing');
-    const created = await put('wiki/delete-me.md', 'Temporary knowledge\n', baseSha, true);
+    const temporary = noteContent('Temporary knowledge\n');
+    const created = await put('wiki/delete-me.md', temporary, baseSha, true);
     const deleted = await json<WriteResponse>(await request(query('/notes', { path: 'wiki/delete-me.md', baseSha: created.mergeSha }), { method: 'DELETE' }));
     await error(await request(query('/notes/content', { path: 'wiki/delete-me.md' })), 404, 'not_found');
     expect((await note('index.md')).updatedSha).toBe(deleted.mergeSha);
-    expect((await note('wiki/delete-me.md', created.mergeSha)).content).toBe('Temporary knowledge\n');
+    expect((await note('wiki/delete-me.md', created.mergeSha)).content).toBe(temporary);
   });
 
   it('resolves folder-qualified case-insensitive wikilinks and fragments, but returns sorted ambiguous candidates', async () => {
@@ -380,8 +399,8 @@ describe('write and history HTTP acceptance with real Git and SQLite', () => {
     const blame = await json<{ ref: string; ranges: BlameRange[] }>(await request(query('/notes/blame', { path: 'wiki/Navigation.md', ref: changed.mergeSha })));
     expect(blame.ref).toBe(changed.mergeSha);
     expect(blame.ranges).toEqual([
-      expect.objectContaining({ start: 1, end: 5, sha: created.mergeSha, authorName: 'Editor', jobId: created.jobId, source: 'web' }),
-      expect.objectContaining({ start: 6, end: 6, sha: changed.mergeSha, authorName: 'Editor', jobId: changed.jobId, source: 'web' }),
+      expect.objectContaining({ start: 1, end: 12, sha: created.mergeSha, authorName: 'Editor', jobId: created.jobId, source: 'web' }),
+      expect.objectContaining({ start: 13, end: 13, sha: changed.mergeSha, authorName: 'Editor', jobId: changed.jobId, source: 'web' }),
     ]);
     const moved = await json<WriteResponse>(await request('/notes/move', {
       method: 'POST', body: JSON.stringify({ from: 'wiki/Navigation.md', to: 'wiki/routes/Navigation.md', baseSha: changed.mergeSha }),
@@ -428,14 +447,14 @@ describe('write and history HTTP acceptance with real Git and SQLite', () => {
 
   it('restricts jobs to their owner or admin, exposes conflict events and hides cross-owner jobs in commit details', async () => {
     const baseSha = (await note('index.md')).updatedSha;
-    const seed = await put('wiki/shared.md', 'Original claim\n', baseSha, true);
+    const seed = await put('wiki/shared.md', noteContent('Original claim\n'), baseSha, true);
     agent.runWrite.mockImplementation(async (_job, wt) => {
-      await wt.write('wiki/shared.md', 'Dony claim\n');
-      await put('wiki/shared.md', 'Concurrent claim\n', seed.mergeSha, false, other);
+      await wt.write('wiki/shared.md', noteContent('Dony claim\n'));
+      await put('wiki/shared.md', noteContent('Concurrent claim\n'), seed.mergeSha, false, other);
       return { summary: 'Resolve knowledge claim' };
     });
     agent.resolveConflicts.mockImplementation(async (wt) => {
-      await wt.write('wiki/shared.md', 'Dony claim and concurrent claim\n');
+      await wt.write('wiki/shared.md', noteContent('Dony claim and concurrent claim\n'));
     });
     const submitted = jobs.submit({ userId: editor.id, input: 'Private source text', source: 'chat', client: 'chat' });
     jobs.start();
@@ -455,7 +474,7 @@ describe('write and history HTTP acceptance with real Git and SQLite', () => {
       expect.objectContaining({ phase: 'resolving_conflict', at: expect.any(String), detail: { files: ['wiki/shared.md'] } }),
       expect.objectContaining({ phase: 'done', at: expect.any(String) }),
     ]));
-    expect((await note('wiki/shared.md')).content).toBe('Dony claim and concurrent claim\n');
+    expect((await note('wiki/shared.md')).content).toBe(noteContent('Dony claim and concurrent claim\n'));
     const adminDetail = await json<JobDetail>(await request(`/jobs/${submitted.id}`, {}, admin));
     expect(adminDetail).toEqual(completed);
     await error(await request(`/jobs/${submitted.id}`, {}, other), 404, 'not_found');

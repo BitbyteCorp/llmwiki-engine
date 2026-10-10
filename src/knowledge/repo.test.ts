@@ -4,10 +4,12 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 import pino from 'pino';
-import { afterEach, expect, it } from 'vitest';
+import matter from 'gray-matter';
+import { afterEach, expect, it, vi } from 'vitest';
 import { loadConfig } from '../config.js';
 import { legacyUuidToApi } from '../common/ids.js';
 import { KnowledgeRepo } from './repo.js';
+import { isMetadataTarget } from './note-metadata.js';
 
 const git = promisify(execFile);
 const dirs: string[] = [];
@@ -20,6 +22,7 @@ async function fixture() {
 }
 afterEach(async () => {
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+  vi.useRealTimers();
 });
 
 it('isolates worktree writes, commits as the requester, and fast-forwards main', async () => {
@@ -35,7 +38,7 @@ it('isolates worktree writes, commits as the requester, and fast-forwards main',
     expect(await wt.mergeMain()).toEqual({ ok: true });
     expect(await wt.fastForwardMain()).toBe(sha);
   });
-  expect(await repo.readFile('wiki/hello.md')).toBe('# Hello\n');
+  expect(matter((await repo.readFile('wiki/hello.md'))!).content).toBe('# Hello\n');
   expect(await repo.readFile('wiki/hello.md', initial)).toBeNull();
   expect(await repo.listFiles('wiki/')).toContain('wiki/hello.md');
   expect(await repo.diffNames(initial, sha!)).toEqual([{ status: 'A', path: 'wiki/hello.md' }]);
@@ -74,7 +77,7 @@ it('resolves two concurrent edits in the work branch before advancing main', asy
     expect((await repo.show(mergeSha)).commit).toMatchObject({ parents: [rightSha, leftSha], authorEmail: author.email });
     expect(await right.conflictedFiles()).toEqual([]);
     expect(await right.fastForwardMain()).toBe(mergeSha);
-    expect(await repo.readFile('wiki/conflict.md')).toBe('left and right resolved\n');
+    expect(matter((await repo.readFile('wiki/conflict.md'))!).content).toBe('left and right resolved\n');
     expect((await git('git', ['show', '-s', '--format=%cn <%ce>', mergeSha], { cwd: join(dir, 'knowledge') })).stdout.trim()).toBe('도니 <dony@llmwiki.local>');
   });
   await left.dispose();
@@ -95,8 +98,8 @@ it('preserves requester authorship on an automatic non-conflicting merge', async
   expect(await right.mergeMain()).toEqual({ ok: true });
   const merged = await right.fastForwardMain();
   expect((await repo.show(merged)).commit).toMatchObject({ parents: [rightSha, leftSha], authorName: latestAuthor.name, authorEmail: latestAuthor.email });
-  expect(await repo.readFile('wiki/left.md')).toBe('left\n');
-  expect(await repo.readFile('wiki/right.md')).toBe('right\n');
+  expect(matter((await repo.readFile('wiki/left.md'))!).content).toBe('left\n');
+  expect(matter((await repo.readFile('wiki/right.md'))!).content).toBe('right\n');
   await left.dispose();
   await right.dispose();
 });
@@ -246,7 +249,7 @@ it('resumes clean failed commits from their merge base and counts only commits o
   expect(retry.baseSha).toBe(base);
   expect(retry.baseSha).not.toBe(advanced);
   expect((await git('git', ['rev-parse', 'HEAD'], { cwd: retry.path })).stdout.trim()).toBe(progress);
-  expect(await retry.read('wiki/progress.md')).toBe('preserved progress\n');
+  expect(matter((await retry.read('wiki/progress.md'))!).content).toBe('preserved progress\n');
   expect(await retry.read('wiki/concurrent.md')).toBeNull();
   expect(await repo.diffNames(retry.baseSha, progress)).toEqual([{ status: 'A', path: 'wiki/progress.md' }]);
   expect(await retry.mergeMain()).toEqual({ ok: true });
@@ -256,8 +259,8 @@ it('resumes clean failed commits from their merge base and counts only commits o
   expect(await repo.failedState('unknown-failure')).toEqual({ commits: false, wip: false });
   const fresh = await repo.createWorktree('missing-retry', 'unknown-failure');
   expect(fresh.baseSha).toBe(await repo.headSha());
-  expect(await fresh.read('wiki/progress.md')).toBe('preserved progress\n');
-  expect(await fresh.read('wiki/concurrent.md')).toBe('concurrent change\n');
+  expect(matter((await fresh.read('wiki/progress.md'))!).content).toBe('preserved progress\n');
+  expect(matter((await fresh.read('wiki/concurrent.md'))!).content).toBe('concurrent change\n');
   await fresh.dispose();
 });
 
@@ -281,7 +284,7 @@ it('restores UUID-named failure refs and clears stale WIP when the worktree beco
   const retry = await repo.createWorktree('legacy-retry', jobId);
   expect(await retry.read('wiki/legacy.md')).toBe('unfinished legacy\n');
   expect((await git('git', ['rev-parse', 'HEAD'], { cwd: retry.path })).stdout.trim()).toBe(head);
-  await retry.write('wiki/legacy.md', 'committed legacy\n');
+  await retry.write('wiki/legacy.md', (await repo.readFile('wiki/legacy.md', head))!);
   await retry.preserveFailed(jobId);
   expect(await repo.failedState(uuid)).toEqual({ commits: true, wip: false });
   await expect(repo.resolveRef(`refs/wiki/failed-wip/${jobId}`)).rejects.toMatchObject({ code: 'NOT_FOUND' });
@@ -354,7 +357,7 @@ it('clones an empty remote, seeds main, pushes it, and reopens its tracked state
   const cloneCfg = loadConfig({ NODE_ENV: 'test', DATA_DIR: join(dir, 'reader'), KNOWLEDGE_REPO_URL: remote });
   const clone = await KnowledgeRepo.open(cloneCfg, pino({ level: 'silent' }));
   expect(await clone.headSha()).toBe(sha);
-  expect(await clone.readFile('wiki/remote.md')).toBe('backed up\n');
+  expect(matter((await clone.readFile('wiki/remote.md'))!).content).toBe('backed up\n');
   for (const path of keeps) expect(await clone.readFile(path)).toBe('');
 });
 
@@ -377,4 +380,117 @@ it('serializes merge locks across repository instances and releases after errors
   await failedAssertion;
   expect(await queued).toBe(42);
   expect(order).toEqual(['first', 'second']);
+});
+
+it('autofills changed wiki notes, retains untouched files, and skips deletions and non-targets', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-10-09T15:30:00.000Z'));
+  const { repo } = await fixture();
+  const wt = await repo.createWorktree('metadata-targets');
+  await wt.write('wiki/new.MD', '# New\n');
+  await wt.write('wiki/deleted.md', 'delete later\n');
+  await wt.write('wiki/untouched.md', 'untouched\n');
+  const nonTargets = ['wiki/topic/AGENTS.md', 'wiki/deep/folder/AGENTS.md', 'journal/2026-10-10.md', 'raw/metadata.md', 'MEMORY.md', 'index.md'];
+  for (const path of nonTargets) await wt.write(path, `unchanged ${path}\n`);
+  await wt.commit('Add metadata targets', author);
+  const created = matter((await wt.read('wiki/new.MD'))!);
+  expect(created.data.author).toEqual(['Requesting User']);
+  expect(created.data['date created'].toISOString()).toBe('2026-10-10T00:00:00.000Z');
+  expect(created.data['date modified'].toISOString()).toBe('2026-10-10T00:00:00.000Z');
+  expect(created.data).not.toHaveProperty('domain');
+  expect(created.content).toBe('# New\n');
+  const untouched = await wt.read('wiki/untouched.md');
+  vi.setSystemTime(new Date('2026-10-10T15:30:00.000Z'));
+  await wt.write('wiki/new.MD', (await wt.read('wiki/new.MD'))! + 'Second edit\n');
+  await wt.remove('wiki/deleted.md');
+  await wt.commit('Edit and delete', { name: 'Second User', email: 'second@example.test' });
+  const edited = matter((await wt.read('wiki/new.MD'))!);
+  expect(edited.data.author).toEqual(['Requesting User', 'Second User']);
+  expect(edited.data['date created'].toISOString()).toBe('2026-10-10T00:00:00.000Z');
+  expect(edited.data['date modified'].toISOString()).toBe('2026-10-11T00:00:00.000Z');
+  expect(await wt.read('wiki/untouched.md')).toBe(untouched);
+  expect(await wt.read('wiki/deleted.md')).toBeNull();
+  for (const path of nonTargets) {
+    expect(isMetadataTarget(path)).toBe(false);
+    expect(await wt.read(path)).toBe(`unchanged ${path}\n`);
+  }
+  expect(await wt.commit('No changes on a new day', author)).toBeNull();
+  await wt.dispose();
+});
+
+it('preserves authors on dreaming commits and credits the configured bot for system-created notes', async () => {
+  const { repo, cfg } = await fixture();
+  const wt = await repo.createWorktree('metadata-dreaming');
+  await wt.write('wiki/existing.md', '---\nauthor: ["Original"]\ndate created: 2020-01-01\n---\nExisting body\n');
+  await wt.write('wiki/new.md', 'New body\n');
+  wt.setCommitMetadata({ jobId: 'dream-job', source: 'dreaming', requester: cfg.gitBotEmail });
+  await wt.commit('Dreaming edit', author);
+  expect(matter((await wt.read('wiki/existing.md'))!).data.author).toEqual(['Original']);
+  expect(matter((await wt.read('wiki/new.md'))!).data.author).toEqual([cfg.gitBotName]);
+  await wt.write('wiki/system.md', 'System-created body\n');
+  await wt.commit('System edit without requester');
+  expect(matter((await wt.read('wiki/system.md'))!).data.author).toEqual([cfg.gitBotName]);
+  await wt.dispose();
+});
+
+it('keeps pure rename metadata intact and stamps a rename with content edits', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-10-09T15:30:00.000Z'));
+  const { repo } = await fixture();
+  const wt = await repo.createWorktree('metadata-rename');
+  await wt.write('wiki/original.md', '# Original\n\nA substantial original note body remains across moves.\n');
+  await wt.commit('Create original note', author);
+  const before = (await wt.read('wiki/original.md'))!;
+  vi.setSystemTime(new Date('2026-10-10T15:30:00.000Z'));
+  const second = { name: 'Moving User', email: 'moving@example.test' };
+  await wt.move('wiki/original.md', 'wiki/moved.md');
+  await wt.commit('Move original note', second);
+  expect(await wt.read('wiki/moved.md')).toBe(before);
+  await wt.move('wiki/moved.md', 'wiki/edited.md');
+  await wt.write('wiki/edited.md', before + '\nAn additional fact.\n');
+  await wt.commit('Move and edit note', second);
+  const edited = matter((await wt.read('wiki/edited.md'))!);
+  expect(edited.data.author).toEqual(['Requesting User', 'Moving User']);
+  expect(edited.data['date created'].toISOString()).toBe('2026-10-10T00:00:00.000Z');
+  expect(edited.data['date modified'].toISOString()).toBe('2026-10-11T00:00:00.000Z');
+  await wt.dispose();
+});
+
+it('stamps resolved conflicts at finishMerge without rejecting malformed frontmatter', async () => {
+  vi.useFakeTimers({ toFake: ['Date'] });
+  vi.setSystemTime(new Date('2026-10-09T15:30:00.000Z'));
+  const { repo } = await fixture();
+  const seed = await repo.createWorktree('metadata-conflict-seed');
+  await seed.write('wiki/conflict.md', 'original body\n');
+  await seed.commit('Seed conflict', author);
+  await seed.fastForwardMain();
+  await seed.dispose();
+  const left = await repo.createWorktree('metadata-conflict-left');
+  const right = await repo.createWorktree('metadata-conflict-right');
+  await left.write('wiki/conflict.md', 'left body\n');
+  await left.write('wiki/concurrent.md', 'Concurrent main note\n');
+  await right.write('wiki/conflict.md', 'right body\n');
+  await left.commit('Left conflict edit', author);
+  await right.commit('Right conflict edit', author);
+  await left.fastForwardMain();
+  const concurrent = await repo.readFile('wiki/concurrent.md');
+  expect(await right.mergeMain()).toEqual({ ok: false, conflicts: ['wiki/conflict.md'] });
+  vi.setSystemTime(new Date('2026-10-10T15:30:00.000Z'));
+  const resolved = '---\n# keep comment\nauthor: ["Original"]\ndate created: 2020-01-01\ncustom: true\n---\nresolved body\n';
+  const malformed = '---\nauthor: [broken\ncustom: do not discard\n---\nmalformed body\n';
+  await right.write('wiki/conflict.md', resolved);
+  await right.write('wiki/malformed.md', malformed);
+  await right.finishMerge({ name: 'Resolver', email: 'resolver@example.test' });
+  const stamped = matter((await right.read('wiki/conflict.md'))!);
+  expect(stamped.data.author).toEqual(['Original', 'Resolver']);
+  expect(stamped.data['date created'].toISOString()).toBe('2020-01-01T00:00:00.000Z');
+  expect(stamped.data['date modified'].toISOString()).toBe('2026-10-11T00:00:00.000Z');
+  expect(stamped.content).toBe('resolved body\n');
+  expect(await right.read('wiki/conflict.md')).toContain('# keep comment\n');
+  expect(await right.read('wiki/malformed.md')).toBe(malformed);
+  expect(await right.read('wiki/concurrent.md')).toBe(concurrent);
+  await right.fastForwardMain();
+  expect(await repo.readFile('wiki/malformed.md')).toBe(malformed);
+  await left.dispose();
+  await right.dispose();
 });

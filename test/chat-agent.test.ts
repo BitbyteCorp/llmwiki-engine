@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pino from 'pino';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { newId } from '../src/common/ids.js';
 import { loadConfig } from '../src/config.js';
 import type { ResponseInputContent } from 'openai/resources/responses/responses';
@@ -18,7 +18,10 @@ import { UsersRepository } from '../src/auth/users.repository.js';
 import { openDb, runMigrations } from '../src/db/index.js';
 
 const disposals: Array<() => Promise<unknown>> = [];
-afterEach(async () => { for (const dispose of disposals.splice(0).reverse()) await dispose(); });
+afterEach(async () => {
+  try { for (const dispose of disposals.splice(0).reverse()) await dispose(); }
+  finally { vi.useRealTimers(); }
+});
 
 async function fixture(script: FakeScript, notes: Record<string, string> = {}, models?: string) {
   const fake = await startFakeOpenAI(script);
@@ -185,8 +188,9 @@ describe('grounded chat citations', () => {
   });
 
   it.each(['snapshot', 'legacy'] as const)('restores %s paged evidence and pinned context after main changes without rebuilding the original input', async (mode) => {
+    // Commit autofill adds five frontmatter lines before the original second heading.
     const { agent, repo, fake } = await fixture([
-      { name: 'read_note', arguments: { path: 'wiki/facts.md', offset: 2, limit: 1 } },
+      { name: 'read_note', arguments: { path: 'wiki/facts.md', offset: 7, limit: 1 } },
       { name: 'read_note', arguments: { path: 'wiki/pinned.md' } },
       '[second](wiki/facts.md#shared-1) [pin](wiki/pinned.md#old-pin)',
     ], {
@@ -424,8 +428,11 @@ describe('chat knowledge write authorization and errors', () => {
 
 describe('read-only conversation transformations', () => {
   it('proposes a complete edited note at a pinned base without changing files or git history', async () => {
-    const original = '---\ntags: [cache]\n---\n# Cache\nExisting fact.';
-    const proposed = '---\ntags: [cache]\n---\n# Cache\nExisting fact. Additional fact.';
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-10T00:00:00.000Z'));
+    const frontmatter = '---\ntype: note\naliases: []\ndescription: Explains cache facts.\nauthor: ["Chat fixture"]\ndate created: 2020-01-01\ndate modified: 2026-10-10\ntags: [cache]\n---\n';
+    const original = frontmatter + '# Cache\nExisting fact.';
+    const proposed = frontmatter + '# Cache\nExisting fact. Additional fact.';
     const { agent, repo, fake } = await fixture([
       { name: 'read_note', arguments: { path: 'wiki/facts.md' } }, proposed,
     ], { 'wiki/facts.md': original });

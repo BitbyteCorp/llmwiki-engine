@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pino, { type Logger } from 'pino';
+import matter from 'gray-matter';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig, type Config } from '../../src/config.js';
 import { CONFIG, LOGGER } from '../../src/common/tokens.js';
@@ -22,6 +23,7 @@ import { openDb, runMigrations } from '../../src/db/index.js';
 const cleanup: Array<() => Promise<unknown>> = [];
 afterEach(async () => {
   for (const dispose of cleanup.splice(0).reverse()) await dispose();
+  vi.useRealTimers();
 });
 
 async function createAgent(
@@ -595,7 +597,10 @@ describe('paged chat note reads', () => {
 
 describe('worktree writing and conflicts', () => {
   it('writes and commits a note in a real temporary git worktree through tools', async () => {
-    const content = '---\ntags: [caching]\n---\n# 캐시\n캐시는 계산 결과를 재사용하는 기법이다.\n';
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-10T00:00:00.000Z'));
+    const body = '# 캐시\n캐시는 계산 결과를 재사용하는 기법이다.\n';
+    const content = '---\ntype: note\naliases: [Cache]\ndescription: "캐시는 계산 결과를 재사용하는 기법이다."\nauthor: ["Tester"]\ndate created: 2026-10-10\ndate modified: 2026-10-10\ntags: [caching]\n---\n' + body;
     const { agent: unused, fake, config, search, log } = await fixture([
       { name: 'search', arguments: { query: '캐시' } },
       { name: 'write_file', arguments: { path: 'wiki/cache.md', content } },
@@ -612,6 +617,7 @@ describe('worktree writing and conflicts', () => {
     const agent = await createAgent(config, repo, search, log);
     await expect(agent.runWrite(job, wt, { name: 'Tester', email: 'test@example.com' })).resolves.toEqual({ summary: '캐시 노트를 만들고 색인에 연결했다.' });
     expect(await wt.read('wiki/cache.md')).toBe(content);
+    expect(matter((await wt.read('wiki/cache.md'))!).content).toBe(body);
     await repo.withMergeLock(() => wt.fastForwardMain());
     expect(await repo.readFile('wiki/cache.md')).toBe(content);
     const commits = await repo.log({ limit: 1 });

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, request } from '@/lib/api'
+import { DESCRIPTION_MAX_CHARS, NOTE_TYPES, expectedNoteType, newNoteContent, type NoteType } from '@/lib/note-metadata'
 import { ErrorNotice, Loading } from '@/components/common'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -37,6 +38,9 @@ export function useFileOperations(files: string[]) {
   useEffect(() => { setMounted(true) }, [])
   const [value, setValue] = useState('')
   const [title, setTitle] = useState('')
+  const [noteType, setNoteType] = useState<NoteType>('note')
+  const [description, setDescription] = useState('')
+  const [aliases, setAliases] = useState('')
   const [tags, setTags] = useState('')
   const [folder, setFolder] = useState('')
   const [virtualFolders, setVirtualFolders] = useState<string[]>([])
@@ -49,6 +53,7 @@ export function useFileOperations(files: string[]) {
   const pendingFocus = useRef<HTMLElement | null>(null)
   const links = useQuery({ queryKey: ['links', operation?.path], queryFn: () => request<Links>(`/api/links?${new URLSearchParams({ path: operation!.path })}`), enabled: operation?.kind === 'delete' })
   const folders = [...new Set([...virtualFolders, ...files.flatMap(path => path.split('/').slice(0, -1).map((_, index) => path.split('/').slice(0, index + 1).join('/')))])].sort((a, b) => a.localeCompare(b, 'ko'))
+  const impliedType = expectedNoteType(value.trim())
 
   function start(kind: Operation['kind'], path = '', destination?: string) {
     if (!canWrite || busyRef.current) return
@@ -57,6 +62,8 @@ export function useFileOperations(files: string[]) {
     setValue(kind === 'move' ? (destination ?? path) : kind === 'new' ? (destination ?? `${path ? `${path}/` : ''}새 노트.md`) : path)
     setFolder(kind === 'move' ? parentFolder(destination ?? path) : path)
     setTitle(kind === 'new' && destination ? destination.split('/').pop()!.replace(/\.md$/, '') : ''); setTags(''); setOperation({ kind, path })
+    setNoteType(expectedNoteType(destination ?? `${path ? `${path}/` : ''}새 노트.md`) ?? 'note')
+    setDescription(''); setAliases('')
   }
   function dismiss() {
     if (busyRef.current) return
@@ -134,10 +141,8 @@ export function useFileOperations(files: string[]) {
           workspace.revealFolder(path)
           notify({ title: '가상 폴더를 준비했습니다. 이 폴더에 첫 노트를 저장하면 저장소에 생성됩니다.' })
         } else {
-          if (!title.trim()) throw new Error('노트 제목을 입력하세요.')
+          const content = newNoteContent({ path, title, type: impliedType ?? noteType, description, aliases, tags })
           const baseSha = await currentHead()
-          const tagList = [...new Set(tags.split(',').map(tag => tag.trim()).filter(Boolean))]
-          const content = `---\ntitle: ${JSON.stringify(title.trim())}\ntags: ${JSON.stringify(tagList)}\nupdated: ${JSON.stringify(new Date().toISOString())}\n---\n\n# ${title.trim()}\n\n`
           await request<WriteResult>('/api/notes', { method: 'PUT', body: JSON.stringify({ path, content, baseSha, create: true, message: `새 노트: ${title.trim()}` }) })
           await refresh()
           workspace.openNote(path, { pin: true })
@@ -199,7 +204,14 @@ export function useFileOperations(files: string[]) {
         {operation.kind === 'folder' && <p className="text-label-13 text-muted-foreground">Git은 빈 폴더를 저장하지 않습니다. 여기서는 가상 폴더만 준비하며, 첫 노트를 만들 때 실제 폴더가 저장됩니다. 새로고침하면 빈 가상 폴더는 사라집니다.</p>}
         {operation.kind === 'move' && <div className="space-y-2"><Label htmlFor="editor-move-folder">대상 폴더</Label><select id="editor-move-folder" className="h-9 w-full rounded-md border bg-background px-2 text-sm" disabled={busy} value={folder} onChange={event => { setFolder(event.target.value); setValue(`${event.target.value ? `${event.target.value}/` : ''}${value.split('/').pop()}`); setOverwrite(null) }}><option value="">저장소 루트</option>{folders.map(path => <option key={path} value={path}>{path}</option>)}</select><p className="text-label-13 text-muted-foreground">아래 경로를 직접 입력하면 새 폴더로도 이동할 수 있습니다. 기존 위키링크는 자동 변경되지 않습니다.</p></div>}
         {operation.kind !== 'delete' && <div className="space-y-2"><Label htmlFor="editor-file-path">{operation.kind === 'folder' ? '폴더 경로' : '노트 경로 (.md)'}</Label><Input id="editor-file-path" required disabled={busy} value={value} onChange={event => { setValue(event.target.value); setOverwrite(null) }} autoComplete="off" /><p className="text-label-13 text-muted-foreground">예: wiki/주제/{operation.kind === 'folder' ? '새 폴더' : '새 노트.md'}</p></div>}
-        {operation.kind === 'new' && <><div className="space-y-2"><Label htmlFor="editor-new-title">제목</Label><Input id="editor-new-title" required disabled={busy} value={title} onChange={event => setTitle(event.target.value)} /></div><div className="space-y-2"><Label htmlFor="editor-new-tags">태그 (쉼표로 구분)</Label><Input id="editor-new-tags" disabled={busy} value={tags} onChange={event => setTags(event.target.value)} /></div><p className="text-label-13 text-muted-foreground">title, tags, updated 메타데이터를 포함한 Markdown 노트로 저장됩니다.</p></>}
+        {operation.kind === 'new' && <>
+          <div className="space-y-2"><Label htmlFor="editor-new-title">제목</Label><Input id="editor-new-title" required disabled={busy} value={title} onChange={event => setTitle(event.target.value)} /></div>
+          <div className="space-y-2"><Label htmlFor="editor-new-type">유형</Label><select id="editor-new-type" className="h-9 w-full rounded-md border bg-background px-2 text-sm" disabled={busy || impliedType !== null} value={impliedType ?? noteType} onChange={event => { const selected = NOTE_TYPES.find(type => type === event.target.value); if (selected) setNoteType(selected) }}>{NOTE_TYPES.map(type => <option key={type} value={type}>{type}</option>)}</select>{impliedType && <p className="text-label-13 text-muted-foreground">이 경로의 유형은 {impliedType}(으)로 정해집니다.</p>}</div>
+          <div className="space-y-2"><Label htmlFor="editor-new-description">설명</Label><Input id="editor-new-description" required maxLength={DESCRIPTION_MAX_CHARS} disabled={busy} value={description} onChange={event => setDescription(event.target.value)} /><p className="text-label-13 text-muted-foreground">노트의 내용을 한국어 1–2문장, {DESCRIPTION_MAX_CHARS}자 이내로 요약하세요.</p></div>
+          <div className="space-y-2"><Label htmlFor="editor-new-aliases">별칭 (쉼표로 구분, 선택)</Label><Input id="editor-new-aliases" disabled={busy} value={aliases} onChange={event => setAliases(event.target.value)} /></div>
+          <div className="space-y-2"><Label htmlFor="editor-new-tags">태그 (쉼표로 구분)</Label><Input id="editor-new-tags" required disabled={busy} value={tags} onChange={event => setTags(event.target.value)} /><p className="text-label-13 text-muted-foreground">하나 이상 입력하세요. 영어 소문자·숫자를 하이픈(-)으로 연결합니다. 예: knowledge-base, notes</p></div>
+          <p className="text-label-13 text-muted-foreground">type, aliases, description, tags 메타데이터와 제목 본문을 저장합니다. 작성자와 생성·수정 날짜는 서버가 채웁니다.</p>
+        </>}
         {operation.kind === 'delete' && <><p className="text-label-13">이 노트를 삭제하시겠습니까? 내용은 변경 이력에 남으며 복원할 수 있습니다.</p>{links.isPending && <Loading label="이 노트를 참조하는 링크 확인 중…" />}{links.error && <div className="space-y-2"><ErrorNotice error={links.error} /><Button type="button" variant="outline" onClick={() => void links.refetch()}>링크 다시 확인</Button></div>}{links.data && <p className={links.data.backlinks.length ? 'rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-label-13' : 'text-label-13 text-muted-foreground'}>이 노트를 참조하는 노트 {links.data.backlinks.length}개{links.data.backlinks.length > 0 && '의 링크가 끊어집니다. 위키링크는 자동 수정되지 않습니다.'}</p>}</>}
         {replacementRemoved && <p role="alert" className="rounded-md border border-warning/40 px-3 py-2 text-label-13">대상 노트 {replacementRemoved}는 삭제 커밋으로 이력에 남았습니다. 원본 {operation.path}는 이동이 성공할 때까지 보존됩니다. 다시 시도하면 최신 저장소 기준으로 이동합니다. 취소 시 대상 노트는 변경 이력에서 복원하세요.</p>}
         {overwrite && <div role="alert" className="space-y-3 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-label-13"><p>{overwrite} 노트가 이미 있습니다. 교체하면 대상 노트 삭제와 원본 이동이 별도 두 커밋으로 실행됩니다. 중간 실패 시 원본은 유지되지만 대상 노트는 이력에서 복원해야 합니다. 대상 노트를 삭제하고 이동하시겠습니까?</p><div className="flex flex-wrap gap-2"><Button type="button" variant="destructive" disabled={busy} onClick={() => void submit(true)}>대상 삭제 후 이동</Button><Button type="button" variant="outline" disabled={busy} onClick={() => setOverwrite(null)}>다른 경로 선택</Button></div></div>}

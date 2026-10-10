@@ -14,6 +14,8 @@ import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
 import { sliceCodePoints } from '../agent/output.js';
 import { AgentService } from '../agent/agent.service.js';
 import type { TokenUsage } from '../agent/agent.types.js';
+import { repairNoteMetadata, type NoteMetadataIssues } from '../agent/metadata-repair.js';
+import { ENGINE_FIELDS, isMetadataTarget, validateNoteMetadata } from '../knowledge/note-metadata.js';
 import { IndexerService } from '../rag/indexer.service.js';
 import type { JobEvent, JobPhase, SubmittedWriteJob, SubmitWriteJob, WriteJob } from './write-job.types.js';
 import { NoteWriterService } from './note-writer.service.js';
@@ -264,9 +266,24 @@ export class WriteJobsService implements OnApplicationShutdown {
     }
   }
 
+  private async metadataIssues(wt: Worktree, base = wt.baseSha): Promise<NoteMetadataIssues[]> {
+    const issues: NoteMetadataIssues[] = [];
+    const files = await this.repo.diffNames(base, wt.branch);
+    for (const file of files) {
+      if (file.status === 'D' || !isMetadataTarget(file.path)) continue;
+      const content = await wt.read(file.path);
+      if (content === null) continue;
+      const remaining = validateNoteMetadata(file.path, content)
+        .filter(issue => !(ENGINE_FIELDS as readonly string[]).includes(issue.field));
+      if (remaining.length) issues.push({ path: file.path, issues: remaining });
+    }
+    return issues;
+  }
+
   private async run(job: WriteJob): Promise<void> {
     const { repository, repo, agent, indexer, log } = this;
     let wt: Worktree | undefined;
+    let metadataIssues: NoteMetadataIssues[] = [];
     const usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 };
     const onUsage = (delta: TokenUsage) => {
       usage.inputTokens += delta.inputTokens;
@@ -299,6 +316,22 @@ export class WriteJobsService implements OnApplicationShutdown {
       this.phase(job.id, 'committing');
       await wt.commit(subject, author);
       await this.assertWritable(wt, job.userId, job.id);
+      metadataIssues = await this.metadataIssues(wt);
+      if (metadataIssues.length) {
+        this.phase(job.id, 'editing', { metadataRepair: 'started', metadataIssues });
+        try {
+          await repairNoteMetadata(agent, wt, metadataIssues, author, user, { onUsage });
+        } catch (error) {
+          // Metadata quality is non-blocking: keep the user's knowledge even if the repair model fails.
+          log.warn({ err: error, jobId: job.id }, 'Metadata repair failed; preserving knowledge');
+          this.phase(job.id, 'editing', { metadataRepair: 'error', error: error instanceof Error ? error.message : String(error) });
+        }
+        this.phase(job.id, 'committing');
+        await wt.commit('보완한 노트 메타데이터를 기록한다', author);
+        await this.assertWritable(wt, job.userId, job.id);
+        metadataIssues = await this.metadataIssues(wt);
+        this.phase(job.id, 'editing', { metadataRepair: 'finished', metadataIssues });
+      }
       const writtenCommits = await this.commits(wt);
       repository.markMerging(job.id, summary, writtenCommits);
       const activeWorktree = wt;
@@ -319,6 +352,8 @@ export class WriteJobsService implements OnApplicationShutdown {
         }
         const commits = await this.commits(activeWorktree);
         await this.assertWritable(activeWorktree, job.userId, job.id, previousMain);
+        // Conflict resolution can alter metadata too; report final issues without another repair pass.
+        metadataIssues = await this.metadataIssues(activeWorktree, previousMain);
         const mergeSha = await activeWorktree.fastForwardMain();
         repository.recordMerge(job.id, commits, mergeSha);
         try {
@@ -356,8 +391,8 @@ export class WriteJobsService implements OnApplicationShutdown {
         }
       }
       const result = this.get(job.id)!;
-      this.phase(job.id, result.status === 'succeeded' ? 'done' : 'failed', { usage, ...(result.error ? { error: result.error } : {}) });
-      if (result.status === 'succeeded') log.info({ jobId: job.id, mergeSha: result.mergeSha, usage }, 'Write job completed');
+      this.phase(job.id, result.status === 'succeeded' ? 'done' : 'failed', { usage, ...(metadataIssues.length ? { metadataIssues } : {}), ...(result.error ? { error: result.error } : {}) });
+      if (result.status === 'succeeded') log.info({ jobId: job.id, mergeSha: result.mergeSha, usage, metadataIssues }, 'Write job completed');
     }
   }
 }

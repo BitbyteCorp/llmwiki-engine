@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import pino from 'pino';
+import matter from 'gray-matter';
 import { afterEach, expect, it, vi } from 'vitest';
 import { AclService } from '../acl/acl.service.js';
 import { AuditService } from '../audit/audit.service.js';
@@ -19,6 +20,10 @@ import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
 import type { AgentService } from '../agent/agent.service.js';
 import { resolveConflicts } from '../agent/writes.js';
 import type { AgentTool } from '../agent/agent.types.js';
+import type { RunAgentOptions } from '../agent/agent.types.js';
+import { makeWorktreeTools } from '../agent/worktree.js';
+import { metadataDate, validateNoteMetadata } from '../knowledge/note-metadata.js';
+import type { SearchService } from '../rag/search.service.js';
 import type { IndexerService } from '../rag/indexer.service.js';
 import { NoteWriterService } from './note-writer.service.js';
 import { WriteJobsRepository } from './write-jobs.repository.js';
@@ -41,8 +46,14 @@ async function fixture(jobsAutostart = true) {
   const published: WikiEvent[] = [];
   events.subscribe((event) => published.push(event));
   const indexer = { syncToHead: vi.fn(async () => {}) } as unknown as IndexerService;
-  const agent = { runWrite: vi.fn(async () => ({ summary: 'No changes' })), resolveConflicts: vi.fn(async () => {}) } as unknown as AgentService;
   const acl = new AclService(db, users, new AuditService(db));
+  const agent = {
+    runWrite: vi.fn(async () => ({ summary: 'No changes' })),
+    resolveConflicts: vi.fn(async () => {}),
+    baseInstructions: vi.fn(async () => 'Write durable knowledge.'),
+    worktreeTools: vi.fn((...args: Parameters<AgentService['worktreeTools']>) => makeWorktreeTools({} as SearchService, args[0], args[1], acl, args[2])),
+    runAgent: vi.fn(async (_options: RunAgentOptions) => ({ text: 'Metadata unchanged', toolCalls: 0 })),
+  } as unknown as AgentService;
   const writer = new NoteWriterService(repository, repo, users, indexer, events, log, acl);
   const jobs = new WriteJobsService(repository, agent, indexer, repo, users, log, events, acl, writer, config);
   cleanups.push(async () => { await jobs.stop(); db.close(); await rm(dir, { recursive: true, force: true }); });
@@ -77,13 +88,35 @@ it('leaves persisted direct/revert retries queued while explicit edits and rever
   expect(f.agent.runWrite).not.toHaveBeenCalled();
 });
 
+it('stamps a metadata-rich direct creation while preserving custom YAML, existing authors, dates and the exact body', async () => {
+  const f = await fixture();
+  const header = `type: guide\naliases: ["Lookup guide"]\ndescription: A reusable guide.\ntags: [knowledge-guide]\nrelated: ["[[Existing note]]"]\nsource: [https://example.com/reference]\nconfidence: high\nimportance: low\ncustom:\n  preserved: true # retain this comment\nauthor: ["Original Contributor"]\ndate created: 2025-01-02\n`;
+  const body = '# A useful guide\r\n\r\nPreserve whitespace.  \r\n';
+  const result = await f.put('wiki/guide.md', `---\n${header}---\n${body}`);
+  const content = (await f.repo.readFile('wiki/guide.md'))!;
+  const parsed = matter(content);
+  expect(parsed.content).toBe(body);
+  expect(content).toContain('  preserved: true # retain this comment');
+  expect(parsed.data).toMatchObject({
+    type: 'guide', aliases: ['Lookup guide'], description: 'A reusable guide.',
+    tags: ['knowledge-guide'], related: ['[[Existing note]]'], source: ['https://example.com/reference'],
+    confidence: 'high', importance: 'low', custom: { preserved: true },
+    author: ['Original Contributor', 'Editor'],
+  });
+  expect(metadataDate(parsed.data['date created'])).toBe('2025-01-02');
+  expect(metadataDate(parsed.data['date modified'])).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  expect(validateNoteMetadata('wiki/guide.md', content)).toEqual([]);
+  expect(f.jobs.get(result.jobId)).toMatchObject({ kind: 'direct', status: 'succeeded' });
+  expect(f.agent.runAgent).not.toHaveBeenCalled();
+});
+
 it('checks touched paths only, preserves unrelated updates, and rejects stale edits and both move endpoints', async () => {
   const f = await fixture();
   await f.put('wiki/a.md', 'a');
   const base = await f.repo.headSha();
   await f.put('wiki/unrelated.md', 'unrelated');
   await f.put('wiki/a.md', 'a2', false, base);
-  expect(await f.repo.readFile('wiki/unrelated.md')).toBe('unrelated');
+  expect(matter((await f.repo.readFile('wiki/unrelated.md'))!).content).toBe('unrelated');
   await expect(f.put('wiki/a.md', 'lost', false, base)).rejects.toMatchObject({ status: 409, code: 'stale_note', message: expect.stringContaining(await f.repo.headSha()) });
   const move = (from: string, to: string, baseSha: string) => f.writer.apply({ userId: 1, source: 'web', baseSha, ops: [{ op: 'move', from, to }] });
   await expect(move('wiki/a.md', 'wiki/new.md', base)).rejects.toMatchObject({ code: 'stale_note' });
@@ -93,7 +126,7 @@ it('checks touched paths only, preserves unrelated updates, and rejects stale ed
   const result = await move('wiki/a.md', 'wiki/moved.md', await f.repo.headSha());
   expect(result.changed.sort()).toEqual(['wiki/a.md', 'wiki/moved.md']);
   expect(await f.repo.readFile('wiki/a.md')).toBeNull();
-  expect(await f.repo.readFile('wiki/moved.md')).toBe('a2');
+  expect(matter((await f.repo.readFile('wiki/moved.md'))!).content).toBe('a2');
 });
 
 it('rejects existing, missing, unsafe and invalid notes atomically and deletes existing notes', async () => {
@@ -101,7 +134,7 @@ it('rejects existing, missing, unsafe and invalid notes atomically and deletes e
   await f.put('wiki/a.md', 'a');
   await expect(f.put('wiki/a.md', 'replace')).rejects.toMatchObject({ status: 409, code: 'note_exists' });
   await f.put('wiki/missing.md', 'x', false);
-  expect(await f.repo.readFile('wiki/missing.md')).toBe('x');
+  expect(matter((await f.repo.readFile('wiki/missing.md'))!).content).toBe('x');
   await expect(f.put('../escape.md', 'x')).rejects.toMatchObject({ code: 'invalid_note' });
   await expect(f.put('config.json', '{}')).rejects.toMatchObject({ code: 'invalid_note' });
   const before = await f.repo.headSha();
@@ -137,7 +170,7 @@ it('previews and applies an inverse without changing main during preview', async
   expect(await f.repo.headSha()).toBe(before);
   expect(f.jobs.list().length).toBe(count);
   const result = await f.writer.applyRevert({ userId: 1, sha: changed.mergeSha });
-  expect(await f.repo.readFile('wiki/a.md')).toBe('original');
+  expect(matter((await f.repo.readFile('wiki/a.md'))!).content).toBe('original');
   expect(f.jobs.get(result.jobId)).toMatchObject({ kind: 'revert', source: 'revert', status: 'succeeded' });
   expect(result.mergeSha).not.toBe(created.mergeSha);
 });
@@ -170,8 +203,8 @@ it('holds direct freshness through indexing while Dony uses the same merge lock'
   await expect(late).rejects.toMatchObject({ code: 'stale_note' });
   await vi.waitFor(() => expect(f.jobs.get(agentJob.id)?.status).toBe('succeeded'));
   await f.jobs.stop();
-  expect(await f.repo.readFile('wiki/shared.md')).toBe('direct');
-  expect(await f.repo.readFile('wiki/agent.md')).toBe('agent');
+  expect(matter((await f.repo.readFile('wiki/shared.md'))!).content).toBe('direct');
+  expect(matter((await f.repo.readFile('wiki/agent.md'))!).content).toBe('agent');
 });
 
 it('retries failed Dony with provenance, cancels only queued jobs and keeps failed commits inspectable', async () => {
@@ -188,7 +221,7 @@ it('retries failed Dony with provenance, cancels only queued jobs and keeps fail
   await vi.waitFor(() => expect(f.jobs.get(original.id)?.status).toBe('failed'));
   await f.jobs.stop();
   const failed = f.jobs.get(original.id)!;
-  expect(await f.repo.readFile('wiki/failed.md', failed.commits[0]!)).toBe('inspect me');
+  expect(matter((await f.repo.readFile('wiki/failed.md', failed.commits[0]!))!).content).toBe('inspect me');
   const refs = await git('git', ['for-each-ref', '--format=%(refname)', 'refs/wiki/failed'], { cwd: join(f.dir, 'knowledge') });
   expect(refs.stdout).toContain(original.id);
   const retried = f.jobs.retry(original.id);
@@ -198,7 +231,7 @@ it('retries failed Dony with provenance, cancels only queued jobs and keeps fail
   f.jobs.start();
   await vi.waitFor(() => expect(f.jobs.get(retried.id)?.status).toBe('succeeded'));
   await expect(Promise.resolve().then(() => f.jobs.cancel(retried.id))).rejects.toMatchObject({ code: 'job_not_cancelable' });
-  expect(await f.repo.readFile('wiki/failed.md')).toBe('inspect me');
+  expect(matter((await f.repo.readFile('wiki/failed.md'))!).content).toBe('inspect me');
   expect(f.jobs.get(retried.id)?.commits).toContain(failed.commits[0]);
 });
 
@@ -219,7 +252,7 @@ it.each([true, false])('replays direct and revert failures immediately outside t
   expect(f.jobs.events(retried.id)[0]?.detail).toEqual({ retryOf: original.id });
   await vi.waitFor(() => expect(f.jobs.get(retried.id)?.status).toBe('succeeded'));
   expect(f.jobs.get(queuedAgent.id)?.status).toBe('queued');
-  expect(await f.repo.readFile('wiki/retry.md')).toBe('retained request');
+  expect(matter((await f.repo.readFile('wiki/retry.md'))!).content).toBe('retained request');
   const applied = f.jobs.get(retried.id)!;
   vi.mocked(f.repo.createWorktree).mockImplementationOnce(async (id) => {
     const wt = await createWorktree(id);
