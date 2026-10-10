@@ -82,6 +82,13 @@ SQLite는 기존 `CHECK` 제약을 `ALTER TABLE`로 변경할 수 없으므로 �
 
 `pnpm cli skill install codex [--project /path/to/project]`, `pnpm cli skill update codex`, `pnpm cli skill status codex`는 설치 상태와 버전을 관리한다. 대상은 `claude-code`, `codex`, `hermes`다. 로컬 수정 파일은 `--force` 없이 덮어쓰지 않으며 MCP 연결과 OAuth는 별도로 수행한다. 설치 위치와 클라이언트별 절차는 [설치형 Skills](skills.md)를 따른다.
 
+### 지식 구조 점검 CLI
+`pnpm cli lint`는 현재 `main`의 지식 구조를 읽기 전용으로 보고한다. 기본 출력은 사람이 읽는 보고서이며 `pnpm cli lint --json`은 JSON으로 출력한다. 노트·schema·허브를 수정하거나 이동하지 않고, 워크트리·커밋을 만들거나 꿈꾸기를 실행하지 않는다.
+
+보고서에는 중복 후보·고아 노트·과밀 폴더·모호하거나 미해결인 링크·노트 크기·태그 허브 부재와 도메인 허브 부재·루트 연결 누락·미분류 노트 신호가 포함된다. 신호의 후보 범위와 임계값은 [꿈꾸기의 구조 신호](dreaming.md#모드와-구조-신호)를 따른다. lint는 정리나 검증 통과 판정이 아닌 보고용 명령이므로 발견 사항이 있어도 종료 코드는 0이며, 명령 실행 오류만 0이 아닌 종료 코드를 반환한다.
+
+경로·도메인·위키링크·크기 신호는 보고서의 `headSha`에 고정한 main을 사용한다. 중복·고아·태그 허브 신호는 기존 SQLite catalog를 읽으며, `indexedSha`가 main과 다르면 `catalog: "stale"`로 표시한다. DB나 색인 체크포인트가 없으면 이 세 신호는 깨끗하다는 빈 목록이 아니라 `catalog: "unavailable"`과 JSON의 `null`로 보고한다. lint는 저장소 초기화·seed 적용·DB 마이그레이션·재인덱싱·임베딩 생성을 수행하지 않는다.
+
 ### OpenAI 로컬 테스트 fixture
 `test/fake-openai.ts`의 `startFakeOpenAI(script?: readonly FakeTurn[])`는 `Promise<{ url, close, requests }>`를 반환한다. 서버는 루프백 주소의 임시 포트를 사용하며 `url`에는 이미 `/v1`이 포함된다. OpenAI SDK의 `baseURL` 또는 엔진의 `OPENAI_BASE_URL`에 그대로 전달하고 테스트 종료 시 `await close()`로 정리한다.
 

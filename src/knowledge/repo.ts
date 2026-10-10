@@ -235,6 +235,17 @@ export class KnowledgeRepo {
   private readonly changedFiles = new ReadCache<FileChange[]>(1024, 8 * 1024 * 1024);
   private readonly commitMetadata = new ReadCache<CommitInfo>(1024, 4 * 1024 * 1024);
   private constructor(private readonly logger: Logger, private readonly git: Git, private readonly path: string, private readonly worktrees: string) {}
+  /** Attach to an existing main without initialization, checkout, recovery or Git writes. */
+  static async attachReadOnly(cfg: Config, log: Logger): Promise<KnowledgeRepo> {
+    const path = resolve(cfg.dataDir, 'knowledge');
+    await lstat(join(path, '.git'));
+    const git = new Git(cfg);
+    git.env.GIT_OPTIONAL_LOCKS = '0';
+    git.env.GIT_NO_LAZY_FETCH = '1';
+    const repo = new KnowledgeRepo(log, git, path, resolve(cfg.dataDir, 'worktrees'));
+    await repo.headSha();
+    return repo;
+  }
   static async open(cfg: Config, log: Logger): Promise<KnowledgeRepo> {
     const path = resolve(cfg.dataDir, 'knowledge');
     const worktrees = resolve(cfg.dataDir, 'worktrees');

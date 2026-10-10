@@ -92,6 +92,8 @@ describe('dream structural guards', () => {
 
   it.each([
     'index.md', 'INDEX.MD', 'MEMORY.md', 'memory.MD', 'AGENTS.md', 'agents.MD',
+    'wiki/health/AGENTS.md', 'wiki/health/agents.MD', './wiki//health/./AGENTS.md',
+    './WiKi//HeAlTh/./aGeNtS.Md',
     'journal/day.md', './JoUrNaL//day.md', 'journal', 'JOURNAL',
     'raw/source.md', './raw//x.md', 'RAW/source.md', 'raw', 'RAW',
   ])('preserves protected structural path %s as source, destination, and deletion target', async (path) => {
@@ -106,6 +108,40 @@ describe('dream structural guards', () => {
     await expect(destination.run('move_file', { from: 'wiki/a.md', to: path })).rejects.toThrow(/protect|immutable|reserved/i);
     expect([...destination.files]).toEqual([['wiki/a.md', 'ordinary']]);
     expect(destination.changes()).toEqual([]);
+  });
+
+  it.each([
+    'wiki/health/note.md', './WiKi//HeAlTh/./ordinary.MD',
+    'wiki/AGENTS.md', 'wiki/health/nested/AGENTS.md',
+    'wiki/concepts/AGENTS.md', 'wiki/entities/AGENTS.md', 'WiKi/CoNcEpTs/agents.MD',
+    'WiKi/EnTiTiEs/agents.MD', 'wiki/health/AGENTS.md.backup', 'archive/health/AGENTS.md',
+  ])('permits ordinary or non-domain-schema path %s as source, destination, and deletion target', async (path) => {
+    const canonical = repoPath(path);
+    const source = fixture({ [canonical]: 'ordinary' });
+    await expect(source.run('move_file', { from: path, to: 'archive/moved.md' })).resolves.toBe('moved');
+    expect([...source.files]).toEqual([['archive/moved.md', 'ordinary']]);
+    expect(source.changes()).toEqual([{ kind: 'move', from: canonical, to: 'archive/moved.md' }]);
+
+    const destination = fixture({ 'archive/source.md': 'ordinary' });
+    await expect(destination.run('move_file', { from: 'archive/source.md', to: path })).resolves.toBe('moved');
+    expect([...destination.files]).toEqual([[canonical, 'ordinary']]);
+    await expect(destination.run('delete_file', { path })).resolves.toBe('deleted');
+    expect([...destination.files]).toEqual([]);
+    expect(destination.changes()).toEqual([
+      { kind: 'move', from: 'archive/source.md', to: canonical },
+      { kind: 'delete', from: canonical },
+    ]);
+  });
+
+  it.each([
+    'AGENTS.md', './aGeNtS.Md', 'wiki/health/AGENTS.md',
+    './WiKi//HeAlTh/./aGeNtS.Md',
+  ])('allows schema content writes to %s just as for root AGENTS.md', async (path) => {
+    const canonical = repoPath(path);
+    const f = fixture({ [canonical]: 'original schema' });
+    await expect(f.run('write_file', { path, content: 'updated schema' })).resolves.toBe('written');
+    expect([...f.files]).toEqual([[canonical, 'updated schema']]);
+    expect(f.changes()).toEqual([]);
   });
 
   it.each(['raw/source.md', './raw//x.md', 'RaW/source.md', 'raw', 'RAW'])('rejects writing immutable raw path %s', async (path) => {
@@ -130,7 +166,7 @@ describe('dream structural guards', () => {
     expect(f.changes()).toEqual([]);
   });
 
-  it('allows writing index, memory, and journal while reserving only root control files structurally', async () => {
+  it('allows writing index, memory, and journal while permitting structural changes to wiki index notes', async () => {
     const f = fixture({ 'wiki/index.md': 'nested index' });
     for (const path of ['index.md', 'MEMORY.md', 'journal/2026-10-08.md']) {
       await f.run('write_file', { path, content: `updated ${path}` });

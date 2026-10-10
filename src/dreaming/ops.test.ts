@@ -498,7 +498,8 @@ it('runs an idle night sweep in the least recently reviewed wiki folder', async 
   const wt = await f.repo.createWorktree('idle-seed');
   const author = { name: 'Test', email: 'test@example.test' };
   await wt.write('wiki/topic/a.md', '# Topic\n\nA unique fact.\n');
-  await wt.write('index.md', '[[wiki/topic/a]]\n');
+  await wt.write('wiki/topic/index.md', '[[wiki/topic/a]]\n');
+  await wt.write('index.md', '[[wiki/topic/index]]\n');
   await wt.commit('Seed sweep folder', author);
   await f.repo.withMergeLock(() => wt.fastForwardMain());
   await wt.dispose();
@@ -513,7 +514,7 @@ it('runs an idle night sweep in the least recently reviewed wiki folder', async 
   expect(f.runs.get(run.id)).toEqual(run);
   expect(JSON.parse(f.runAgent.mock.calls[0][0].input as string)).toMatchObject({
     mode: 'sweep', focus: 'wiki/topic/', commits: [], userMessages: [],
-    structure: { focus: 'wiki/topic/', files: ['wiki/topic/a.md'] },
+    structure: { focus: 'wiki/topic/', files: ['wiki/topic/a.md', 'wiki/topic/index.md'] },
   });
   expect(f.runs.lastSucceededSweeps().get('wiki/topic/')).toBe(run.finishedAt);
 });

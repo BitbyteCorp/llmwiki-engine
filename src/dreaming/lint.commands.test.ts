@@ -1,0 +1,267 @@
+import 'reflect-metadata';
+import { mkdtemp, mkdir, lstat, readFile, readdir, readlink, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { Command } from 'commander';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { git } from '../export/git.js';
+import pino from 'pino';
+import { loadConfig } from '../config.js';
+import { openDb, runMigrations } from '../db/index.js';
+import { KnowledgeRepo } from '../knowledge/repo.js';
+import { IndexerService } from '../rag/indexer.service.js';
+import { registerLintCommands } from './lint.commands.js';
+
+const directories: string[] = [];
+afterEach(async () => {
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
+  await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+});
+
+function command(): Command {
+  const program = new Command().exitOverride();
+  registerLintCommands(program);
+  return program;
+}
+
+async function fixture(notes: Record<string, string>) {
+  const root = await mkdtemp(join(tmpdir(), 'llmwiki-lint-test-'));
+  directories.push(root);
+  const dataDir = join(root, 'data');
+  const repo = join(dataDir, 'knowledge');
+  await mkdir(repo, { recursive: true });
+  await git(repo, ['init', '-b', 'main']);
+  await git(repo, ['config', 'user.name', 'Lint Test']);
+  await git(repo, ['config', 'user.email', 'lint@example.test']);
+  for (const [path, markdown] of Object.entries(notes)) {
+    await mkdir(dirname(join(repo, path)), { recursive: true });
+    await writeFile(join(repo, path), markdown);
+  }
+  await git(repo, ['add', '.']);
+  await git(repo, ['commit', '--allow-empty', '-m', 'Committed lint fixture']);
+  const headSha = (await git(repo, ['rev-parse', 'main'])).trim();
+  vi.stubEnv('NODE_ENV', 'test');
+  vi.stubEnv('DATA_DIR', dataDir);
+  // A configured key must not cause lint to contact an embedding provider.
+  vi.stubEnv('OPENAI_API_KEY', 'lint-must-not-use-this-key');
+  vi.stubEnv('OPENAI_BASE_URL', 'http://127.0.0.1:1');
+  return { root, dataDir, repo, headSha };
+}
+
+/** Observe files and metadata, including Git refs/index/worktrees; ignore access times changed by reads. */
+async function snapshot(root: string): Promise<Record<string, unknown>> {
+  const entries: Record<string, unknown> = {};
+  async function visit(path: string, relative: string): Promise<void> {
+    const info = await lstat(path);
+    entries[relative] = {
+      mode: info.mode, mtime: info.mtimeMs, ctime: info.ctimeMs,
+      ...(info.isSymbolicLink() ? { link: await readlink(path) }
+        : info.isFile() ? { bytes: (await readFile(path)).toString('base64') } : {}),
+    };
+    if (info.isDirectory()) {
+      for (const name of (await readdir(path)).sort()) await visit(join(path, name), `${relative}/${name}`);
+    }
+  }
+  await visit(root, '');
+  return entries;
+}
+
+async function indexCatalog(dataDir: string): Promise<void> {
+  const config = loadConfig({ NODE_ENV: 'test', DATA_DIR: dataDir });
+  const log = pino({ level: 'silent' });
+  const repo = await KnowledgeRepo.attachReadOnly(config, log);
+  const db = openDb(join(dataDir, 'llmwiki.db'));
+  try {
+    runMigrations(db);
+    await new IndexerService(config, db, log, repo).syncToHead();
+    // An offline fixture avoids SQLite WAL sidecar lifecycle changing the filesystem snapshot.
+    db.pragma('journal_mode = DELETE');
+  } finally {
+    db.close();
+  }
+}
+
+describe('read-only CLI lint', () => {
+  it('prints human-readable findings successfully without changing repository, DB or abandoned worktrees', async () => {
+    const { dataDir, repo, headSha } = await fixture({
+      'index.md': '# Knowledge\n',
+      'wiki/health/note.md': '# Note\n\n[[Missing]]\n',
+      'wiki/loose.md': '# Unclassified\n',
+    });
+    const active = join(dataDir, 'worktrees', 'unfinished');
+    await mkdir(dirname(active), { recursive: true });
+    await git(repo, ['worktree', 'add', '-b', 'work/unfinished', active, 'main']);
+    await writeFile(join(active, 'wiki/loose.md'), '# Unfinished edits\n');
+    const stale = join(dataDir, 'worktrees', 'stale');
+    await git(repo, ['worktree', 'add', '-b', 'work/stale', stale, 'main']);
+    await rm(stale, { recursive: true });
+    await indexCatalog(dataDir);
+    await writeFile(join(repo, 'wiki/loose.md'), '# Dirty disk edit [[DiskOnly]]\n');
+    const before = await snapshot(dataDir);
+    const logged = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const exitCode = process.exitCode;
+
+    await command().parseAsync(['node', 'test', 'lint']);
+
+    const output = logged.mock.calls.map(([value]) => String(value)).join('\n');
+    expect(output).toContain(headSha);
+    expect(output).toContain('Missing domain hubs (1)');
+    expect(output).toContain('wiki/health/index.md');
+    expect(output).toContain('Unclassified notes (1)');
+    expect(output).toContain('wiki/loose.md');
+    expect(output).toContain('Unresolved wikilinks (1)');
+    expect(output).toContain('Missing');
+    expect(output).not.toContain('DiskOnly');
+    expect(output).toContain('Exit 0 even when findings are present');
+    expect(process.exitCode).toBe(exitCode);
+    expect(await snapshot(dataDir)).toEqual(before);
+  });
+
+  it('prints JSON for committed main rather than the checked-out branch or dirty files', async () => {
+    const { dataDir, repo, headSha } = await fixture({
+      'index.md': '[[wiki/health/index]]\n',
+      'wiki/health/index.md': '# Health\n\n[[wiki/health/note]]',
+      'wiki/health/note.md': '# Note\n\n[[Missing]]',
+    });
+    await indexCatalog(dataDir);
+    await git(repo, ['checkout', '-b', 'other']);
+    await writeFile(join(repo, 'wiki/health/note.md'), '# Other branch [[OtherMissing]]');
+    await git(repo, ['add', '.']);
+    await git(repo, ['commit', '-m', 'Other branch content']);
+    await writeFile(join(repo, 'wiki/health/index.md'), '# Dirty hub');
+    const before = await snapshot(dataDir);
+    const logged = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await command().parseAsync(['node', 'test', 'lint', '--json']);
+
+    expect(JSON.parse(String(logged.mock.calls[0]?.[0]))).toMatchObject({
+      headSha, indexedSha: headSha, catalog: 'current',
+      signals: {
+        missingDomainHubs: [], unlinkedDomainHubs: [], unclassifiedNotes: [],
+        unresolved: [{ path: 'wiki/health/note.md', target: 'Missing' }],
+        duplicates: [], orphans: [], missingHubs: [],
+      },
+    });
+    expect(await snapshot(dataDir)).toEqual(before);
+  });
+
+  it('reports index-backed checks as unavailable without creating a missing database', async () => {
+    const { dataDir, headSha } = await fixture({
+      'index.md': '# Knowledge',
+      'wiki/health/note.md': '# Note [[Missing]]',
+      'wiki/loose.md': '# Loose',
+    });
+    const before = await snapshot(dataDir);
+    const logged = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await command().parseAsync(['node', 'test', 'lint', '--json']);
+
+    expect(JSON.parse(String(logged.mock.calls[0]?.[0]))).toMatchObject({
+      headSha, indexedSha: null, catalog: 'unavailable',
+      signals: {
+        missingDomainHubs: ['wiki/health/index.md'], unclassifiedNotes: ['wiki/loose.md'],
+        unresolved: [{ path: 'wiki/health/note.md', target: 'Missing' }],
+        duplicates: null, orphans: null, missingHubs: null,
+      },
+    });
+    expect(await snapshot(dataDir)).toEqual(before);
+  });
+
+  it('labels stale index findings while collecting path-backed signals from current main without reindexing', async () => {
+    const { dataDir, repo, headSha: indexedSha } = await fixture({
+      'index.md': '[[wiki/health/index]]',
+      'wiki/health/index.md': '# Health [[wiki/health/note]]',
+      'wiki/health/note.md': '# Note',
+    });
+    await indexCatalog(dataDir);
+    await writeFile(join(repo, 'wiki/loose.md'), '# New unclassified note [[CurrentMissing]]');
+    await git(repo, ['add', '.']);
+    await git(repo, ['commit', '-m', 'Advance main beyond index']);
+    const headSha = (await git(repo, ['rev-parse', 'main'])).trim();
+    const before = await snapshot(dataDir);
+    const logged = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await command().parseAsync(['node', 'test', 'lint', '--json']);
+
+    expect(JSON.parse(String(logged.mock.calls[0]?.[0]))).toMatchObject({
+      headSha, indexedSha, catalog: 'stale',
+      signals: {
+        unclassifiedNotes: ['wiki/loose.md'],
+        unresolved: [{ path: 'wiki/loose.md', target: 'CurrentMissing' }],
+        duplicates: [], missingHubs: [],
+      },
+    });
+    expect(await snapshot(dataDir)).toEqual(before);
+  });
+
+  it('rejects a missing knowledge repository without creating the configured DATA_DIR', async () => {
+    const { root } = await fixture({});
+    vi.stubEnv('DATA_DIR', join(root, 'missing-data'));
+    const before = await snapshot(root);
+    const logged = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await expect(command().parseAsync(['node', 'test', 'lint'])).rejects.toMatchObject({ code: 'ENOENT' });
+
+    expect(logged).not.toHaveBeenCalled();
+    expect(await snapshot(root)).toEqual(before);
+  });
+
+  it('rejects an unborn main without seeding or committing the repository', async () => {
+    const { root } = await fixture({});
+    const dataDir = join(root, 'unborn');
+    const repo = join(dataDir, 'knowledge');
+    await mkdir(repo, { recursive: true });
+    await git(repo, ['init', '-b', 'main']);
+    vi.stubEnv('DATA_DIR', dataDir);
+    const before = await snapshot(dataDir);
+    const logged = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await expect(command().parseAsync(['node', 'test', 'lint'])).rejects.toMatchObject({ code: 'NOT_FOUND' });
+
+    expect(logged).not.toHaveBeenCalled();
+    expect(await snapshot(dataDir)).toEqual(before);
+  });
+
+  it('propagates database read errors without changing persistent data', async () => {
+    const { dataDir } = await fixture({ 'wiki/loose.md': '# Note' });
+    await writeFile(join(dataDir, 'llmwiki.db'), 'This is not a SQLite database');
+    const before = await snapshot(dataDir);
+    const logged = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await expect(command().parseAsync(['node', 'test', 'lint'])).rejects.toThrow(/not a database/);
+
+    expect(logged).not.toHaveBeenCalled();
+    expect(await snapshot(dataDir)).toEqual(before);
+  });
+
+  it('distinguishes unavailable index-backed checks from clean findings in human output', async () => {
+    await fixture({ 'wiki/loose.md': '# Loose [[Missing]]' });
+    const logged = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await command().parseAsync(['node', 'test', 'lint']);
+
+    const output = String(logged.mock.calls[0]?.[0]);
+    expect(output).toContain('Catalog: unavailable (indexed SHA: none)');
+    expect(output).toContain('Duplicate candidates (unavailable)');
+    expect(output).toContain('Orphan notes (unavailable)');
+    expect(output).toContain('Missing tag hubs (unavailable)');
+    expect(output).toContain('Unclassified notes (1)');
+    expect(output).toContain('Unresolved wikilinks (1)');
+  });
+
+  it('preserves shared collector caps in JSON output', async () => {
+    await fixture(Object.fromEntries(Array.from({ length: 25 }, (_, index) => [
+      `wiki/domain-${String(index).padStart(2, '0')}/note.md`, `# Note ${index} [[Missing-${index}]]`,
+    ])));
+    const logged = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await command().parseAsync(['node', 'test', 'lint', '--json']);
+
+    const report = JSON.parse(String(logged.mock.calls[0]?.[0]));
+    expect(report.signals.missingDomainHubs).toHaveLength(20);
+    expect(report.signals.unresolved).toHaveLength(20);
+    expect(report.signals.tinyNotes).toHaveLength(20);
+    expect(report.signals.duplicates).toBeNull();
+  });
+});

@@ -7,7 +7,7 @@ import { collectStructureSignals, restrictStructureSignals, selectDreamMode, typ
 function emptySignals(overrides: Partial<StructureSignals> = {}): StructureSignals {
   return {
     duplicates: [], orphans: [], unresolved: [], ambiguous: [], oversizedFolders: [], oversizedNotes: [],
-    tinyNotes: [], missingHubs: [], ...overrides,
+    tinyNotes: [], missingHubs: [], missingDomainHubs: [], unlinkedDomainHubs: [], unclassifiedNotes: [], ...overrides,
   };
 }
 
@@ -41,6 +41,9 @@ describe('dream mode selection', () => {
     { ambiguous: [{ path: 'wiki/a.md', target: 'shared', candidates: ['wiki/x/shared.md', 'wiki/y/shared.md'] }] },
     { unresolved: Array.from({ length: 5 }, (_, index) => ({ path: 'wiki/a.md', target: `missing-${index}` })) },
     { missingHubs: [{ tag: 'topic', count: 5, paths: ['wiki/a.md'] }] },
+    { missingDomainHubs: ['wiki/engineering/index.md'] },
+    { unlinkedDomainHubs: ['wiki/research/index.md'] },
+    { unclassifiedNotes: ['wiki/loose.md'] },
   ])('prioritizes structural repair over local changes and sweeps for %j', (signals) => {
     expect(selectDreamMode(emptySignals(signals), true, sweepFolders, new Map())).toEqual({ mode: 'structural', focus: null });
     expect(selectDreamMode(emptySignals(signals), false, sweepFolders, new Map())).toEqual({ mode: 'structural', focus: null });
@@ -80,6 +83,96 @@ describe('dream mode selection', () => {
 });
 
 describe('structural signal collection', () => {
+  it('finds missing domain hubs without treating shared folders or nested folders as domains', async () => {
+    const { signals } = await fixture({
+      'wiki/engineering/nested/guide.md': 'Guide',
+      'wiki/research/AGENTS.md': 'Paper rules',
+      'wiki/health/index.md': 'Health hub',
+      'wiki/concepts/term.md': 'Term',
+      'wiki/entities/tool.md': 'Tool',
+      'index.md': '[[wiki/health/index]]',
+    });
+    expect(signals.missingDomainHubs).toEqual(['wiki/engineering/index.md', 'wiki/research/index.md']);
+    expect(signals.unlinkedDomainHubs).toEqual([]);
+    expect(signals.missingHubs).toEqual([]);
+  });
+
+  it('discovers schema-only domains without treating their schema as a note or sweep candidate', async () => {
+    const { signals, folders } = await fixture({
+      'AGENTS.md': 'Root schema',
+      'wiki/research/AGENTS.md': 'Domain schema [[Missing example]]',
+    });
+    expect(signals).toEqual(emptySignals({ missingDomainHubs: ['wiki/research/index.md'] }));
+    expect(folders).toEqual([]);
+  });
+
+  it('finds domain hubs absent from root index, even when another note links them, without duplicating orphans', async () => {
+    const { signals } = await fixture({
+      'index.md': '[[INDEX|ambiguous]] [[wiki/engineering/index]]',
+      'wiki/engineering/index.md': 'Engineering hub',
+      'wiki/research/index.md': 'Research hub',
+      'wiki/research/note.md': '[[wiki/research/index]]',
+    }, { nodes: [], edges: [{ from: 'wiki/research/note.md', to: 'wiki/research/index.md' }] });
+    expect(signals.missingDomainHubs).toEqual([]);
+    expect(signals.unlinkedDomainHubs).toEqual(['wiki/research/index.md']);
+    expect(signals.orphans).toEqual(['wiki/research/note.md']);
+  });
+
+  it('resolves root hub wikilinks with aliases, headings and case-insensitive qualified paths', async () => {
+    const { signals } = await fixture({
+      'index.md': '[[WIKI/ENGINEERING/INDEX.MD#Overview|Engineering]] [[wiki/research/index|Research]]',
+      'wiki/engineering/index.md': 'Engineering hub',
+      'wiki/research/index.md': 'Research hub',
+    });
+    expect(signals.missingDomainHubs).toEqual([]);
+    expect(signals.unlinkedDomainHubs).toEqual([]);
+  });
+
+  it('reports existing hubs when root index is absent', async () => {
+    const { signals } = await fixture({ 'wiki/engineering/index.md': 'Engineering hub' });
+    expect(signals.unlinkedDomainHubs).toEqual(['wiki/engineering/index.md']);
+  });
+
+  it('classifies only markdown directly under wiki, including legacy index and uppercase extensions', async () => {
+    const { signals } = await fixture({
+      'wiki/.gitkeep': '',
+      'wiki/image.png': 'image',
+      'wiki/legacy.MD': 'Legacy note',
+      'wiki/index.md': 'Legacy index',
+      'wiki/engineering/guide.md': 'Guide',
+      'wiki/concepts/term.md': 'Term',
+      'wiki/entities/tool.md': 'Tool',
+      'raw/source.md': 'Source',
+      'index.md': 'Root index',
+    });
+    expect(signals.unclassifiedNotes).toEqual(['wiki/index.md', 'wiki/legacy.MD']);
+    const clean = await fixture({
+      'wiki/.gitkeep': '',
+      'wiki/concepts/term.md': 'Term',
+      'wiki/entities/tool.md': 'Tool',
+      'wiki/engineering/index.md': 'Hub',
+      'index.md': '[[wiki/engineering/index]]',
+    });
+    expect(clean.signals.unclassifiedNotes).toEqual([]);
+  });
+
+  it('caps domain hygiene signals at twenty sorted paths', async () => {
+    const notes: Record<string, string> = {};
+    for (let index = 0; index < 25; index++) {
+      const name = String(index).padStart(2, '0');
+      notes[`wiki/missing-${name}/note.md`] = 'Note';
+      notes[`wiki/unlinked-${name}/index.md`] = 'Hub';
+      notes[`wiki/loose-${name}.md`] = 'Loose';
+    }
+    const { signals } = await fixture(notes);
+    expect(signals.missingDomainHubs).toEqual(Array.from({ length: 20 }, (_, index) =>
+      `wiki/missing-${String(index).padStart(2, '0')}/index.md`));
+    expect(signals.unlinkedDomainHubs).toEqual(Array.from({ length: 20 }, (_, index) =>
+      `wiki/unlinked-${String(index).padStart(2, '0')}/index.md`));
+    expect(signals.unclassifiedNotes).toEqual(Array.from({ length: 20 }, (_, index) =>
+      `wiki/loose-${String(index).padStart(2, '0')}.md`));
+  });
+
   it('uses strict size boundaries, excludes frontmatter from tiny bodies and counts only direct markdown', async () => {
     const notes: Record<string, string> = {
       'wiki/sizes/exact-large.md': 'x'.repeat(20_000),
@@ -262,6 +355,7 @@ describe('structural signal scopes', () => {
       unresolved: signals.unresolved.slice(0, 2), ambiguous: signals.ambiguous,
       oversizedFolders: [signals.oversizedFolders[0]], oversizedNotes: [signals.oversizedNotes[0]], tinyNotes: [],
       missingHubs: [signals.missingHubs[0]],
+      missingDomainHubs: [], unlinkedDomainHubs: [], unclassifiedNotes: [],
     });
     expect(restrictStructureSignals(signals, [], [])).toEqual(emptySignals());
   });
@@ -272,7 +366,28 @@ describe('structural signal scopes', () => {
       unresolved: signals.unresolved.slice(0, 2), ambiguous: signals.ambiguous,
       oversizedFolders: [signals.oversizedFolders[0]], oversizedNotes: [signals.oversizedNotes[0]], tinyNotes: [],
       missingHubs: [signals.missingHubs[0]],
+      missingDomainHubs: [], unlinkedDomainHubs: [], unclassifiedNotes: [],
     });
     expect(signals.orphans).toEqual(['wiki/a/note.md', 'wiki/a/nested/note.md', 'wiki/b/note.md']);
+  });
+
+  it('scopes domain hygiene to the containing domain and root-index linkage edits', () => {
+    const domains = emptySignals({
+      missingDomainHubs: ['wiki/a/index.md', 'wiki/b/index.md'],
+      unlinkedDomainHubs: ['wiki/a/index.md', 'wiki/c/index.md'],
+      unclassifiedNotes: ['wiki/loose.md', 'wiki/other.md'],
+    });
+    expect(restrictStructureSignals(domains, ['wiki/a/nested/note.md'])).toEqual(emptySignals({
+      missingDomainHubs: ['wiki/a/index.md'], unlinkedDomainHubs: ['wiki/a/index.md'],
+    }));
+    expect(restrictStructureSignals(domains, [], ['wiki/b/nested/'])).toEqual(emptySignals({
+      missingDomainHubs: ['wiki/b/index.md'],
+    }));
+    expect(restrictStructureSignals(domains, ['index.md'])).toEqual(emptySignals({
+      unlinkedDomainHubs: domains.unlinkedDomainHubs,
+    }));
+    expect(restrictStructureSignals(domains, ['wiki/loose.md'])).toEqual(emptySignals({
+      unclassifiedNotes: ['wiki/loose.md'],
+    }));
   });
 });

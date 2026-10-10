@@ -2,6 +2,7 @@ import { posix } from 'node:path';
 import { z } from 'zod';
 import { matchesAclPrefix, type AclService } from '../acl/acl.service.js';
 import type { AgentTool } from '../agent/agent.types.js';
+import { isDomainSchemaPath } from '../knowledge/domains.js';
 import { repoPath } from '../knowledge/repo.js';
 import { wikilinkTargets } from '../rag/chunking.js';
 import { NoteTargetResolver } from '../rag/link-resolver.js';
@@ -26,7 +27,9 @@ function assertMutable(path: string, structural: boolean): void {
   const key = path.toLowerCase();
   if (key === 'raw' || key.startsWith('raw/') || (structural && (
     key === 'journal' || key.startsWith('journal/') ||
-    key === 'index.md' || key === 'memory.md' || key === 'agents.md'
+    key === 'index.md' || key === 'memory.md' || key === 'agents.md' ||
+    // Keep schema detection case-insensitive without changing the shared helper's canonical-path contract.
+    isDomainSchemaPath(key.replace(/\/agents\.md$/, '/AGENTS.md'))
   ))) {
     throw new Error(`Dreaming cannot mutate protected path: ${path}`);
   }

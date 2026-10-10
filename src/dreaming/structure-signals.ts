@@ -1,6 +1,7 @@
 import { posix } from 'node:path';
 import matter from 'gray-matter';
 import type { KnowledgeRepo } from '../knowledge/repo.js';
+import { domainOf, isDomainSchemaPath, isUnclassifiedWikiNote, listDomains } from '../knowledge/domains.js';
 import type { CatalogService } from '../rag/catalog.service.js';
 import { wikilinkTargets } from '../rag/chunking.js';
 import type { ComparisonService, DuplicateNotes } from '../rag/comparison.service.js';
@@ -19,10 +20,13 @@ export interface StructureSignals {
   oversizedNotes: Array<{ path: string; chars: number }>;
   tinyNotes: Array<{ path: string; chars: number }>;
   missingHubs: Array<{ tag: string; count: number; paths: string[] }>;
+  missingDomainHubs: string[];
+  unlinkedDomainHubs: string[];
+  unclassifiedNotes: string[];
 }
 
 function wikiNote(path: string): boolean {
-  return path.startsWith('wiki/') && /\.md$/i.test(path);
+  return path.startsWith('wiki/') && /\.md$/i.test(path) && !isDomainSchemaPath(path);
 }
 
 function folderFor(path: string): string {
@@ -31,9 +35,9 @@ function folderFor(path: string): string {
 
 /** Catalog and comparison calls deliberately use their unrestricted system view. */
 export async function collectStructureSignals(
-  repo: KnowledgeRepo,
-  catalog: CatalogService,
-  comparison: ComparisonService,
+  repo: Pick<KnowledgeRepo, 'diffNames' | 'readFile'>,
+  catalog: Pick<CatalogService, 'graph'>,
+  comparison: Pick<ComparisonService, 'duplicates'>,
   sha: string,
 ): Promise<{ signals: StructureSignals; folders: Folder[] }> {
   const files = (await repo.diffNames(null, sha)).map(({ path }) => path).sort();
@@ -41,6 +45,16 @@ export async function collectStructureSignals(
   const wikiPaths = new Set(wikiFiles);
   const noteResolver = new NoteTargetResolver(files.filter((path) => /\.md$/i.test(path)));
   const fileResolver = new NoteTargetResolver(files);
+  const domains = listDomains(files);
+  const domainHubPaths = new Set(domains.map(({ hubPath }) => hubPath));
+  const rootLinks = new Set<string>();
+  if (domains.some(({ hasHub }) => hasHub)) {
+    const rootIndex = await repo.readFile('index.md', sha);
+    for (const { text } of wikilinkTargets(rootIndex ?? '')) {
+      const { path } = noteResolver.resolve(text);
+      if (path !== null) rootLinks.add(path);
+    }
+  }
   const graph = catalog.graph();
   const incoming = new Set(graph.edges.map(({ to }) => to));
   const outgoing = new Map<string, Set<string>>();
@@ -65,7 +79,8 @@ export async function collectStructureSignals(
       .filter(({ left, right }) => wikiPaths.has(left.path) && wikiPaths.has(right.path))
       .slice(0, SIGNAL_LIMIT)
       .map(({ left, right, score, reason }) => ({ left: left.path, right: right.path, score, reason })),
-    orphans: wikiFiles.filter((path) => !incoming.has(path)).slice(0, SIGNAL_LIMIT),
+    // Domain hubs have their own required root-index reachability signal.
+    orphans: wikiFiles.filter((path) => !domainHubPaths.has(path) && !incoming.has(path)).slice(0, SIGNAL_LIMIT),
     unresolved: [],
     ambiguous: [],
     oversizedFolders: folders.filter(({ files: direct }) => direct.length > 30).slice(0, SIGNAL_LIMIT)
@@ -73,6 +88,10 @@ export async function collectStructureSignals(
     oversizedNotes: [],
     tinyNotes: [],
     missingHubs: [],
+    missingDomainHubs: domains.filter(({ hasHub }) => !hasHub).slice(0, SIGNAL_LIMIT).map(({ hubPath }) => hubPath),
+    unlinkedDomainHubs: domains.filter(({ hasHub, hubPath }) => hasHub && !rootLinks.has(hubPath))
+      .slice(0, SIGNAL_LIMIT).map(({ hubPath }) => hubPath),
+    unclassifiedNotes: wikiFiles.filter(isUnclassifiedWikiNote).slice(0, SIGNAL_LIMIT),
   };
 
   for (const path of wikiFiles) {
@@ -137,7 +156,8 @@ export function selectDreamMode(
   lastSweeps: ReadonlyMap<string, string>,
 ): { mode: 'local' | 'structural' | 'sweep' | null; focus: string | null } {
   if (signals.duplicates.length || signals.orphans.length >= 5 || signals.oversizedFolders.length
-    || signals.ambiguous.length || signals.unresolved.length >= 5 || signals.missingHubs.length) {
+    || signals.ambiguous.length || signals.unresolved.length >= 5 || signals.missingHubs.length
+    || signals.missingDomainHubs.length || signals.unlinkedDomainHubs.length || signals.unclassifiedNotes.length) {
     return { mode: 'structural', focus: null };
   }
   if (hasChanges) return { mode: 'local', focus: null };
@@ -168,6 +188,8 @@ export function restrictStructureSignals(signals: StructureSignals, paths: strin
     || paths.some((changed) => folderFor(changed) === path);
   const touchesTarget = (target: string): boolean => changedTargets.resolve(target).candidates.length > 0
     || normalizedFolders.has(folderFor(`${normalizeLinkTarget(target)}.md`));
+  const selectedDomains = new Set([...paths, ...selectedFolders].map(domainOf).filter((domain) => domain !== null));
+  const touchesDomain = (hub: string): boolean => touches(hub) || selectedDomains.has(domainOf(hub)!);
   return {
     duplicates: signals.duplicates.filter(({ left, right }) => touches(left) || touches(right)).slice(0, SIGNAL_LIMIT),
     orphans: signals.orphans.filter(touches).slice(0, SIGNAL_LIMIT),
@@ -180,5 +202,9 @@ export function restrictStructureSignals(signals: StructureSignals, paths: strin
     tinyNotes: signals.tinyNotes.filter(({ path }) => touches(path)).slice(0, SIGNAL_LIMIT),
     missingHubs: signals.missingHubs.filter(({ paths: tagged }) => tagged.some(touches)).slice(0, SIGNAL_LIMIT)
       .map((signal) => ({ ...signal, paths: signal.paths.slice(0, SIGNAL_LIMIT) })),
+    missingDomainHubs: signals.missingDomainHubs.filter(touchesDomain).slice(0, SIGNAL_LIMIT),
+    unlinkedDomainHubs: signals.unlinkedDomainHubs.filter((hub) => touchesDomain(hub) || selectedPaths.has('index.md'))
+      .slice(0, SIGNAL_LIMIT),
+    unclassifiedNotes: signals.unclassifiedNotes.filter(touches).slice(0, SIGNAL_LIMIT),
   };
 }
