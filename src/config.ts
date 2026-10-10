@@ -13,13 +13,14 @@ const envSchema = z.object({
   OPENAI_API_KEY: optionalText,
   OPENAI_BASE_URL: z.preprocess((value) => value === '' ? undefined : value, z.url().optional()),
   OPENAI_MAX_RETRIES: z.coerce.number().int().nonnegative().default(8),
-  LLM_MODELS: z.string().default('gpt-6-luna')
+  LLM_PROVIDER: z.enum(['openai', 'openrouter']).default('openai'),
+  LLM_MODELS: z.string()
     .transform(value => value.split(',').map(model => model.trim()).filter(Boolean))
-    .pipe(z.array(z.string()).nonempty()),
+    .pipe(z.array(z.string()).nonempty()).optional(),
   LLM_REASONING_EFFORT: z.string().min(1).default('medium'),
   LLM_BACKGROUND_REASONING_EFFORT: z.enum(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']).default('low'),
   LLM_COMPACT_THRESHOLD: z.coerce.number().int().positive().default(50000),
-  EMBEDDING_MODEL: z.string().min(1).default('text-embedding-3-small'),
+  EMBEDDING_MODEL: optionalText,
   EMBEDDING_DIMENSIONS: z.coerce.number().int().positive().default(1536),
   SEARCH_RERANK: z.enum(['off', 'llm']).default('off'),
   SEARCH_EXPAND: z.enum(['off', 'llm']).default('off'),
@@ -52,6 +53,7 @@ export interface Config {
   port: number; publicUrl: string; dataDir: string; sessionSecret: string;
   jobsAutostart?: boolean;
   openaiApiKey?: string; openaiBaseUrl?: string; openaiMaxRetries?: number;
+  llmProvider: 'openai' | 'openrouter';
   llmModels: string[]; llmModel: string; llmReasoningEffort: string;
   llmBackgroundReasoningEffort: string;
   llmCompactThreshold: number;
@@ -70,16 +72,20 @@ export interface Config {
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const parsed = envSchema.parse(env);
+  const llmModels = parsed.LLM_MODELS ?? [parsed.LLM_PROVIDER === 'openrouter' ? 'openai/gpt-6-luna' : 'gpt-6-luna'];
   return {
     nodeEnv: parsed.NODE_ENV, port: parsed.PORT, publicUrl: parsed.PUBLIC_URL,
     dataDir: resolve(parsed.DATA_DIR), sessionSecret: parsed.SESSION_SECRET ?? randomBytes(32).toString('hex'),
     jobsAutostart: parsed.JOBS_AUTOSTART === 'true',
-    openaiApiKey: parsed.OPENAI_API_KEY, openaiBaseUrl: parsed.OPENAI_BASE_URL,
+    openaiApiKey: parsed.OPENAI_API_KEY,
+    openaiBaseUrl: parsed.OPENAI_BASE_URL ?? (parsed.LLM_PROVIDER === 'openrouter' ? 'https://openrouter.ai/api/v1' : undefined),
     openaiMaxRetries: parsed.OPENAI_MAX_RETRIES,
-    llmModels: parsed.LLM_MODELS, llmModel: parsed.LLM_MODELS[0], llmReasoningEffort: parsed.LLM_REASONING_EFFORT,
+    llmProvider: parsed.LLM_PROVIDER,
+    llmModels, llmModel: llmModels[0], llmReasoningEffort: parsed.LLM_REASONING_EFFORT,
     llmBackgroundReasoningEffort: parsed.LLM_BACKGROUND_REASONING_EFFORT,
     llmCompactThreshold: parsed.LLM_COMPACT_THRESHOLD,
-    embeddingModel: parsed.EMBEDDING_MODEL, embeddingDimensions: parsed.EMBEDDING_DIMENSIONS,
+    embeddingModel: parsed.EMBEDDING_MODEL ?? (parsed.LLM_PROVIDER === 'openrouter' ? 'openai/text-embedding-3-small' : 'text-embedding-3-small'),
+    embeddingDimensions: parsed.EMBEDDING_DIMENSIONS,
     searchRerank: parsed.SEARCH_RERANK, searchExpand: parsed.SEARCH_EXPAND, indexPollSeconds: parsed.INDEX_POLL_SECONDS,
     googleClientId: parsed.GOOGLE_CLIENT_ID, googleClientSecret: parsed.GOOGLE_CLIENT_SECRET,
     knowledgeRepoUrl: parsed.KNOWLEDGE_REPO_URL, gitSshKeyPath: parsed.GIT_SSH_KEY_PATH,

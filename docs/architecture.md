@@ -29,7 +29,7 @@ flowchart TB
         sqlite[SQLite 파일 · 상태와 검색 인덱스]
     end
 
-    openai[OpenAI API · 도니와 임베딩]
+    openai[OpenAI 또는 OpenRouter · OpenAI 호환 API · 도니와 임베딩]
     google[Google OAuth]
     github[GitHub · 백업]
 
@@ -88,7 +88,7 @@ sqlite-vec는 검토 시점에 1.0 이전 버전인 0.1.9이며, 근사 최근�
 PostgreSQL로 전환할 조건은 엔진을 여러 인스턴스로 띄워야 할 때, 관리형 DB를 이미 운영하고 있을 때, 청크 수가 수십만 이상으로 커져 전수 비교가 느려질 때다.
 
 ### 외부 의존과 git 실행
-OpenAI API는 [도니](agent.md)와 임베딩에, Google OAuth는 [인증](auth.md)에, GitHub는 [지식 저장소 백업](knowledge-repository.md)에 사용한다. 컨테이너 이미지에는 git CLI를 포함하고, GitHub push 인증은 SSH 배포 키를 기본값으로 한다.
+OpenAI 또는 OpenRouter의 OpenAI 호환 API는 [도니](agent.md#제공자-선택)와 임베딩에, Google OAuth는 [인증](auth.md)에, GitHub는 [지식 저장소 백업](knowledge-repository.md)에 사용한다. 컨테이너 이미지에는 git CLI를 포함하고, GitHub push 인증은 SSH 배포 키를 기본값으로 한다.
 
 ## 관련 문서
 - [지식 저장소](knowledge-repository.md)는 엔진이 관리하는 지식 파일과 백업 정책을 설명한다.

@@ -198,7 +198,9 @@ export class AgentService {
       tools: opts.tools.map((tool) => ({ type: 'function', name: tool.name, description: tool.description, parameters: tool.parameters, strict: false })),
       store: false,
       include: ['reasoning.encrypted_content'],
-      context_management: [{ type: 'compaction', compact_threshold: config.llmCompactThreshold }],
+      ...(config.llmProvider === 'openai' ? {
+        context_management: [{ type: 'compaction', compact_threshold: config.llmCompactThreshold }],
+      } : {}),
     };
     for (let turn = 0; turn < maxTurns; turn++) {
       opts.signal?.throwIfAborted();

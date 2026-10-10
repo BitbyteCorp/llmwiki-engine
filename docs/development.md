@@ -9,7 +9,7 @@
 - Node.js 24, TypeScript 6, ESM, pnpm 10.34.6을 사용한다. 서버 TypeScript는 엄격 모드와 `NodeNext` 모듈 해석을 사용하며, 소스의 로컬 import에는 빌드 결과에 맞는 `.js` 확장자를 쓴다.
 - 서버는 NestJS와 Express 어댑터를 사용한다. 개발과 CLI 실행은 SWC의 `@swc-node/register/esm-register`, 서버 컴파일은 `tsc`, 테스트는 Vitest와 `unplugin-swc`를 사용한다.
 - 상태와 검색 인덱스는 `better-sqlite3`와 `sqlite-vec`로 SQLite에 저장한다. ORM 없이 SQL 마이그레이션을 적용한다.
-- 도니는 OpenAI SDK의 Responses API와 함수 도구를 사용한다. 환경 변수 검증은 Zod, CLI는 Commander, 로그는 Pino, 스케줄은 Croner, JWT/JWKS는 Jose, frontmatter는 gray-matter를 사용한다. Git은 `git` CLI를 인자 배열로 실행한다.
+- 도니는 OpenAI SDK의 Responses API와 함수 도구를 사용하며, [제공자 선택](agent.md#제공자-선택)으로 OpenAI 호환 API에 연결한다. 환경 변수 검증은 Zod, CLI는 Commander, 로그는 Pino, 스케줄은 Croner, JWT/JWKS는 Jose, frontmatter는 gray-matter를 사용한다. Git은 `git` CLI를 인자 배열로 실행한다.
 - `web/`는 Next.js App Router, React 19, TypeScript, Tailwind CSS 4, shadcn/ui를 사용하는 웹 프로젝트다. 화면 경로는 App Router, 서버 상태는 TanStack Query, 마크다운은 react-markdown과 remark-gfm이 담당한다. 세부 화면 구성은 [웹](web.md)에 기록한다.
 - 패키지는 루트 `package.json`과 `pnpm-lock.yaml` 하나로 관리하며 설치도 루트에서 한 번만 실행한다. Next.js와 UI 의존성도 루트에 두며 `web/package.json`이나 별도 웹 lockfile은 두지 않는다.
 
@@ -92,7 +92,7 @@ SQLite는 기존 `CHECK` 제약을 `ALTER TABLE`로 변경할 수 없으므로 �
 fixture의 범위를 검증하는 명령은 `pnpm vitest run test/fake-openai.test.ts`다. 이 fixture는 OpenAI API의 유료 호출이나 외부 네트워크 없이 도구 호출과 스트리밍을 재현하기 위한 것이며 실제 모델 품질을 평가하지 않는다.
 
 ### 환경 변수
-설정은 프로세스 환경 변수에서 읽는다. 키와 비밀값은 저장소나 이미지에 넣지 않고 실행 시 전달한다. 대부분은 `src/config.ts`의 Zod 스키마가 검증한다. 모델 목록과 기본 모델·추론 강도도 공용 설정을 사용하며, `UPLOAD_RETENTION_DAYS`는 업로드 서비스가 직접 읽는다. `LLM_MODELS`는 앞뒤 공백과 빈 항목을 제거한 뒤 하나 이상의 모델이 있어야 하므로 빈 값은 허용하지 않는다.
+설정은 프로세스 환경 변수에서 읽는다. 키와 비밀값은 저장소나 이미지에 넣지 않고 실행 시 전달한다. 대부분은 `src/config.ts`의 Zod 스키마가 검증한다. 모델 목록과 기본 모델·추론 강도도 공용 설정을 사용하며, `UPLOAD_RETENTION_DAYS`는 업로드 서비스가 직접 읽는다. `LLM_MODELS`는 미설정일 때, `EMBEDDING_MODEL`은 미설정이나 빈 문자열일 때 제공자별 기본값을 사용하며 명시한 값이 우선한다. `LLM_MODELS`는 앞뒤 공백과 빈 항목을 제거한 뒤 하나 이상의 모델이 있어야 하므로 빈 문자열이나 공백·쉼표만 있는 목록은 시작 시 거절한다.
 
 | 변수 | 기본값 | 의미 |
 | --- | --- | --- |
@@ -107,15 +107,16 @@ fixture의 범위를 검증하는 명령은 `pnpm vitest run test/fake-openai.te
 | `RATE_LIMIT_AUTH` | `30` | 인증·OAuth 경로에서 집계 구간당 IP별 최대 요청 수다. |
 | `RATE_LIMIT_USER` | `60` | 검색·채팅 메시지·쓰기·가져오기가 공유하는 사용자별 최대 요청 수다. |
 | `AUTH_CLEANUP_INTERVAL_MS` | `300000` | 만료 세션·인증 요청·코드·토큰 정리 주기(밀리초)다. |
-| `OPENAI_API_KEY` | 미설정 | 시작 시 필수는 아니지만 도니와 임베딩 실행에는 필요하다. 미설정이면 해당 기능이 명확한 오류로 실패한다. |
-| `OPENAI_BASE_URL` | 미설정 | OpenAI 호환 API 주소를 재정의한다. 테스트 서버 연결에도 사용한다. |
+| `LLM_PROVIDER` | `openai` | LLM·임베딩 제공자를 `openai` 또는 `openrouter`로 고른다. 다른 값은 Zod 검증으로 시작 시 거절한다. 제공자별 호출 경계는 [제공자 선택](agent.md#제공자-선택)을 따른다. |
+| `OPENAI_API_KEY` | 미설정 | 선택한 제공자의 API 키다. 시작 시 필수는 아니지만 도니와 임베딩 실행에는 필요하다. 미설정이면 해당 기능이 명확한 오류로 실패한다. |
+| `OPENAI_BASE_URL` | `openai`: 미설정 / `openrouter`: `https://openrouter.ai/api/v1` | OpenAI 호환 API 주소를 재정의하며 명시한 주소가 제공자별 기본값보다 우선한다. 테스트 서버 연결에도 사용한다. |
 | `OPENAI_MAX_RETRIES` | `8` | 도니와 임베딩의 최초 요청 이후 최대 재시도 횟수다. 0 이상의 정수만 허용하며 `0`이면 재시도를 끈다. 429 대기 힌트와 선택적 검색 호출의 예외는 [OpenAI 재시도 정책](agent.md#openai-재시도-정책)을 따른다. |
-| `LLM_MODELS` | `gpt-6-luna` | 쉼표로 구분하는 선택 가능 모델 목록이다. 앞뒤 공백과 빈 항목을 제거하고, 첫 항목을 기본 모델로 사용한다. 요청별 모델은 이 목록에 있어야 하며 목록은 비어 있을 수 없다. |
+| `LLM_MODELS` | `openai`: `gpt-6-luna` / `openrouter`: `openai/gpt-6-luna` | 쉼표로 구분하는 선택 가능 모델 목록이다. 앞뒤 공백과 빈 항목을 제거하고, 첫 항목을 기본 모델로 사용한다. 요청별 모델은 이 목록에 있어야 하며 목록은 비어 있을 수 없다. |
 | `LLM_REASONING_EFFORT` | `medium` | 대화 답변과 노트 제안의 기본 추론 강도다. 도니의 추론 강도 허용 값은 `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`다. 웹 요청별 선택은 [모델과 호출 방식](agent.md#모델과-호출-방식)을 따른다. |
 | `LLM_BACKGROUND_REASONING_EFFORT` | `low` | 대화 요약·부모 쓰기·서브에이전트·충돌 해결·꿈꾸기의 기본 추론 강도다. 위와 같은 허용 값으로 시작 시 검증하며 잘못된 값은 거절한다. 용도별 적용과 요청 옵션 우선순위는 [비용과 사용량](agent.md#비용과-사용량)을 따른다. |
-| `LLM_COMPACT_THRESHOLD` | `50000` | 도니의 입력 문맥 압축을 시작하는 토큰 임계값이다. 양의 정수만 허용하며, 반복 입력 비용을 줄이기 위해 기본값을 120000에서 낮췄다. 압축·도구 페이지 상한은 [문맥 크기와 도구 페이지](agent.md#문맥-크기와-도구-페이지)를 따른다. |
+| `LLM_COMPACT_THRESHOLD` | `50000` | OpenAI에서 도니의 입력 문맥 압축을 시작하는 토큰 임계값이며 `openrouter`에서는 효과가 없다. 양의 정수만 허용하며, 반복 입력 비용을 줄이기 위해 기본값을 120000에서 낮췄다. 압축·도구 페이지 상한은 [문맥 크기와 도구 페이지](agent.md#문맥-크기와-도구-페이지)를 따른다. |
 | `UPLOAD_RETENTION_DAYS` | `7` | 사용하지 않는 임시 업로드의 보관 일수다. 가져온 raw 원문이나 assets git 파일의 보관 기간과 다르다. |
-| `EMBEDDING_MODEL` | `text-embedding-3-small` | 검색 임베딩 모델이다. |
+| `EMBEDDING_MODEL` | `openai`: `text-embedding-3-small` / `openrouter`: `openai/text-embedding-3-small` | 검색 임베딩 모델이다. |
 | `EMBEDDING_DIMENSIONS` | `1536` | 임베딩 벡터 차원이다. |
 | `SEARCH_RERANK` | `off` | `llm`이면 설정한 LLM 모델로 검색 후보를 재정렬한다. |
 | `SEARCH_EXPAND` | `off` | `llm`이면 검색 질의 확장을 사용한다. |
