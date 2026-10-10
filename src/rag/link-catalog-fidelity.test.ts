@@ -10,9 +10,9 @@ import { CatalogService } from './catalog.service.js';
 const viewer: AclUser = { id: 7, role: 'viewer' };
 let db: Db;
 let catalog: CatalogService;
-function note(path: string) {
-  db.prepare(`INSERT INTO chunks(path,title,heading,content,embedding_text,content_hash,kind,ordinal)
-    VALUES(?,?,'','body','body',?,'wiki',0)`).run(path, path, path);
+function note(path: string, aliases: string[] = []) {
+  db.prepare(`INSERT INTO chunks(path,title,heading,content,embedding_text,content_hash,kind,ordinal,aliases_json)
+    VALUES(?,?,'','body','body',?,'wiki',0,?)`).run(path, path, path, JSON.stringify(aliases));
 }
 function link(source: string, key: string, text: string, target: string | null) {
   db.prepare('INSERT INTO links(source_path,target_name,target_text,target_path) VALUES(?,?,?,?)').run(source, key, text, target);
@@ -93,5 +93,57 @@ describe('reader-visible link resolution', () => {
     expect(catalog.links('public/Shared.md', editor).backlinks).toEqual([
       { path: 'wiki/source.md', title: 'wiki/source.md' },
     ]);
+  });
+
+  it('resolves stored aliases case-insensitively and projects alias ambiguity through current ACL', () => {
+    db.prepare('UPDATE chunks SET aliases_json = ? WHERE path IN (?, ?)')
+      .run(JSON.stringify(['  Shared alias  ']), 'public/Shared.md', 'secret/Shared.md');
+    link('wiki/source.md', 'shared alias', 'sHaReD ALIAS', null);
+    db.prepare("INSERT INTO index_meta(key,value) VALUES('catalog_revision','1')").run();
+    expect(catalog.links('wiki/source.md').unresolved).toEqual(['sHaReD ALIAS']);
+    expect(catalog.links('wiki/source.md', viewer)).toEqual({
+      outgoing: [{ path: 'public/Shared.md', title: 'public/Shared.md' }], backlinks: [], unresolved: [],
+    });
+    expect(catalog.links('public/Shared.md', viewer).backlinks).toEqual([
+      { path: 'wiki/source.md', title: 'wiki/source.md' },
+    ]);
+    expect(catalog.graph(viewer).edges).toEqual([{ from: 'wiki/source.md', to: 'public/Shared.md' }]);
+    db.prepare('DELETE FROM acl_rules').run();
+    expect(catalog.links('wiki/source.md', viewer).unresolved).toEqual(['sHaReD ALIAS']);
+    expect(catalog.links('public/Shared.md', viewer).backlinks).toEqual([]);
+    expect(catalog.graph(viewer).edges).toEqual([]);
+  });
+
+  it('retains hidden resolved alias omission and excludes hidden alias-link sources', () => {
+    db.prepare('UPDATE chunks SET aliases_json = ? WHERE path = ?')
+      .run(JSON.stringify(['Private alias']), 'secret/Private.md');
+    link('wiki/source.md', 'private alias', 'Private alias', 'secret/Private.md');
+    link('secret/Private.md', 'shared alias', 'Shared alias', 'public/Shared.md');
+    expect(catalog.links('wiki/source.md', viewer)).toEqual({ outgoing: [], backlinks: [], unresolved: [] });
+    expect(catalog.links('public/Shared.md', viewer).backlinks).toEqual([]);
+    expect(catalog.graph(viewer).edges).toEqual([]);
+  });
+
+  it('prefers visible exact matches over aliases for unresolved links', () => {
+    note('public/Alias.md', ['Shared']);
+    link('wiki/source.md', 'shared', 'Shared', null);
+    expect(catalog.links('wiki/source.md', viewer).outgoing).toEqual([
+      { path: 'public/Shared.md', title: 'public/Shared.md' },
+    ]);
+    expect(catalog.links('public/Alias.md', viewer).backlinks).toEqual([]);
+  });
+
+  it('falls back to a visible alias when every ambiguous exact match is hidden', () => {
+    note('secret/Other/Private.md');
+    note('public/Alias.md', ['Private']);
+    link('wiki/source.md', 'private', 'Private', null);
+    expect(catalog.links('wiki/source.md').unresolved).toEqual(['Private']);
+    expect(catalog.links('wiki/source.md', viewer).outgoing).toEqual([
+      { path: 'public/Alias.md', title: 'public/Alias.md' },
+    ]);
+    expect(catalog.links('public/Alias.md', viewer).backlinks).toEqual([
+      { path: 'wiki/source.md', title: 'wiki/source.md' },
+    ]);
+    expect(catalog.graph(viewer).edges).toEqual([{ from: 'wiki/source.md', to: 'public/Alias.md' }]);
   });
 });

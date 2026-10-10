@@ -49,8 +49,23 @@ export class NotesService {
   }
 
   async resolve(name: string, user?: User) {
-    const files = await this.tree(user);
-    const result = resolveNoteTarget(name, user ? this.acl.filterPaths(user, files) : files);
+    const sha = await this.repo.headSha();
+    const files = await this.repo.listFiles(undefined, sha);
+    let visible = user ? this.acl.filterPaths(user, files) : files;
+    let result = resolveNoteTarget(name, visible);
+    if (result.candidates.length) return result;
+    const aliases = new Map<string, string[]>();
+    for (const path of visible) {
+      const content = await this.repo.readFile(path, sha);
+      if (content === null) continue;
+      const value: unknown = matter(content).data.aliases;
+      if (Array.isArray(value) && value.every((alias: unknown) => typeof alias === 'string')) {
+        aliases.set(path, (value as string[]).map((alias) => alias.trim()).filter(Boolean));
+      }
+    }
+    // ACL rules can change while the repository reads are pending.
+    visible = user ? this.acl.filterPaths(user, visible) : visible;
+    result = resolveNoteTarget(name, visible, aliases);
     if (!result.candidates.length) notFound('Note not found');
     return result;
   }

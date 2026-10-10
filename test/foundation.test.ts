@@ -111,7 +111,8 @@ describe('core database', () => {
       const importColumns = db.pragma('table_info(imports)') as Array<{ cid: number; name: string }>;
       const schemaSql = db.prepare("SELECT name, sql FROM sqlite_schema WHERE type IN ('index', 'trigger') ORDER BY name");
       const schema = schemaSql.all();
-      const expectedSchema = [...schema.filter((entry) => entry.name !== 'imports_job'), {
+      const replacedChunkTriggers = ['chunks_insert', 'chunks_delete', 'chunks_update'];
+      const expectedSchema = [...schema.filter((entry) => entry.name !== 'imports_job' && !replacedChunkTriggers.includes(String(entry.name))), {
         name: 'write_jobs_dedupe_key_active',
         sql: `CREATE UNIQUE INDEX write_jobs_dedupe_key_active
   ON write_jobs(dedupe_key)
@@ -133,6 +134,20 @@ describe('core database', () => {
         .toEqual(importColumns.filter((column) => column.name !== 'job_id').map((column, cid) => ({ ...column, cid })));
       expect(db.prepare('SELECT * FROM import_jobs').all()).toEqual([{ import_id: 'import', batch: 0, job_id: 'historical', files: '[]' }]);
       expect(schemaSql.all()).toEqual(expect.arrayContaining(expectedSchema));
+      const triggerSql = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'trigger' AND name = ?");
+      for (const name of replacedChunkTriggers) {
+        const trigger = triggerSql.get(name) as { sql: string } | undefined;
+        expect(trigger).toBeDefined();
+        for (const table of ['chunks_fts', 'chunks_terms']) {
+          const deleteColumn = name === 'chunks_insert' ? '' : `${table},`;
+          expect(trigger?.sql).toContain(`INSERT INTO ${table}(${deleteColumn}rowid,title,heading,tags,content,description,aliases)`);
+        }
+        if (name !== 'chunks_delete') expect(trigger?.sql).toContain('new.description,new.aliases');
+        if (name !== 'chunks_insert') expect(trigger?.sql).toContain('old.description,old.aliases');
+        if (name === 'chunks_update') {
+          expect(trigger?.sql).toContain('AFTER UPDATE OF title,heading,tags,content,description,aliases ON chunks');
+        }
+      }
       expect(db.prepare("SELECT name FROM sqlite_schema WHERE name = 'imports_job'").get()).toBeUndefined();
       expect(db.pragma('index_info(import_jobs_job)')).toEqual([{ seqno: 0, cid: 2, name: 'job_id' }]);
       expect(db.pragma('foreign_key_list(write_job_events)')).toEqual(foreignKeys);

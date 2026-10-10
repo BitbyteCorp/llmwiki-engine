@@ -88,11 +88,13 @@ async function fixture() {
           path: 'wiki/engine.md', title: 'Engine', heading: 'Shared knowledge',
           snippet: 'The engine keeps durable shared knowledge.', score: 0.9,
           kind: 'wiki' as const, related: ['wiki/backups.md'],
+          type: 'guide', description: 'Shared engine knowledge.',
         },
         {
           path: 'wiki/backups.md', title: 'Backups', heading: 'Schedule',
           snippet: 'The main branch is backed up daily.', score: 0.6,
           kind: 'wiki' as const, related: ['wiki/engine.md'],
+          type: null, description: null,
         },
       ];
       return query === 'engine' ? hits.slice(0, options?.limit ?? hits.length) : [];
@@ -180,15 +182,17 @@ function expectToolError(result: CallToolResult) {
 describe('MCP Streamable HTTP protocol', () => {
 
   it('returns ranked search content and related notes, respecting an explicit limit', async () => {
-    const { connect } = await fixture();
+    const { connect, search } = await fixture();
     const { client } = await connect();
-    expectPayload(await call(client, 'search', { query: 'engine', limit: 1 }), {
+    expectPayload(await call(client, 'search', { query: 'engine', limit: 1, type: 'guide' }), {
       hits: [{
         path: 'wiki/engine.md', title: 'Engine', heading: 'Shared knowledge',
         snippet: 'The engine keeps durable shared knowledge.', score: 0.9,
         kind: 'wiki', related: ['wiki/backups.md'],
+        type: 'guide', description: 'Shared engine knowledge.',
       }],
     });
+    expect(search.search).toHaveBeenCalledWith('engine', expect.objectContaining({ limit: 1, type: 'guide' }));
     expectPayload(await call(client, 'search', { query: 'no matching knowledge' }), { hits: [] });
   });
 
@@ -196,6 +200,13 @@ describe('MCP Streamable HTTP protocol', () => {
     const { connect, search } = await fixture();
     const { client } = await connect();
     expectToolError(await call(client, 'search', { query: 'engine', limit }));
+    expect(search.search).not.toHaveBeenCalled();
+  });
+
+  it.each(['unknown', 'wiki', '', ['guide']])('rejects invalid search type %j before accessing search storage', async (type) => {
+    const { connect, search } = await fixture();
+    const { client } = await connect();
+    expectToolError(await call(client, 'search', { query: 'engine', type }));
     expect(search.search).not.toHaveBeenCalled();
   });
 

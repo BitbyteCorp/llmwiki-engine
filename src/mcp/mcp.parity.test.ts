@@ -20,6 +20,7 @@ import { loadConfig } from '../config.js';
 import type { Db } from '../db/index.js';
 import { EventsModule } from '../events/events.module.js';
 import { KnowledgeRepo } from '../knowledge/repo.js';
+import { NOTE_TYPES } from '../knowledge/note-metadata.js';
 import { IngestService } from '../ingest/ingest.service.js';
 import { OpsModule } from '../ops/ops.module.js';
 import { IndexerService } from '../rag/indexer.service.js';
@@ -30,7 +31,7 @@ const modules: TestingModule[] = [];
 const clients: Client[] = [];
 const dirs: string[] = [];
 const author = { name: 'Wiki Editor', email: 'editor@example.test' };
-const oldContent = '---\ntitle: Engine\ntags: [platform]\n---\n# Engine\n\n## Durable Knowledge\nEngine knowledge is shared. [[wiki/neighbor]] [[missing]]\n';
+const oldContent = '---\ntitle: Engine\ntype: concept\ndescription: Durable summary for versioned memory.\naliases: ["영속 엔진", "지식"]\ntags: [platform]\n---\n# Engine\n\n## Durable Knowledge\nEngine knowledge is shared. [[wiki/neighbor]] [[missing]]\n';
 const parityJobId = parseApiId('11223344-5566-4788-99aa-bbccddeeff00')!;
 const missingJobId = parseApiId('11223344-5566-4788-99aa-bbccddeeff01')!;
 
@@ -95,7 +96,7 @@ async function call(client: Client, name: string, args: Record<string, unknown> 
 
 describe('MCP knowledge parity', () => {
   it('discovers and reads resources for real encoded note paths and validates prompt arguments', async () => {
-    const { connect } = await fixture();
+    const { connect, repo, latest } = await fixture();
     const client = await connect();
     const { tools } = await client.listTools();
     expect(tools.map(tool => tool.name).sort()).toEqual([
@@ -108,8 +109,10 @@ describe('MCP knowledge parity', () => {
     ]));
     const literal = resources.find(resource => resource.name === 'wiki/100% literal #한글.md')!;
     expect(literal.uri).toBe('llmwiki://notes/wiki/100%25%20literal%20%23%ED%95%9C%EA%B8%80.md');
+    const committedLiteral = await repo.readFile('wiki/100% literal #한글.md', latest);
+    expect(committedLiteral).toContain('# Literal path\n');
     expect((await client.readResource({ uri: literal.uri })).contents).toEqual([
-      { uri: literal.uri, mimeType: 'text/markdown', text: '# Literal path\n' },
+      { uri: literal.uri, mimeType: 'text/markdown', text: committedLiteral },
     ]);
     expect((await client.readResource({ uri: 'llmwiki://notes/index.md' })).contents[0]).toMatchObject({ text: '# Index\n\n[[wiki/engine]]\n' });
     const tree = await client.readResource({ uri: 'llmwiki://index' });
@@ -128,8 +131,45 @@ describe('MCP knowledge parity', () => {
     await expect(client.readResource({ uri: 'llmwiki://notes/%2E%2E/secret.md' })).rejects.toThrow();
   });
 
+  it('advertises and validates every metadata type and passes it to the shared search index', async () => {
+    const { connect } = await fixture();
+    const client = await connect();
+    const { tools } = await client.listTools();
+    expect(tools.find(tool => tool.name === 'search')?.inputSchema.properties?.type)
+      .toMatchObject({ enum: [...NOTE_TYPES] });
+    for (const type of NOTE_TYPES) {
+      const result = await call(client, 'search', { query: '영속 엔진', type });
+      expect(result.isError).not.toBe(true);
+      expect(result.structuredContent?.hits).toEqual(type === 'concept' ? [
+        expect.objectContaining({ path: 'wiki/engine.md', type: 'concept',
+          description: 'Durable summary for versioned memory.' }),
+      ] : []);
+    }
+    for (const type of ['unknown', 'wiki', '', 'Concept', 'concept,entity', null, ['concept']]) {
+      const result = await call(client, 'search', { query: 'Engine knowledge', type });
+      expect(result.isError).toBe(true);
+      expect(result.structuredContent).toBeUndefined();
+    }
+  });
+
+  it('retrieves metadata-only translated aliases, short aliases and summaries over MCP', async () => {
+    const { connect } = await fixture();
+    const client = await connect();
+    for (const query of ['영속 엔진', '지식', 'durable summary']) {
+      const result = await call(client, 'search', { query, type: 'concept' });
+      expect(result.structuredContent?.hits).toEqual([
+        expect.objectContaining({ path: 'wiki/engine.md', type: 'concept',
+          description: 'Durable summary for versioned memory.' }),
+      ]);
+    }
+    const legacy = await call(client, 'search', { query: 'Engine knowledge', kinds: ['journal'] });
+    expect(legacy.structuredContent?.hits).toEqual([
+      expect.objectContaining({ path: 'journal/other.md', type: null, description: null }),
+    ]);
+  });
+
   it('follows renames, pins historical reads, compares revisions, and attributes blame', async () => {
-    const { connect, initial, renamed, latest } = await fixture();
+    const { connect, repo, initial, renamed, latest } = await fixture();
     const client = await connect();
     const history = await call(client, 'note_history', { path: 'wiki/engine.md' });
     expect(z.array(z.object({ sha: z.string() })).parse(history.structuredContent?.commits).map(commit => commit.sha)).toEqual([latest, renamed, initial]);
@@ -138,7 +178,9 @@ describe('MCP knowledge parity', () => {
     const page = await call(client, 'note_history', { path: 'wiki/engine.md', before: latest, limit: 1 });
     expect(z.array(z.object({ sha: z.string() })).parse(page.structuredContent?.commits).map(commit => commit.sha)).toEqual([renamed]);
     const old = await call(client, 'read_note', { path: 'wiki/old.md', ref: initial });
-    expect(old.structuredContent).toMatchObject({ content: oldContent, frontmatter: { title: 'Engine', tags: ['platform'] }, ref: initial, updatedSha: initial });
+    expect(old.structuredContent).toMatchObject({ content: await repo.readFile('wiki/old.md', initial),
+      frontmatter: { title: 'Engine', tags: ['platform'] }, ref: initial, updatedSha: initial });
+    expect(old.structuredContent?.content).toContain('Engine knowledge is shared. [[wiki/neighbor]] [[missing]]');
     const compare = await call(client, 'compare', { base: renamed, head: latest, path: 'wiki/engine.md' });
     expect(compare.structuredContent).toMatchObject({ base: renamed, head: latest, truncated: false, files: [{ status: 'M', path: 'wiki/engine.md' }] });
     expect(compare.structuredContent?.patch).toContain('+Engine knowledge is shared and versioned.');
@@ -199,10 +241,11 @@ describe('MCP knowledge parity', () => {
     const { commit } = await repo.show(latest);
     const day = commit.date.slice(0, 10);
     const search = await call(client, 'search', {
-      query: 'Engine knowledge', folder: 'wiki/', tags: ['platform'], from: day, to: day, author: author.email, kinds: ['wiki'],
+      query: 'Engine knowledge', type: 'concept', folder: 'wiki/', tags: ['platform'], from: day, to: day, author: author.email, kinds: ['wiki'],
     });
     expect(search.structuredContent?.hits).toEqual([
-      expect.objectContaining({ path: 'wiki/engine.md', anchor: 'durable-knowledge', tags: ['platform'], excerpt: expect.stringContaining('Engine knowledge') }),
+      expect.objectContaining({ path: 'wiki/engine.md', type: 'concept', description: 'Durable summary for versioned memory.',
+        anchor: 'durable-knowledge', tags: ['platform'], excerpt: expect.stringContaining('Engine knowledge') }),
     ]);
     expect((await call(client, 'search', { query: 'Engine knowledge', tags: ['unmatched'] })).structuredContent).toEqual({ hits: [] });
     expect((await call(client, 'search', { query: 'Engine knowledge', author: 'unknown-author' })).structuredContent).toEqual({ hits: [] });

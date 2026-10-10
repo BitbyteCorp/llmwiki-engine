@@ -26,18 +26,18 @@ export interface TagFacet {
   count: number;
 }
 
-interface CatalogNote extends NoteSummary { tags_json: string }
+interface CatalogNote extends NoteSummary { tags_json: string; aliases_json: string }
 interface IndexedLink { source_path: string; target_name: string; target_text: string; target_path: string | null }
 interface DerivedLink {
   source: string;
   target: string | null;
   text: string;
-  candidates: readonly string[];
 }
 interface CatalogSnapshot {
   sha: string | null;
   generation: string;
   notes: Map<string, CatalogNote>;
+  resolver: NoteTargetResolver;
   outgoing: Map<string, DerivedLink[]>;
   incoming: Map<string, DerivedLink[]>;
   tags: Map<string, string[]>;
@@ -68,9 +68,10 @@ export class CatalogService {
     // Before the first sync, total_changes also keeps direct DB fixtures fresh.
     if (this.snapshot?.sha === version.sha && this.snapshot.generation === version.generation) return this.snapshot;
 
-    const rows = this.db.prepare('SELECT path,title,tags_json FROM chunks WHERE ordinal = 0 ORDER BY path').all() as CatalogNote[];
+    const rows = this.db.prepare('SELECT path,title,tags_json,aliases_json FROM chunks WHERE ordinal = 0 ORDER BY path').all() as CatalogNote[];
     const notes = new Map(rows.map((note) => [note.path, note]));
-    const resolver = new NoteTargetResolver([...notes.keys()]);
+    const aliases = new Map(rows.map((note) => [note.path, JSON.parse(note.aliases_json) as string[]]));
+    const resolver = new NoteTargetResolver([...notes.keys()], aliases);
     const outgoing = new Map<string, DerivedLink[]>();
     const incoming = new Map<string, DerivedLink[]>();
     const append = (map: Map<string, DerivedLink[]>, path: string, link: DerivedLink) => {
@@ -83,12 +84,12 @@ export class CatalogService {
     for (const row of indexed) {
       if (!notes.has(row.source_path)) continue;
       const text = row.target_text || row.target_name;
-      const candidates = row.target_path === null ? resolver.resolve(text).candidates : [row.target_path];
-      const link: DerivedLink = { source: row.source_path, target: row.target_path, text, candidates };
+      const candidates = row.target_path === null ? resolver.candidatePaths(text) : [row.target_path];
+      const link: DerivedLink = { source: row.source_path, target: row.target_path, text };
       append(outgoing, link.source, link);
       for (const candidate of candidates) if (notes.has(candidate)) append(incoming, candidate, link);
     }
-    this.snapshot = { ...version, notes, outgoing, incoming, tags: new Map() };
+    this.snapshot = { ...version, notes, resolver, outgoing, incoming, tags: new Map() };
     return this.snapshot;
   }
 
@@ -112,15 +113,8 @@ export class CatalogService {
         // A hidden resolved destination must not leak through unresolved spelling.
         resolved = !readable(link.target) ? undefined : snapshot.notes.has(link.target) ? link.target : null;
       } else {
-        resolved = null;
-        for (const candidate of link.candidates) {
-          if (!readable(candidate)) continue;
-          if (resolved !== null) {
-            resolved = null;
-            break;
-          }
-          resolved = candidate;
-        }
+        // Filter both match tiers before applying exact-name priority.
+        resolved = snapshot.resolver.resolve(link.text, readable).path;
       }
       targets.set(link, resolved);
       return resolved;

@@ -8,6 +8,7 @@ import type { Config } from '../config.js';
 import { newId } from '../common/ids.js';
 import { CONFIG, DB, LOGGER } from '../common/tokens.js';
 import { KnowledgeRepo } from '../knowledge/repo.js';
+import { NOTE_TYPES } from '../knowledge/note-metadata.js';
 import { AclService } from '../acl/acl.service.js';
 import { UsageService } from '../usage/usage.service.js';
 import { embedTexts } from './embeddings.js';
@@ -17,12 +18,13 @@ import type { DegradedReason, SearchHit, SearchOptions, SearchResult } from './t
 interface ChunkRow {
   id: number; path: string; title: string; heading: string; content: string;
   kind: SearchHit['kind']; anchor: string | null; tags_json: string; updated_at: string | null;
+  note_type: SearchHit['type']; description: string | null; aliases: string | null;
 }
 interface Snapshot { fingerprint: string; expires: number; result: SearchResult }
 interface RetrievalFilter { sql: string; params: Array<string | number> }
 const CANDIDATES = 200;
 const DEFAULT_LIMIT = 20;
-const FIELDS = 'c.id,c.path,c.title,c.heading,c.content,c.kind,c.anchor,c.tags_json,c.updated_at';
+const FIELDS = 'c.id,c.path,c.title,c.heading,c.content,c.kind,c.note_type,c.description,c.aliases,c.anchor,c.tags_json,c.updated_at';
 const normalize = (text: string) => text.normalize('NFKC').toLowerCase();
 const escapeLike = (text: string) => text.replace(/[\\%_]/g, '\\$&');
 const quote = (text: string) => `"${text.replaceAll('"', '""')}"`;
@@ -67,8 +69,14 @@ export class SearchService {
     const limit = opts.limit ?? DEFAULT_LIMIT;
     if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new RangeError('Search limit must be an integer between 1 and 100');
     const query = q.trim();
+    if (opts.type !== undefined) {
+      const requestedType = typeof opts.type === 'string' ? normalize(opts.type.trim()) : null;
+      const type = NOTE_TYPES.find((value) => value === requestedType);
+      if (!type) throw new RangeError('Search type must be a supported note type');
+      opts = { ...opts, type };
+    }
     const policyKey = opts.user ? this.acl.policyKey(opts.user) : 'internal-system';
-    const fingerprint = createHash('sha256').update(JSON.stringify([query, opts.kinds, opts.folder,
+    const fingerprint = createHash('sha256').update(JSON.stringify([query, opts.kinds, opts.type, opts.folder,
       opts.tags?.map(normalizeTag).sort(), opts.from, opts.to, opts.author,
       policyKey])).digest('hex');
     this.prune(this.snapshots);
@@ -115,6 +123,7 @@ export class SearchService {
       conditions.push(opts.kinds.length ? `c.kind IN (${opts.kinds.map(() => '?').join(',')})` : '0');
       params.push(...opts.kinds);
     }
+    if (opts.type) { conditions.push('c.note_type = ?'); params.push(opts.type); }
     if (opts.folder) {
       conditions.push("c.path LIKE ? ESCAPE '\\'");
       params.push(`${escapeLike(opts.folder.replace(/\/+$/, ''))}/%`);
@@ -140,15 +149,15 @@ export class SearchService {
   private lexical(query: string, filter: RetrievalFilter): ChunkRow[][] {
     const trigram = Array.from(query).length < 3 ? [] : this.db.prepare(`SELECT ${FIELDS}
       FROM chunks_fts JOIN chunks c ON c.id=chunks_fts.rowid WHERE chunks_fts MATCH ?${filter.sql}
-      ORDER BY bm25(chunks_fts,10,6,3,1),c.path,c.ordinal LIMIT ${CANDIDATES}`).all(quote(query), ...filter.params) as ChunkRow[];
+      ORDER BY bm25(chunks_fts,10,6,3,1,3,6),c.path,c.ordinal LIMIT ${CANDIDATES}`).all(quote(query), ...filter.params) as ChunkRow[];
     const terms = termsOf(query);
     if (!terms.length) return [trigram, []];
     let termRows: ChunkRow[];
     if (terms.some((term) => Array.from(term).length < 3)) {
-      const fields = ['title', 'heading', 'tags', 'content'];
+      const fields = ['title', 'heading', 'tags', 'content', 'description', 'aliases'];
       const matches = terms.map(() => `(${fields.map((field) => `lower(c.${field}) LIKE ? ESCAPE '\\'`).join(' OR ')})`);
       const values = terms.flatMap((term) => fields.map(() => `%${escapeLike(term)}%`));
-      const weights = terms.flatMap((term) => fields.map((field, index) => ({ clause: `CASE WHEN lower(c.${field}) LIKE ? ESCAPE '\\' THEN ${[10, 6, 3, 1][index]} ELSE 0 END`, value: `%${escapeLike(term)}%` })));
+      const weights = terms.flatMap((term) => fields.map((field, index) => ({ clause: `CASE WHEN lower(c.${field}) LIKE ? ESCAPE '\\' THEN ${[10, 6, 3, 1, 3, 6][index]} ELSE 0 END`, value: `%${escapeLike(term)}%` })));
       const select = (operator: string) => this.db.prepare(`SELECT ${FIELDS} FROM chunks c WHERE (${matches.join(operator)})${filter.sql}
         ORDER BY (${weights.map((entry) => entry.clause).join('+')}) DESC,c.path,c.ordinal LIMIT ${CANDIDATES}`)
         .all(...values, ...filter.params, ...weights.map((entry) => entry.value)) as ChunkRow[];
@@ -156,7 +165,7 @@ export class SearchService {
       if (!termRows.length) termRows = select(' OR ');
     } else {
       const select = (operator: string) => this.db.prepare(`SELECT ${FIELDS} FROM chunks_terms JOIN chunks c ON c.id=chunks_terms.rowid
-        WHERE chunks_terms MATCH ?${filter.sql} ORDER BY bm25(chunks_terms,10,6,3,1),c.path,c.ordinal LIMIT ${CANDIDATES}`)
+        WHERE chunks_terms MATCH ?${filter.sql} ORDER BY bm25(chunks_terms,10,6,3,1,3,6),c.path,c.ordinal LIMIT ${CANDIDATES}`)
         .all(terms.map((term) => `${quote(term)}*`).join(operator), ...filter.params) as ChunkRow[];
       termRows = select(' AND ');
       if (!termRows.length) termRows = select(' OR ');
@@ -210,12 +219,13 @@ export class SearchService {
     const queryTerms = termsOf(query);
     const notes = new Map<string, Array<{ chunk: ChunkRow; score: number }>>();
     for (const entry of fused.values()) {
-      // RRF erases BM25 magnitude. Retain bounded field evidence so a title
-      // match is not outweighed by repeated body-only chunks in a long note.
+      // RRF erases BM25 magnitude. Retain bounded title and metadata evidence
+      // so a direct match is not outweighed by repeated body-only chunks.
       if (queryTerms.length) {
-        const fields = [entry.chunk.title, entry.chunk.heading, JSON.parse(entry.chunk.tags_json).join(' ')].map(normalize);
+        const fields = [entry.chunk.title, entry.chunk.heading, JSON.parse(entry.chunk.tags_json).join(' '),
+          entry.chunk.description ?? '', entry.chunk.aliases ?? ''].map(normalize);
         const fieldEvidence = fields.map((field, index) => queryTerms.reduce((count, term) =>
-          count + Number(field.includes(term)), 0) / queryTerms.length * [0.5, 0.25, 0.1][index]!);
+          count + Number(field.includes(term)), 0) / queryTerms.length * [0.5, 0.25, 0.1, 0.1, 0.25][index]!);
         entry.score *= 1 + Math.max(...fieldEvidence);
       }
       const rows = notes.get(entry.chunk.path) ?? [];
@@ -228,7 +238,8 @@ export class SearchService {
       const evidence = rows.slice(1, 4).reduce((sum, row, index) => sum + row.score * 0.1 * 0.5 ** index, 0);
       return { path: chunk.path, title: chunk.title, heading: chunk.heading, snippet: chunk.content,
         anchor: chunk.anchor, ...excerptFor(chunk.content, queryTerms), tags: JSON.parse(chunk.tags_json),
-        updatedAt: chunk.updated_at, kind: chunk.kind, score: score + Math.min(score * 0.2, evidence), related: [] };
+        updatedAt: chunk.updated_at, kind: chunk.kind, type: chunk.note_type, description: chunk.description,
+        score: score + Math.min(score * 0.2, evidence), related: [] };
     }).sort((a, b) => b.score - a.score || a.path.localeCompare(b.path, 'en'));
     this.assertPolicy(opts, policyKey);
     hits = await this.rerank(query, hits, signal);

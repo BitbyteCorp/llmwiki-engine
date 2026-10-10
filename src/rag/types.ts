@@ -1,4 +1,5 @@
 import type { User } from '../auth/users.types.js';
+import type { NoteType } from '../knowledge/note-metadata.js';
 
 export interface SearchHit {
   path: string;
@@ -7,6 +8,8 @@ export interface SearchHit {
   snippet: string;
   score: number;
   kind: 'wiki' | 'journal' | 'raw' | 'other';
+  type: NoteType | null;
+  description: string | null;
   related: string[];
   anchor: string | null;
   excerpt: string;
@@ -17,6 +20,7 @@ export interface SearchHit {
 
 export interface SearchFilters {
   kinds?: SearchHit['kind'][];
+  type?: NoteType;
   folder?: string;
   tags?: string[];
   from?: string;

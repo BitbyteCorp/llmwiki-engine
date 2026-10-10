@@ -23,6 +23,7 @@ import { TagsController } from '../api/tags.controller.js';
 import { SearchService } from './search.service.js';
 import { CatalogService } from './catalog.service.js';
 import { ComparisonService } from './comparison.service.js';
+import { NOTE_TYPES } from '../knowledge/note-metadata.js';
 
 const paths = ['wiki/alpha.md', 'wiki/beta.md', 'journal/day.md'];
 describe('search workspace HTTP', () => {
@@ -36,6 +37,9 @@ describe('search workspace HTTP', () => {
     put.run(paths[0], 'Alpha 저장', '검색', '저장 데이터 검색', 'alpha', 'a', 'wiki', 0, 'search', '["search"]', '검색', '2026-10-01T00:00:00.000Z', 'Ada <ada@example.com>', 'same');
     put.run(paths[1], 'Beta', '', '저장 데이터 검색', 'beta', 'b', 'wiki', 0, 'search', '["search"]', null, '2026-10-02T00:00:00.000Z', 'Bob <bob@example.com>', 'same');
     put.run(paths[2], 'Journal', '', '일기 기록', 'journal', 'c', 'journal', 0, 'journal', '["journal"]', null, null, null, 'different');
+    db.prepare('UPDATE chunks SET note_type=?,description=?,aliases=?,aliases_json=? WHERE path=?')
+      .run('guide', 'Durable storage procedure', '영속 보관', '["영속 보관"]', paths[0]);
+    db.prepare('UPDATE chunks SET note_type=? WHERE path=?').run('concept', paths[1]);
     const link = db.prepare('INSERT INTO links(source_path,target_name,target_path) VALUES(?,?,?)');
     link.run(paths[0], 'beta', paths[1]); link.run(paths[1], 'day', paths[2]); link.run(paths[0], 'missing', null);
     const log = pino({ enabled: false });
@@ -59,11 +63,34 @@ describe('search workspace HTTP', () => {
   afterEach(async () => { await app.close(); db.close(); });
 
   it('serves enriched filtered hits and quick-open suggestions to a viewer', async () => {
-    const result = await request(app.getHttpServer()).get('/api/search').query({ q: '저장', folder: 'wiki', tags: 'SEARCH', author: 'Ada', from: '2026-10-01', to: '2026-10-01' }).set('x-session', 'viewer').expect(200);
+    const result = await request(app.getHttpServer()).get('/api/search').query({ q: '저장', type: 'guide', folder: 'wiki', tags: 'SEARCH', author: 'Ada', from: '2026-10-01', to: '2026-10-01' }).set('x-session', 'viewer').expect(200);
     expect(result.body).toMatchObject({ mode: 'keyword', degraded: { reason: 'no_api_key' }, nextCursor: null,
-      hits: [{ path: paths[0], anchor: '검색', excerpt: '저장 데이터 검색', tags: ['search'], updatedAt: '2026-10-01T00:00:00.000Z', highlights: [[0, 2]] }] });
+      hits: [{ path: paths[0], type: 'guide', description: 'Durable storage procedure', anchor: '검색', excerpt: '저장 데이터 검색', tags: ['search'], updatedAt: '2026-10-01T00:00:00.000Z', highlights: [[0, 2]] }] });
     const suggest = await request(app.getHttpServer()).get('/api/search/suggest?q=Al').set('x-session', 'viewer').expect(200);
     expect(suggest.body.map((note: { path: string }) => note.path)).toEqual([paths[0], paths[2]]);
+  });
+
+  it.each(NOTE_TYPES)('accepts and passes through the singular type filter %s', async (type) => {
+    const result = await request(app.getHttpServer()).get('/api/search').query({ q: '저장', type })
+      .set('x-session', 'viewer').expect(200);
+    const expected = type === 'guide' ? [paths[0]] : type === 'concept' ? [paths[1]] : [];
+    expect(result.body.hits.map((hit: { path: string }) => hit.path)).toEqual(expected);
+    for (const hit of result.body.hits) expect(hit.type).toBe(type);
+    if (type === 'concept') expect(result.body.hits[0].description).toBeNull();
+  });
+
+  it.each(['영속', 'durable storage', '관'])('finds alias and summary-only lexical hits for %s', async (q) => {
+    const result = await request(app.getHttpServer()).get('/api/search').query({ q, type: 'guide' })
+      .set('x-session', 'viewer').expect(200);
+    expect(result.body.hits).toEqual([expect.objectContaining({
+      path: paths[0], type: 'guide', description: 'Durable storage procedure',
+    })]);
+  });
+
+  it('returns null metadata fields for notes without metadata', async () => {
+    const result = await request(app.getHttpServer()).get('/api/search').query({ q: '일기' })
+      .set('x-session', 'viewer').expect(200);
+    expect(result.body.hits).toEqual([expect.objectContaining({ path: paths[2], type: null, description: null })]);
   });
 
   it('serves directional links, the full graph and distinct note tag facets', async () => {
@@ -94,7 +121,7 @@ describe('search workspace HTTP', () => {
     expect(response.body.error.code).toBe('unauthorized');
   });
 
-  it.each(['/api/search', '/api/search?q=a&limit=0', '/api/search?q=a&limit=101', '/api/search?q=a&limit=1.5', '/api/search?q=a&from=bad', '/api/search/similar?path=../x.md', '/api/search/duplicates?limit=0', '/api/links', '/api/tags/notes'])('validates query inputs for %s', async (url) => {
+  it.each(['/api/search', '/api/search?q=a&limit=0', '/api/search?q=a&limit=101', '/api/search?q=a&limit=1.5', '/api/search?q=a&from=bad', '/api/search?q=a&type=unknown', '/api/search?q=a&type=wiki', '/api/search?q=a&type=', '/api/search?q=a&type=Guide', '/api/search?q=a&type=guide,entity', '/api/search?q=a&type=guide&type=entity', '/api/search/similar?path=../x.md', '/api/search/duplicates?limit=0', '/api/links', '/api/tags/notes'])('validates query inputs for %s', async (url) => {
     const response = await request(app.getHttpServer()).get(url).set('x-session', 'viewer').expect(400);
     expect(response.body.error.code).toBe('invalid_input');
   });

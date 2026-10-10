@@ -108,6 +108,71 @@ describe('retrieval upgrade public search contract', () => {
     expect(await f.search.search('storage', { tags: ['absent'] })).toEqual([]);
   });
 
+  it.each(['durable storage', '스토리지', '저장', '권', 'term-separated summary', '영속 복구'])('retrieves metadata-only aliases and summaries for %s', async (query) => {
+    const f = await fixture([
+      { path: 'wiki/metadata.md', markdown: '---\ntitle: Persistence\ntype: concept\ndescription: "  term-separated details for summary and 영속 복구  "\naliases: ["Durable storage", "스토리지", "저장", "권"]\n---\n# Persistence\nData survives a restart.' },
+      { path: 'wiki/garden.md', markdown: '# Garden\nFlowers bloom.' },
+    ]);
+    const result = await f.search.query(query);
+    expect(result).toMatchObject({ mode: 'keyword', hits: [{ path: 'wiki/metadata.md', title: 'Persistence',
+      type: 'concept', description: 'term-separated details for summary and 영속 복구' }] });
+    expect(result.hits).toHaveLength(1);
+    expect(result.hits[0]!.snippet).not.toContain(query);
+  });
+
+  it('preserves title priority while weighting alias and summary matches above incidental body matches', async () => {
+    const f = await fixture([
+      { path: 'wiki/z-title.md', markdown: '# Recovery\nA procedure.' },
+      { path: 'wiki/y-alias.md', markdown: '---\naliases: [Recovery]\n---\n# Persistence\nA procedure.' },
+      { path: 'wiki/x-summary.md', markdown: '---\ndescription: Recovery\n---\n# Continuity\nA procedure.' },
+      { path: 'wiki/a-body.md', markdown: '# Garden\nRecovery was mentioned in a meeting.' },
+    ]);
+    expect((await f.search.search('recovery')).map((hit) => hit.path))
+      .toEqual(['wiki/z-title.md', 'wiki/y-alias.md', 'wiki/x-summary.md', 'wiki/a-body.md']);
+  });
+
+  it('returns null metadata for legacy or invalid frontmatter', async () => {
+    const f = await fixture([
+      { path: 'wiki/legacy.md', markdown: '# Legacy\nMetadata evidence.' },
+      { path: 'wiki/invalid.md', markdown: '---\ntype: unsupported\ndescription: [not, prose]\n---\n# Invalid\nMetadata evidence.' },
+    ]);
+    const hits = await f.search.search('metadata evidence');
+    expect(hits).toHaveLength(2);
+    for (const hit of hits) expect(hit).toMatchObject({ type: null, description: null });
+  });
+
+  it('applies type before lexical candidate limits independently of the storage kind', async () => {
+    const excluded = Array.from({ length: 205 }, (_, index) => ({
+      path: `wiki/excluded/${index}.md`, markdown: '---\ntype: entity\n---\n# Storage\nStorage evidence.',
+    }));
+    const f = await fixture([...excluded,
+      { path: 'wiki/eligible.md', markdown: '---\ntype: guide\n---\n# Procedure\nStorage evidence.' },
+      { path: 'journal/eligible.md', markdown: '---\ntype: guide\n---\n# Journal\nStorage evidence.' },
+    ]);
+    expect((await f.search.search('storage', { type: 'guide', kinds: ['wiki'] })).map((hit) => hit.path))
+      .toEqual(['wiki/eligible.md']);
+    expect((await f.search.search('storage', { type: 'guide' })).map((hit) => hit.path).sort())
+      .toEqual(['journal/eligible.md', 'wiki/eligible.md']);
+  }, 30_000);
+
+  it.each(['unsupported', '', 'wiki', 'concept,entity', null, ['concept']])('rejects an invalid internal type filter %j', async (type) => {
+    const f = await fixture([]);
+    // @ts-expect-error Exercise runtime validation for untyped callers.
+    await expect(f.search.query('storage', { type })).rejects.toThrow(/type/i);
+  });
+
+  it('normalizes internal type filters before retrieval and cursor fingerprinting', async () => {
+    const f = await fixture(pagingNotes(3).map((note) => ({ ...note, markdown: `---\ntype: guide\n---\n${note.markdown}` })));
+    // @ts-expect-error Exercise normalization at the untyped service boundary.
+    const first = await f.search.query('paging', { type: ' GUIDE ', limit: 1 });
+    expect(first.hits[0]).toMatchObject({ type: 'guide', description: null });
+    expect(first.nextCursor).not.toBeNull();
+    expect((await f.search.query('paging', { type: 'guide', cursor: first.nextCursor!, limit: 1 })).hits)
+      .toEqual([expect.objectContaining({ path: 'wiki/page-01.md', type: 'guide' })]);
+    await expect(f.search.query('paging', { type: 'entity', cursor: first.nextCursor! })).rejects.toThrow(/cursor/i);
+    await expect(f.search.query('paging', { cursor: first.nextCursor! })).rejects.toThrow(/cursor/i);
+  });
+
   it('weights title evidence above an incidental body occurrence', async () => {
     const f = await fixture([
       { path: 'wiki/z-title.md', markdown: '---\ntitle: Credential rotation\n---\n# Procedure\nIssue a replacement and revoke the old secret.' },
@@ -121,14 +186,15 @@ describe('retrieval upgrade public search contract', () => {
     ['from', { from: '2024-06-15' }, '2019-01-01T12:00:00Z'],
     ['to', { to: '2024-06-15' }, '2025-01-01T12:00:00Z'],
     ['author', { author: 'ADA@EXAMPLE.COM' }, '2019-01-01T12:00:00Z'],
+    ['type', { type: 'guide' }, '2019-01-01T12:00:00Z'],
   ] satisfies Array<[string, SearchOptions, string]>)('applies %s before vector top-k selection', async (_label, filters, excludedDate) => {
     // Identical input to the query gives every excluded note an exact fake-vector match.
     // There are more excluded notes than the candidate budget, so post-filtering starves the eligible note.
     const nearest = '# nearest\nunfiltered evidence';
     const f = await fixture([], { embeddings: true });
-    await f.commit(Array.from({ length: 205 }, (_, index) => ({ path: `wiki/excluded/${index}.md`, markdown: nearest })),
+    await f.commit(Array.from({ length: 205 }, (_, index) => ({ path: `wiki/excluded/${index}.md`, markdown: `---\ntype: entity\n---\n${nearest}` })),
       { date: excludedDate, name: 'Other', email: 'other@example.com' });
-    await f.commit([{ path: 'wiki/eligible/answer.md', markdown: '# Answer\nA distant but eligible semantic neighbor.' }]);
+    await f.commit([{ path: 'wiki/eligible/answer.md', markdown: '---\ntype: guide\n---\n# Answer\nA distant but eligible semantic neighbor.' }]);
     await f.indexer.syncToHead();
     const result = await f.search.query(`nearest\n\n${nearest}`, filters);
     expect(result.mode).toBe('hybrid');

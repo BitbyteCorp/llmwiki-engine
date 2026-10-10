@@ -17,7 +17,7 @@ function isIndexedPath(path: string): boolean {
   return path.toLowerCase().endsWith('.md') && path.toLowerCase() !== 'memory.md';
 }
 
-const LAYOUT_VERSION = '3';
+const LAYOUT_VERSION = '4';
 
 @Injectable()
 export class IndexerService implements OnModuleInit, OnModuleDestroy {
@@ -214,13 +214,15 @@ export class IndexerService implements OnModuleInit, OnModuleDestroy {
       }
       const insertChunk = db.prepare(`INSERT INTO chunks
         (path,title,heading,content,embedding_text,content_hash,kind,ordinal,vector_pending,
-         tags,tags_json,anchor,source_start,source_end,updated_at,author,normalized_hash)
-        VALUES (?,?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?)`);
+         tags,tags_json,anchor,source_start,source_end,updated_at,author,normalized_hash,
+         note_type,description,aliases,aliases_json)
+        VALUES (?,?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?)`);
       const insertLink = db.prepare('INSERT INTO links(source_path,target_name,target_text,target_path) VALUES (?,?,?,NULL)');
       for (const note of notes) {
         for (const chunk of note.chunks) insertChunk.run(note.path, chunk.title, chunk.heading, chunk.content,
           chunk.embeddingText, chunk.contentHash, chunk.kind, chunk.ordinal, chunk.tags.join(' '), JSON.stringify(chunk.tags),
-          chunk.anchor, chunk.sourceStart, chunk.sourceEnd, note.updatedAt, note.author, note.normalizedHash);
+          chunk.anchor, chunk.sourceStart, chunk.sourceEnd, note.updatedAt, note.author, note.normalizedHash,
+          chunk.type, chunk.description, chunk.aliases.join(' '), JSON.stringify(chunk.aliases));
         for (const target of note.targets) insertLink.run(note.path, target.name, target.text);
       }
       const cache = db.prepare('INSERT OR REPLACE INTO embedding_cache(content_hash,model,dimensions,embedding) VALUES (?,?,?,?)');
@@ -235,7 +237,11 @@ export class IndexerService implements OnModuleInit, OnModuleDestroy {
         }
       }
       if (allPaths) {
-        const resolver = new NoteTargetResolver(allPaths);
+        const aliasesByPath = new Map<string, string[]>();
+        for (const note of db.prepare('SELECT path,aliases_json FROM chunks WHERE ordinal = 0').all() as Array<{ path: string; aliases_json: string }>) {
+          aliasesByPath.set(note.path, JSON.parse(note.aliases_json) as string[]);
+        }
+        const resolver = new NoteTargetResolver(allPaths, aliasesByPath);
         const updateLink = db.prepare('UPDATE links SET target_path = ? WHERE target_name = ?');
         for (const { target_name, target_text } of db.prepare('SELECT target_name,target_text FROM links GROUP BY target_name').all() as Array<{ target_name: string; target_text: string }>) {
           updateLink.run(resolver.resolve(target_text || target_name).path, target_name);

@@ -98,6 +98,37 @@ describe('CatalogService', () => {
     expect(catalog.links('wiki/F.md')).toEqual({ outgoing: [], backlinks: [], unresolved: [] });
   });
 
+  it('uses aliases_json for distinct outgoing links and backlinks without changing titles', () => {
+    addNote('wiki/Source.md', 'Source');
+    addNote('wiki/Target.md', 'Canonical title');
+    db.prepare('UPDATE chunks SET aliases_json = ? WHERE path = ?')
+      .run(JSON.stringify(['Alternate name', 'Other name']), 'wiki/Target.md');
+    addLink('wiki/Source.md', 'alternate name', null);
+    addLink('wiki/Source.md', 'other name', null);
+    expect(catalog.links('wiki/Source.md')).toEqual({
+      outgoing: [{ path: 'wiki/Target.md', title: 'Canonical title' }], backlinks: [], unresolved: [],
+    });
+    expect(catalog.links('wiki/Target.md').backlinks).toEqual([{ path: 'wiki/Source.md', title: 'Source' }]);
+    expect(catalog.graph().edges).toEqual([{ from: 'wiki/Source.md', to: 'wiki/Target.md' }]);
+  });
+
+  it('refreshes alias candidate indexes when the catalog revision changes', () => {
+    addNote('wiki/Source.md', 'Source');
+    addNote('wiki/Target.md', 'Target');
+    addLink('wiki/Source.md', 'alternate', null);
+    db.prepare("INSERT INTO index_meta(key,value) VALUES('catalog_revision','1')").run();
+    expect(catalog.links('wiki/Source.md').unresolved).toEqual(['alternate']);
+    db.prepare('UPDATE chunks SET aliases_json = ? WHERE path = ?')
+      .run(JSON.stringify(['Alternate']), 'wiki/Target.md');
+    db.prepare("UPDATE index_meta SET value = '2' WHERE key = 'catalog_revision'").run();
+    expect(catalog.links('wiki/Source.md').outgoing).toEqual([{ path: 'wiki/Target.md', title: 'Target' }]);
+    expect(catalog.links('wiki/Target.md').backlinks).toEqual([{ path: 'wiki/Source.md', title: 'Source' }]);
+    db.prepare("UPDATE chunks SET aliases_json = '[]' WHERE path = 'wiki/Target.md'").run();
+    db.prepare("UPDATE index_meta SET value = '3' WHERE key = 'catalog_revision'").run();
+    expect(catalog.links('wiki/Source.md').unresolved).toEqual(['alternate']);
+    expect(catalog.links('wiki/Target.md').backlinks).toEqual([]);
+  });
+
   it('returns every note including isolated notes and preserves directed edges through cycles', () => {
     seedGraph();
     expect(catalog.graph()).toEqual({ nodes: [alpha, beta, gamma, delta, epsilon, isolated], edges: allEdges });

@@ -5,6 +5,7 @@ import Markdown from 'react-markdown';
 import rehypeSlug from 'rehype-slug';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
+import { NOTE_TYPES, type NoteType } from '../knowledge/note-metadata.js';
 import type { SearchHit } from './types.js';
 import { normalizeLinkTarget } from './link-resolver.js';
 
@@ -17,6 +18,9 @@ export interface NoteChunk {
   kind: SearchHit['kind'];
   ordinal: number;
   tags: string[];
+  type: NoteType | null;
+  description: string | null;
+  aliases: string[];
   anchor: string | null;
   sourceStart: number;
   sourceEnd: number;
@@ -144,6 +148,17 @@ function tagsFromFrontmatter(value: unknown): string[] {
   return [...new Set(values.filter((tag): tag is string => typeof tag === 'string').map(normalizeTag).filter(Boolean))];
 }
 
+export function aliasesFromFrontmatter(value: unknown): string[] {
+  if (!Array.isArray(value) || !value.every((item) => typeof item === 'string')) return [];
+  const aliases = new Map<string, string>();
+  for (const item of value) {
+    const alias = item.trim();
+    const key = alias.toLowerCase();
+    if (alias && !aliases.has(key)) aliases.set(key, alias);
+  }
+  return [...aliases.values()];
+}
+
 export function normalizedNoteHash(markdown: string): string {
   const normalized = markdown.normalize('NFKC').replace(/\r\n?/g, '\n')
     .split('\n').map((line) => line.trimEnd()).join('\n').trim();
@@ -164,6 +179,9 @@ export function chunkNote(path: string, markdown: string): NoteChunk[] {
   const title = typeof data.title === 'string' && data.title.trim() ? data.title.trim()
     : headings.find((heading) => heading.level === 1 && heading.text)?.text || posix.basename(path).replace(/\.md$/i, '');
   const tags = tagsFromFrontmatter(data.tags);
+  const type = (NOTE_TYPES as readonly unknown[]).includes(data.type) ? data.type as NoteType : null;
+  const description = typeof data.description === 'string' && data.description.trim() ? data.description.trim() : null;
+  const aliases = aliasesFromFrontmatter(data.aliases);
   const sections: Array<{ start: number; end: number; heading: string; anchor: string | null }> = [];
   const context: string[] = [];
   let start = 0;
@@ -193,13 +211,15 @@ export function chunkNote(path: string, markdown: string): NoteChunk[] {
     const content = body.slice(section.start, section.end);
     if (!content.trim()) continue;
     const header = [title, section.heading].filter(Boolean).join(' > ')
-      + (tags.length ? `\n태그: ${tags.join(', ')}` : '');
+      + (tags.length ? `\n태그: ${tags.join(', ')}` : '')
+      + (description ? `\n설명: ${description}` : '')
+      + (aliases.length ? `\n별칭: ${aliases.join(', ')}` : '');
     for (const [start, end] of splitSection(content)) {
       const raw = content.slice(start, end);
       const embeddingText = `${header}\n\n${raw}`;
       chunks.push({ title, heading: section.heading, content: raw, embeddingText,
         contentHash: createHash('sha256').update(embeddingText).digest('hex'), kind, ordinal: chunks.length,
-        tags, anchor: section.anchor, sourceStart: bodyOffset + section.start + start,
+        tags, type, description, aliases, anchor: section.anchor, sourceStart: bodyOffset + section.start + start,
         sourceEnd: bodyOffset + section.start + end });
     }
   }

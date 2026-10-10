@@ -125,7 +125,7 @@ describe('web REST API', () => {
       readFile: vi.fn(async (path, ref = 'main') =>
         path === 'wiki/Navigation.md' && (ref === 'main' || ref === head) ? note : null),
       listFiles: vi.fn(async (_prefix, ref = 'main') =>
-        ref === 'main' ? ['index.md', 'wiki/Navigation.md', 'journal/2026-01-01.md'] : ['wiki/Unmerged.md']),
+        ref === 'main' || ref === head ? ['index.md', 'wiki/Navigation.md', 'journal/2026-01-01.md'] : ['wiki/Unmerged.md']),
       log: vi.fn(async (opts) => [commit(opts?.ref ?? head)]),
       show: vi.fn(async (sha) => ({ commit: commit(sha), files: [{ status: 'M' as const, path: 'wiki/Navigation.md' }], patch: '+Main branch content' })),
       diffNames: vi.fn(async () => [{ status: 'M' as const, path: 'wiki/Navigation.md' }]),
@@ -276,6 +276,21 @@ describe('web REST API', () => {
     expect(await (await request('/notes/resolve?name=NAVIGATION.md')).json()).toEqual({ path: 'wiki/Navigation.md', candidates: ['wiki/Navigation.md'] });
     await expectError(await request('/notes/content?path=wiki%2FUnmerged.md'), 404, 'not_found');
     await expectError(await request('/notes/resolve?name=Missing'), 404, 'not_found');
+  });
+
+  it('resolves frontmatter aliases through the notes HTTP route at a pinned main revision', async () => {
+    repo.readFile.mockImplementation(async (path, ref) =>
+      path === 'wiki/Navigation.md' && ref === head
+        ? '---\naliases: ["  Route Map  ", "길찾기"]\n---\n# Navigation'
+        : null);
+    expect(await (await request('/notes/resolve?name=route%20MAP.md%23Section')).json()).toEqual({
+      path: 'wiki/Navigation.md', candidates: ['wiki/Navigation.md'],
+    });
+    expect(await (await request(`/notes/resolve?${new URLSearchParams({ name: '길찾기' })}`)).json()).toEqual({
+      path: 'wiki/Navigation.md', candidates: ['wiki/Navigation.md'],
+    });
+    expect(repo.listFiles).toHaveBeenCalledWith(undefined, head);
+    expect(repo.readFile).toHaveBeenCalledWith('wiki/Navigation.md', head);
   });
 
   it.each([

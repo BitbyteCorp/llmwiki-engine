@@ -1,6 +1,7 @@
 import { win32 } from 'node:path';
 import { z } from 'zod';
 import { idSchema } from '../common/ids.js';
+import { NOTE_TYPES } from '../knowledge/note-metadata.js';
 
 export const limitSchema = z.coerce.number().int().min(1).max(100).default(50);
 export const shaSchema = z.string().regex(/^[a-f0-9]{7,64}$/i, 'Invalid commit SHA');
@@ -30,6 +31,7 @@ const searchDateSchema = z.union([z.iso.date(), z.iso.datetime({ offset: true })
 export const searchQuerySchema = z.object({
   q: z.string().trim().min(1).max(10000), limit: searchLimitSchema,
   cursor: z.string().min(1).max(200).optional(),
+  type: z.enum(NOTE_TYPES).optional(),
   folder: z.string().trim().min(1).max(4096).optional(),
   tags: z.string().max(2000).transform((value) => value.split(',').map((tag) => tag.trim()).filter(Boolean)).optional(),
   from: searchDateSchema.optional(), to: searchDateSchema.optional(),

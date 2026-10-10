@@ -50,6 +50,8 @@ MCP와 REST 가져오기(`/api/imports`)의 JSON 요청 본문 상한은 21 MiB�
 
 `SearchHit`에는 `path`, `title`, `heading`, `anchor`, `excerpt`, `highlights`, `tags`, `updatedAt`, `snippet`, `score`, `kind`, `related`가 들어 있다. `anchor`는 제목의 GitHub 방식 slug이며 제목이 없으면 `null`이다. `highlights`는 `excerpt` 안의 강조 범위다. 검색 스니펫만으로 판단하지 않고 `read_note`로 관련 노트 전체를 읽는다. 검색·연결·유사도의 인덱스 의미는 [RAG](rag.md)를 따른다.
 
+메타데이터 검색은 선택적인 `type` 입력으로 [노트 메타데이터 표준](note-metadata.md)의 유형 하나를 지정한다. `kinds`는 저장소 영역이고 `type`은 노트의 역할이므로 서로 다른 필터다. 검색 hit에는 `type`, `description`도 포함되며, 없는 값은 `null`이다. 값의 해석과 검색 동작의 자세한 계약은 [RAG의 검색 결과와 필터](rag.md#검색-결과와-필터)를 따른다.
+
 `get_commit`과 `compare`의 `patch`는 최대 32,000자다. 초과하면 `truncated: true`를 반환하지만 커밋·변경 파일 메타데이터는 유지한다. 잘린 패치를 완전한 변경으로 해석하지 않는다. 큰 비교는 `path`로 좁히거나 두 버전의 `read_note`를 사용한다. 커밋 메타데이터와 줄 출처의 자세한 계약은 [지식 저장소](knowledge-repository.md)를 따른다.
 
 `WriteJob`은 다음 필드를 반환한다.

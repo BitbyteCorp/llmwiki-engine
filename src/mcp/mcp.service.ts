@@ -4,6 +4,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import type { User } from '../auth/users.types.js';
 import { KnowledgeRepo } from '../knowledge/repo.js';
+import { NOTE_TYPES } from '../knowledge/note-metadata.js';
 import { SearchService } from '../rag/search.service.js';
 import { WriteJobsService } from '../jobs/write-jobs.service.js';
 import matter from 'gray-matter';
@@ -76,6 +77,7 @@ export class McpService {
       inputSchema: {
         query: z.string().trim().min(1).describe('Question or keywords to search for.'),
         limit: z.number().int().min(1).max(100).optional().describe('Maximum number of hits, from 1 to 100.'),
+        type: z.enum(NOTE_TYPES).optional().describe('Filter by the note metadata type, independently of its storage kind.'),
         folder: z.string().optional(),
         tags: z.array(z.string().min(1)).optional(),
         from: dateSchema,

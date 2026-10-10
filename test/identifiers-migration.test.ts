@@ -205,7 +205,8 @@ const preservedQueries = [
   'SELECT started_at, finished_at, status, from_sha, to_sha, merge_sha, pushed, error, summary, changed_paths, journal_path, push_status, push_remote, push_sha, push_at, push_reason FROM dream_runs ORDER BY rowid',
   'SELECT user_id, kind, sha, status, raw_paths, error, created_at, updated_at, finished_at FROM imports ORDER BY rowid',
   'SELECT id, actor_id, action, outcome, summary, created_at FROM audit_events ORDER BY id',
-  ...['web_sessions', 'auth_pending', 'oauth_clients', 'oauth_codes', 'oauth_access_tokens', 'oauth_refresh_tokens', 'chunks', 'links', 'acl_rules', 'acl_policy', 'user_id_highwater', 'settings']
+  'SELECT id, path, title, heading, content, embedding_text, content_hash, kind, ordinal, vector_pending, tags, tags_json, anchor, source_start, source_end, updated_at, author, normalized_hash FROM chunks ORDER BY rowid',
+  ...['web_sessions', 'auth_pending', 'oauth_clients', 'oauth_codes', 'oauth_access_tokens', 'oauth_refresh_tokens', 'links', 'acl_rules', 'acl_policy', 'user_id_highwater', 'settings']
     .map((table) => `SELECT * FROM ${table} ORDER BY rowid`),
 ];
 
@@ -295,6 +296,9 @@ describe('identifier database migration', () => {
       const malformedJson = `{"id":"${ids.job}",`;
       expect(db.prepare('SELECT legacy_json_ids_to_api(?) AS value').get(malformedJson)).toEqual({ value: malformedJson });
       expect(preservedQueries.map((sql) => db.prepare(sql).all())).toEqual(preserved);
+      expect(db.prepare('SELECT note_type, description, aliases, aliases_json FROM chunks WHERE id = 1').get()).toEqual({
+        note_type: null, description: null, aliases: null, aliases_json: '[]',
+      });
       const migrated = migratedSnapshot(db);
       runMigrations(db);
       expect(migratedSnapshot(db)).toEqual(migrated);

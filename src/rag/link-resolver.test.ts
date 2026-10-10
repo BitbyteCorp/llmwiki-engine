@@ -54,4 +54,55 @@ describe('shared note link resolution', () => {
       path: 'Wiki/Nested/Unique.md', candidates: ['Wiki/Nested/Unique.md'],
     });
   });
+
+  it('resolves case-insensitive aliases, trims targets and deduplicates aliases for the same path', () => {
+    const aliases = new Map([['Wiki/Nested/Unique.md', ['  Knowledge Base  ', 'KNOWLEDGE BASE', ' ', '번역 이름']]]);
+    const resolver = new NoteTargetResolver(files, aliases);
+    expect(resolver.resolve(' knowledge BASE.MD#Overview|Label')).toEqual({
+      path: 'Wiki/Nested/Unique.md', candidates: ['Wiki/Nested/Unique.md'],
+    });
+    expect(resolveNoteTarget('번역 이름', files, aliases).path).toBe('Wiki/Nested/Unique.md');
+    expect(resolver.resolve('  #Overview')).toEqual({ path: null, candidates: [] });
+  });
+
+  it('keeps aliases shared by different paths ambiguous with sorted candidates', () => {
+    const resolver = new NoteTargetResolver(files, new Map([
+      ['Wiki/Topic.md', ['Common']],
+      ['Archive/TOPIC.MD', ['COMMON']],
+    ]));
+    expect(resolver.resolve('common')).toEqual({
+      path: null, candidates: ['Archive/TOPIC.MD', 'Wiki/Topic.md'],
+    });
+  });
+
+  it('prioritizes exact qualified paths and basenames, including exact ambiguities, over aliases', () => {
+    const resolver = new NoteTargetResolver(files, new Map([
+      ['Wiki/Nested/Unique.md', ['Topic', 'Wiki/Topic']],
+      ['Archive/TOPIC.MD', ['Unique']],
+    ]));
+    expect(resolver.resolve('wiki/topic')).toEqual({
+      path: 'Wiki/Topic.md', candidates: ['Wiki/Topic.md'],
+    });
+    expect(resolver.resolve('unique')).toEqual({
+      path: 'Wiki/Nested/Unique.md', candidates: ['Wiki/Nested/Unique.md'],
+    });
+    expect(resolver.resolve('topic')).toEqual({
+      path: null, candidates: ['Archive/TOPIC.MD', 'Wiki/Topic.md'],
+    });
+  });
+
+  it('applies visibility before exact priority and includes fallback candidates for backlinks', () => {
+    const resolver = new NoteTargetResolver(files, new Map([['Wiki/Nested/Unique.md', ['Topic']]]));
+    expect(resolver.candidatePaths('topic')).toEqual([
+      'Archive/TOPIC.MD', 'Wiki/Nested/Unique.md', 'Wiki/Topic.md',
+    ]);
+    expect(resolver.resolve('topic', (path) => path === 'Wiki/Nested/Unique.md')).toEqual({
+      path: 'Wiki/Nested/Unique.md', candidates: ['Wiki/Nested/Unique.md'],
+    });
+  });
+
+  it('ignores aliases associated with paths outside the supplied authorized snapshot', () => {
+    expect(new NoteTargetResolver(files, new Map([['Hidden.md', ['Private alias']]])).resolve('Private alias'))
+      .toEqual({ path: null, candidates: [] });
+  });
 });
