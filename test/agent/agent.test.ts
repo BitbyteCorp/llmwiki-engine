@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pino, { type Logger } from 'pino';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig, type Config } from '../../src/config.js';
 import { CONFIG, LOGGER } from '../../src/common/tokens.js';
 import { newId } from '../../src/common/ids.js';
@@ -29,11 +29,12 @@ async function createAgent(
   repo: KnowledgeRepo,
   search: SearchService,
   log: Logger,
+  aclOverride?: AclService,
 ) {
   const db = openDb(':memory:');
   runMigrations(db);
   cleanup.push(async () => db.close());
-  const acl = new AclService(db, new UsersService(new UsersRepository(db)), new AuditService(db));
+  const acl = aclOverride ?? new AclService(db, new UsersService(new UsersRepository(db)), new AuditService(db));
   const module = await Test.createTestingModule({
     providers: [
       AgentService,
@@ -49,15 +50,31 @@ async function createAgent(
   return module.get(AgentService);
 }
 
-async function fixture(script: FakeScript | FakeResponder, notes: Record<string, string> = {}) {
+async function fixture(script: FakeScript | FakeResponder, notes: Record<string, string> = {}, acl?: AclService) {
   const fake = await startFakeOpenAI(script);
   cleanup.push(() => fake.close());
   const config = loadConfig({ NODE_ENV: 'test', OPENAI_API_KEY: 'test-key', OPENAI_BASE_URL: fake.url });
   // Keep model and git dependencies controllable while resolving the real Nest service.
-  const repo = { readFile: async (path: string) => notes[path] ?? null, headSha: async () => 'test-sha', log: async () => [] } as unknown as KnowledgeRepo;
+  const repo = {
+    readFile: async (path: string) => notes[path] ?? null,
+    listFiles: async (prefix: string, _ref: string) => Object.keys(notes).filter((path) => path.startsWith(prefix)),
+    headSha: async () => 'test-sha',
+    log: async () => [],
+  } as unknown as KnowledgeRepo;
   const search = { search: async () => [{ path: 'wiki/cache.md', title: '캐시', snippet: '근거', score: 1, heading: '', kind: 'wiki', related: [] }] } as unknown as SearchService;
   const log = pino({ level: 'silent' });
-  return { agent: await createAgent(config, repo, search, log), fake, config, repo, search, log };
+  return { agent: await createAgent(config, repo, search, log, acl), fake, config, repo, search, log };
+}
+
+async function aclFixture(notes: Record<string, string>) {
+  const db = openDb(':memory:');
+  runMigrations(db);
+  cleanup.push(async () => db.close());
+  const users = new UsersService(new UsersRepository(db));
+  const admin = await users.create({ email: 'admin@example.com', role: 'admin' });
+  const viewer = await users.create({ email: 'viewer@example.com', role: 'viewer' });
+  const acl = new AclService(db, users, new AuditService(db));
+  return { ...await fixture([], notes, acl), acl, admin, viewer };
 }
 
 function strictUnicodeResponder(script: FakeScript): FakeResponder {
@@ -405,6 +422,78 @@ describe('Dony Responses tool loop', () => {
     const updated = await agent.baseInstructions();
     expect(updated).toContain('변경된 메모리다.');
     expect(updated).not.toContain('첫 메모리다.');
+  });
+
+  it('derives domain hubs and optional schemas from main paths and refreshes them with the notes', async () => {
+    const notes: Record<string, string> = {
+      'wiki/software/index.md': '# Software',
+      'wiki/software/AGENTS.md': 'Software writing rules.',
+      'wiki/software/cache.md': '# Cache',
+      'wiki/travel/packing.md': '# Packing',
+      'wiki/concepts/index.md': '# Concepts',
+      'wiki/concepts/cache.md': '# Shared cache',
+      'wiki/entities/index.md': '# Entities',
+      'wiki/entities/company.md': '# Company',
+      'wiki/unclassified.md': '# Legacy note',
+      'raw/not-a-domain/source.md': '# Source',
+    };
+    const { agent, repo } = await fixture([], notes);
+    const listFiles = vi.spyOn(repo, 'listFiles');
+    const instructions = await agent.baseInstructions();
+    const domainLines = instructions.split('\n').filter((line) => line.startsWith('- '));
+    expect(listFiles).toHaveBeenCalledWith('wiki/', 'main');
+    expect(domainLines).toHaveLength(2);
+    expect(domainLines[0]).toContain('software: wiki/software/index.md');
+    expect(domainLines[0]).toContain('wiki/software/AGENTS.md');
+    expect(domainLines[1]).toMatch(/^- travel: .+\(wiki\/travel\/index\.md\)$/);
+    expect(instructions).not.toContain('wiki/travel/AGENTS.md');
+    expect(domainLines.join('\n')).not.toMatch(/concepts:|entities:|unclassified|not-a-domain/);
+
+    delete notes['wiki/software/index.md'];
+    delete notes['wiki/software/AGENTS.md'];
+    delete notes['wiki/software/cache.md'];
+    notes['wiki/travel/index.md'] = '# Travel';
+    notes['wiki/research/index.md'] = '# Research';
+    notes['wiki/research/AGENTS.md'] = 'Research writing rules.';
+    const updated = await agent.baseInstructions();
+    const updatedDomainLines = updated.split('\n').filter((line) => line.startsWith('- '));
+    expect(listFiles).toHaveBeenCalledTimes(2);
+    expect(listFiles).toHaveBeenLastCalledWith('wiki/', 'main');
+    expect(updatedDomainLines).toHaveLength(2);
+    expect(updatedDomainLines[0]).toContain('research: wiki/research/index.md');
+    expect(updatedDomainLines[0]).toContain('wiki/research/AGENTS.md');
+    expect(updatedDomainLines[1]).toBe('- travel: wiki/travel/index.md');
+    expect(updated).not.toContain('wiki/software/');
+  });
+
+  it('lists only ACL-readable domains, hubs, and optional schemas', async () => {
+    const { agent, acl, admin, viewer } = await aclFixture({
+      'wiki/public/index.md': '# Public',
+      'wiki/public/AGENTS.md': 'Public rules.',
+      'wiki/private/index.md': '# Private',
+      'wiki/private/AGENTS.md': 'Private rules.',
+      'wiki/partial/index.md': '# Restricted hub',
+      'wiki/partial/AGENTS.md': 'Restricted rules.',
+      'wiki/partial/readable.md': '# Readable note',
+    });
+    acl.create({ prefix: 'wiki/private/', subjectType: 'everyone', access: 'none' }, admin);
+    acl.create({ prefix: 'wiki/partial/index.md', subjectType: 'everyone', access: 'none' }, admin);
+    acl.create({ prefix: 'wiki/partial/AGENTS.md', subjectType: 'everyone', access: 'none' }, admin);
+
+    const instructions = await agent.baseInstructions(viewer);
+    const domainLines = instructions.split('\n').filter((line) => line.startsWith('- '));
+    expect(domainLines).toHaveLength(2);
+    expect(domainLines[0]).toMatch(/^- partial: .+\(wiki\/partial\/index\.md\)$/);
+    expect(instructions).not.toContain('wiki/partial/AGENTS.md');
+    expect(domainLines[1]).toContain('public: wiki/public/index.md');
+    expect(domainLines[1]).toContain('wiki/public/AGENTS.md');
+    expect(instructions).not.toContain('wiki/private/');
+
+    const trustedInstructions = await agent.baseInstructions();
+    expect(trustedInstructions).toContain('private: wiki/private/index.md');
+    expect(trustedInstructions).toContain('wiki/private/AGENTS.md');
+    expect(trustedInstructions).toContain('partial: wiki/partial/index.md');
+    expect(trustedInstructions).toContain('wiki/partial/AGENTS.md');
   });
 });
 

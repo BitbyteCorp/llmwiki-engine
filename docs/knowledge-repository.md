@@ -22,7 +22,7 @@
 
 빈 저장소의 초기 파일은 모듈 옆의 `knowledge/seed`에서 복사한다. 개발 실행에서는 `src/knowledge/seed`, 빌드 실행에서는 `dist/knowledge/seed`에 대응하며, 빌드 자산이 없고 소스가 함께 있으면 소스 경로도 확인한다. seed가 없거나 비어 있으면 지식 내용을 임의로 만들지 않고 `raw/`, `wiki/`, `journal/` 디렉터리만 만든 뒤 필요하면 빈 초기 커밋을 남긴다. git은 빈 디렉터리를 추적하지 않으므로 이 경우 새 워크트리에서는 파일을 쓸 때 부모 디렉터리를 만든다. 초기 커밋의 author와 committer는 모두 `GIT_BOT_NAME`과 `GIT_BOT_EMAIL`이고, 작업 식별자는 `initialize`, source는 `dreaming`, requester는 봇 이메일로 기록한다.
 
-초기 seed의 `AGENTS.md`와 `MEMORY.md`는 에이전트 이름을 도니로 기록한다. seed는 빈 저장소에만 복사하므로 기존 지식 저장소의 커밋된 문구는 해당 파일을 편집하기 전까지 그대로 유지한다.
+초기 seed는 도메인 중립 공통 `AGENTS.md`, 목적만 기록한 `MEMORY.md`와 실제 노트가 없는 `index.md` 골격을 제공하며, `raw/`, `wiki/`, `wiki/concepts/`, `wiki/entities/`, `journal/`은 `.gitkeep`로 보존한다. 예시 도메인이나 존재하지 않는 노트의 링크는 만들지 않는다. 에이전트 이름은 도니로 기록한다. seed는 빈 저장소에만 복사하며 기존 루트 `AGENTS.md`를 자동으로 덮어쓰지 않는다. 기존 저장소의 배치 전환은 [지식 도메인 구조의 수동 전환](knowledge-domains.md#기존-저장소의-수동-전환)을 따른다.
 
 `GIT_SSH_KEY_PATH`가 있으면 clone과 push를 포함한 git 명령에 `GIT_SSH_COMMAND`를 적용한다. 지정 키만 쓰도록 `IdentitiesOnly=yes`를 설정하고, `StrictHostKeyChecking=accept-new`로 처음 보는 호스트 키는 등록하되 이미 등록된 키의 변경은 거부한다. git 자체는 셸 문자열이 아니라 `execFile` 인자로 실행한다. 원격 저장소가 없으면 push는 오류가 아니라 `{ pushed: false, reason }` 결과를 반환한다. 성공한 `pushMain()`은 실제 사용한 `remote`와 원격 main으로 보낸 `sha`를 함께 반환한다.
 
@@ -63,6 +63,12 @@ main과 과거 커밋의 읽기는 작업 디스크 파일을 직접 읽지 않�
 │       └── imports/<importId>.md
 ├── assets/          # 일반 첨부 바이너리
 ├── wiki/
+│   ├── concepts/
+│   ├── entities/
+│   └── <domain>/
+│       ├── index.md
+│       ├── AGENTS.md # 선택적인 도메인 schema
+│       └── ...       # 노트와 중첩 폴더
 ├── index.md
 ├── journal/
 │   └── YYYY-MM-DD.md
@@ -71,13 +77,12 @@ main과 과거 커밋의 읽기는 작업 디스크 파일을 직접 읽지 않�
 ```
 
 - `raw/<sha256>/`는 불변 원문 파일과 추출 마크다운을 담는다. 원문 수집 경로와 해시 규칙은 [수집](ingestion.md)을 따른다.
-- `wiki/`는 도니가 유지하는 노트를 담으며, frontmatter, 태그, 위키링크를 사용해 Obsidian 볼트로 열 수 있다.
-- `index.md`는 큐레이션된 진입점 색인이며, Obsidian 규칙의 index note 역할도 한다.
+- `wiki/`는 도니가 유지하는 노트를 담으며, frontmatter, 태그, 위키링크를 사용해 Obsidian 볼트로 열 수 있다. 도메인과 공유 영역의 배치, 전체·도메인 허브의 역할은 [지식 도메인 구조](knowledge-domains.md#노트-배치와-탐색)를 따른다.
 - `journal/YYYY-MM-DD.md`는 꿈꾸기가 날짜별로 쓰는 일기다. LLM Wiki 표준의 `log.md`를 대신하며, 세부 변경 이력은 git 커밋 이력이 담는다.
 - `MEMORY.md`는 [메모리 파일의 문맥 제공 규칙](#메모리-파일의-문맥-제공-규칙)을 따르는 파일이다.
-- 지식 저장소 안의 `AGENTS.md`는 도니의 [작성 규칙](writing-rules.md)을 담는 schema 파일이다. 엔진 저장소의 작업 규칙 파일과 구분한다.
+- 지식 저장소 안의 schema는 도니의 [작성 규칙](writing-rules.md)을 담으며, 루트와 도메인 schema의 적용 범위는 [지식 도메인 구조](knowledge-domains.md#도메인-schema)를 따른다. 엔진 저장소의 작업 규칙 파일과 구분한다.
 
-Obsidian 규칙의 LiveSync는 사용하지 않으며, git 동기화로 대체한다. 예를 들어 위키의 진입점은 `index.md`에서 찾고, 날짜별 정리 내용은 `journal/YYYY-MM-DD.md`에서 읽으며, 개별 변경은 git 커밋 이력으로 확인한다.
+Obsidian 규칙의 LiveSync는 사용하지 않으며, git 동기화로 대체한다. 날짜별 정리 내용은 `journal/YYYY-MM-DD.md`에서 읽고, 개별 변경은 git 커밋 이력으로 확인한다.
 
 ### 메모리 파일의 문맥 제공 규칙
 `MEMORY.md`는 즉시 필요한 자주 바뀌는 정보를 담는 도니 전용 문맥이며, 전체 공용 파일 하나를 유지한다. 쓰기, 꿈꾸기, 웹 질의응답으로 도니를 실행할 때마다 이 파일을 항상 문맥에 넣는다.
@@ -89,12 +94,13 @@ Obsidian 규칙의 LiveSync는 사용하지 않으며, git 동기화로 대체�
 | --- | --- | --- |
 | raw sources | `raw/` | 불변 원문 소스를 보관한다. |
 | wiki | `wiki/` | 도니가 유지하는 노트를 보관한다. |
-| index | `index.md` | 큐레이션된 진입점을 제공한다. |
+| index | 루트·도메인의 `index.md` | 전체·분야별 탐색 진입점을 제공한다. |
 | log | `journal/YYYY-MM-DD.md` | `log.md` 대신 날짜별 일기를 쓰고, 세부 변경 이력은 git 커밋 이력으로 남긴다. |
-| schema | `AGENTS.md` | 도니의 작성 규칙을 담는다. |
+| schema | 루트·도메인의 `AGENTS.md` | 공통·분야별 작성 규칙을 담는다. |
 
 ## 관련 문서
 - [엔진 아키텍처](architecture.md)는 지식 저장소 클론과 작업 워크트리의 영속 위치를 설명한다.
+- [지식 도메인 구조](knowledge-domains.md)는 분야별 배치와 공유 정본, 허브·schema 및 기존 저장소의 수동 전환을 설명한다.
 - [작성 규칙](writing-rules.md)은 지식 저장소 안의 문서 작성 기준을 설명한다.
 - [쓰기 흐름](write-flow.md)과 [꿈꾸기](dreaming.md)는 지식 변경과 정리 절차를 설명한다.
 - [MCP](mcp.md)는 지식의 읽기·쓰기·검색 인터페이스를 설명한다.

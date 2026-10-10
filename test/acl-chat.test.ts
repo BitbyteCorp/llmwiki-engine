@@ -217,7 +217,7 @@ describe('folder ACL at chat HTTP seams', () => {
   });
 
   it('denies unreadable proposal sources, explicit and generated read-only targets, and upload save writes', async () => {
-    const f = await fixture(['# Draft\nProposed content.']);
+    const f = await fixture(['wiki/concepts/draft.md', '# Draft\nProposed content.']);
     f.repository.addMessage(f.conversation.id, 1, 'user', 'Question');
     const hidden = f.repository.addMessage(f.conversation.id, 1, 'assistant', 'SAPPHIRE', [{ path: 'wiki/private/secret.md' }])!;
     await f.post(`/conversations/${f.conversation.id}/messages/${hidden.id}/proposal`, { mode: 'new' }, 2).expect(404);
@@ -231,7 +231,7 @@ describe('folder ACL at chat HTTP seams', () => {
     await f.post(`/conversations/${f.conversation.id}/messages/${answer.id}/proposal`, { mode: 'new' }, 2).expect(403);
     await f.post(`/conversations/${f.conversation.id}/messages/${answer.id}/proposal`, { mode: 'edit', path: 'wiki/public.md' }, 2).expect(403);
     const proposal = await f.post(`/conversations/${f.conversation.id}/messages/${answer.id}/proposal`, { mode: 'new' }, 3).expect(200);
-    expect(proposal.body.path).toBe('wiki/draft.md');
+    expect(proposal.body.path).toBe('wiki/concepts/draft.md');
     f.acl.create({ prefix: 'assets/', subjectType: 'user', subject: '2', access: 'read' }, f.admin);
     const upload = await request(f.server).post('/api/uploads').set('x-user', '2').attach('file', Buffer.from('public attachment'), 'note.txt').expect(201);
     const sha = await f.repo.headSha();

@@ -341,6 +341,8 @@ it('clones an empty remote, seeds main, pushes it, and reopens its tracked state
   const repo = await KnowledgeRepo.open(cfg, pino({ level: 'silent' }));
   const initial = await repo.headSha();
   expect(await repo.readFile('AGENTS.md')).toContain('raw');
+  const keeps = ['raw/.gitkeep', 'wiki/.gitkeep', 'wiki/concepts/.gitkeep', 'wiki/entities/.gitkeep', 'journal/.gitkeep'];
+  for (const path of keeps) expect(await repo.readFile(path)).toBe('');
   expect(await repo.pushMain()).toEqual({ pushed: true, remote: 'origin', sha: initial });
   expect((await git('git', ['rev-parse', 'refs/heads/main'], { cwd: remote })).stdout.trim()).toBe(initial);
   const wt = await repo.createWorktree('remote-note');
@@ -353,6 +355,7 @@ it('clones an empty remote, seeds main, pushes it, and reopens its tracked state
   const clone = await KnowledgeRepo.open(cloneCfg, pino({ level: 'silent' }));
   expect(await clone.headSha()).toBe(sha);
   expect(await clone.readFile('wiki/remote.md')).toBe('backed up\n');
+  for (const path of keeps) expect(await clone.readFile(path)).toBe('');
 });
 
 it('serializes merge locks across repository instances and releases after errors', async () => {

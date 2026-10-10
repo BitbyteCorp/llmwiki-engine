@@ -441,14 +441,45 @@ describe('read-only conversation transformations', () => {
   });
 
   it('creates an unsaved new-note proposal and refuses existing paths before calling the model', async () => {
-    const { agent, repo, fake } = await fixture(['# New fact\nGrounded content.'], { 'wiki/existing.md': '# Existing\nKept.' });
+    const { agent, repo, fake } = await fixture(['wiki/concepts/new-fact.md', '# New fact\nGrounded content.'], { 'wiki/concepts/existing.md': '# Existing\nKept.' });
     const baseSha = await repo.headSha();
-    await expect(agent.proposal('# New fact\nContent.', 'new', 'wiki/existing.md')).rejects.toThrow('already exists');
+    await expect(agent.proposal('# New fact\nContent.', 'new', 'wiki/concepts/existing.md')).rejects.toThrow('already exists');
     await expect(agent.proposal('Content.', 'edit', 'wiki/missing.md')).rejects.toThrow('not found');
     expect(fake.requests).toEqual([]);
     const proposal = await agent.proposal('# New fact\nGrounded content.', 'new');
-    expect(proposal).toEqual({ path: 'wiki/new-fact.md', baseSha, original: null, proposed: '# New fact\nGrounded content.' });
+    expect(proposal).toEqual({ path: 'wiki/concepts/new-fact.md', baseSha, original: null, proposed: '# New fact\nGrounded content.' });
     expect(await repo.readFile(proposal.path)).toBeNull();
     expect(await repo.headSha()).toBe(baseSha);
+  });
+
+  it('routes a domain proposal through its existing hub and reads its scoped schema', async () => {
+    const { agent, repo, fake } = await fixture(['wiki/engineering/cache.md', '# Cache\nA grounded engineering fact.'], {
+      'wiki/engineering/index.md': '# Engineering\nDomain entry points.',
+      'wiki/engineering/AGENTS.md': 'Use engineering-specific terminology.',
+    });
+    const proposal = await agent.proposal('# Cache\nA grounded engineering fact.', 'new');
+    expect(proposal.path).toBe('wiki/engineering/cache.md');
+    expect(fake.requests[1]!.body.instructions).toContain('Use engineering-specific terminology.');
+    expect(await repo.readFile(proposal.path)).toBeNull();
+    expect(await repo.headSha()).toBe(proposal.baseSha);
+  });
+
+  it.each(['wiki/new-fact.md', 'wiki/new-domain/new-fact.md', 'wiki/Engineering/new-fact.md'])('rejects unclassified or uninitialized new placement %s', async (path) => {
+    const { agent, fake } = await fixture([]);
+    await expect(agent.proposal('# New fact\nContent.', 'new', path)).rejects.toThrow();
+    expect(fake.requests).toEqual([]);
+  });
+
+  it.each(['wiki/new-fact.md', 'wiki/new-domain/new-fact.md', 'NONE'])('does not accept an invalid or unavailable automatic placement %s', async (selected) => {
+    const { agent, repo, fake } = await fixture([selected]);
+    const baseSha = await repo.headSha();
+    await expect(agent.proposal('# New fact\nContent.', 'new')).rejects.toThrow();
+    expect(fake.requests).toHaveLength(1);
+    expect(await repo.headSha()).toBe(baseSha);
+  });
+
+  it('routes domain-independent entities to the shared entities folder', async () => {
+    const { agent } = await fixture(['wiki/entities/obsidian.md', '# Obsidian\nA shared tool.']);
+    expect((await agent.proposal('# Obsidian\nA shared tool.', 'new')).path).toBe('wiki/entities/obsidian.md');
   });
 });

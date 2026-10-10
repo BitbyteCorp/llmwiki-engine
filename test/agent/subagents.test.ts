@@ -237,10 +237,8 @@ describe('write subagent pool', () => {
     });
     const pool = makePool();
     const first = await spawn(pool, 'first');
-    for (const files of [['wiki/first.md'], ['wiki/']]) {
-      await expect(spawn(pool, 'overlap', files)).rejects.toThrow(/overlap/i);
-    }
-    const second = await spawn(pool, 'second', ['wiki/second/']);
+    await expect(spawn(pool, 'overlap', ['wiki/first.md'])).rejects.toThrow(/overlap/i);
+    const second = await spawn(pool, 'second', ['wiki/second/nested.md']);
     await Promise.all([firstStarted.promise, secondStarted.promise]);
     const parent = pool.parentTools();
     await wt.write('wiki/outside.md', 'Original outside.\n');
@@ -248,7 +246,7 @@ describe('write subagent pool', () => {
       ['write_file', { path: 'wiki/first.md', content: 'Parent collision.' }],
       ['delete_file', { path: 'wiki/first.md' }],
       ['move_file', { from: 'wiki/first.md', to: 'wiki/free.md' }],
-      ['move_file', { from: 'wiki/outside.md', to: 'wiki/second/stolen.md' }],
+      ['move_file', { from: 'wiki/outside.md', to: 'wiki/second/nested.md' }],
     ] as const) await expect(invoke(parent, name, args)).rejects.toThrow(/claimed/i);
     await expect(invoke(parent, 'commit', { message: 'Too soon' })).rejects.toThrow(/running|wait/i);
     await invoke(parent, 'write_file', { path: 'wiki/second-sibling.md', content: 'Unclaimed parent note.\n' });
@@ -289,7 +287,7 @@ describe('write subagent pool', () => {
     await wt.write('wiki/owned/existing.md', 'Owned source remains.\n');
     const index = await wt.read('index.md');
     const pool = makePool();
-    const child = await spawn(pool, 'confined', ['wiki/owned/']);
+    const child = await spawn(pool, 'confined', ['wiki/owned/nested/', 'wiki/owned/existing.md', 'wiki/owned/stolen.md']);
     const result = await waitFor(pool, [child.id]);
     expect(result.settled[0]).toMatchObject({ status: 'completed', toolCalls: 9 });
     const followup = requests.find((entry) => entry.turn === 1)!.body;
@@ -328,9 +326,9 @@ describe('write subagent pool', () => {
     // These are valid in-repository aliases, so confinement alone cannot enforce ownership.
     expect(await wt.read('wiki/owned/alias/note.md')).toBe('Protected original.\n');
     const pool = makePool();
-    const held = await spawn(pool, 'held', ['wiki/protected/']);
+    const held = await spawn(pool, 'held', ['wiki/protected/note.md']);
     await heldStarted.promise;
-    const child = await spawn(pool, 'alias-child', ['wiki/owned/']);
+    const child = await spawn(pool, 'alias-child', ['wiki/owned/alias/', 'wiki/owned/local.md']);
     expect((await waitFor(pool, [child.id])).settled[0]).toMatchObject({ status: 'completed' });
     const followup = requests.find((entry) => entry.initial.id === child.id && entry.turn === 1)!.body;
     for (const id of ['alias-write', 'alias-delete', 'alias-move']) {
@@ -359,6 +357,85 @@ describe('write subagent pool', () => {
     await expect(spawn(pool, '   ')).rejects.toThrow();
     expect(requests).toEqual([]);
     expect(await invoke(pool.tools(), 'subagent_status', {})).toEqual({ subagents: [] });
+  });
+
+  it('reserves domain schemas and every overlapping claim before starting children, even without a schema file', async () => {
+    const { wt, requests, makePool } = await fixture(() => 'Unexpected child');
+    await wt.write('wiki/engineering/AGENTS.md', '# Engineering schema\n');
+    const pool = makePool();
+    for (const path of [
+      'wiki', 'wiki/',
+      'wiki/engineering', 'wiki/engineering/',
+      'wiki/engineering/AGENTS.md', 'wiki/engineering/AGENTS.md/',
+      'wiki/engineering/AGENTS.md/nested.md',
+      'wiki/new-domain', 'wiki/new-domain/', 'wiki/new-domain/AGENTS.md',
+    ]) {
+      await expect(spawn(pool, 'schema-owner', [path])).rejects.toThrow('Parent-only or immutable path cannot be claimed');
+    }
+    expect(requests).toEqual([]);
+    expect(await invoke(pool.tools(), 'subagent_status', {})).toEqual({ subagents: [] });
+    expect(await wt.read('wiki/engineering/AGENTS.md')).toBe('# Engineering schema\n');
+    expect(await wt.read('wiki/new-domain/AGENTS.md')).toBeNull();
+  });
+
+  it('preserves exact legacy wiki-root note claims without treating filenames as domains', async () => {
+    const path = 'wiki/root-note.md';
+    const { wt, makePool } = await fixture((_initial, turn) => turn === 0
+      ? [call('write_file', { path, content: 'Updated legacy note.\n' })]
+      : 'Legacy note finished');
+    await wt.write(path, 'Existing legacy note.\n');
+    const pool = makePool();
+    const child = await spawn(pool, 'legacy-note', [path]);
+    expect((await waitFor(pool, [child.id])).settled[0]).toMatchObject({ status: 'completed', files: [path], toolCalls: 1 });
+    expect(await wt.read(path)).toBe('Updated legacy note.\n');
+  });
+
+  it('lets domain note owners read schemas but rejects schema writes, deletes and moves without touching files', async () => {
+    const schema = 'wiki/engineering/AGENTS.md';
+    const note = 'wiki/engineering/notes/note.md';
+    const nestedSchema = 'wiki/engineering/notes/AGENTS.md';
+    const { wt, requests, makePool } = await fixture((_initial, turn) => turn === 0 ? [
+      call('read_file', { path: schema }, 'read-schema'),
+      call('write_file', { path: schema, content: 'Replaced schema' }, 'write-schema'),
+      call('delete_file', { path: schema }, 'delete-schema'),
+      call('move_file', { from: schema, to: 'wiki/engineering/notes/stolen.md' }, 'move-schema-out'),
+      call('move_file', { from: note, to: schema }, 'move-schema-in'),
+      call('write_file', { path: note, content: 'Updated domain note.\n' }, 'write-note'),
+      call('write_file', { path: nestedSchema, content: 'Ordinary nested note.\n' }, 'write-nested'),
+    ] : 'Domain notes finished');
+    await wt.write(schema, '# Engineering schema\n');
+    await wt.write(note, 'Original domain note.\n');
+    const pool = makePool();
+    const child = await spawn(pool, 'domain-notes', ['wiki/engineering/notes/']);
+    expect((await waitFor(pool, [child.id])).settled[0]).toMatchObject({ status: 'completed', toolCalls: 7 });
+    const followup = requests.find((entry) => entry.turn === 1)!.body;
+    expect(output(followup, 'read-schema')).toMatchObject({ content: '# Engineering schema\n' });
+    for (const id of ['write-schema', 'delete-schema', 'move-schema-out', 'move-schema-in']) {
+      expect(output(followup, id)).toMatchObject({ error: expect.stringContaining('outside subagent claims') });
+    }
+    expect(output(followup, 'write-note')).not.toHaveProperty('error');
+    expect(output(followup, 'write-nested')).not.toHaveProperty('error');
+    expect(await wt.read(schema)).toBe('# Engineering schema\n');
+    expect(await wt.read(note)).toBe('Updated domain note.\n');
+    expect(await wt.read(nestedSchema)).toBe('Ordinary nested note.\n');
+    expect(await wt.read('wiki/engineering/notes/stolen.md')).toBeNull();
+  });
+
+  it('allows domain hubs, shared folders and schema-free descendant folder claims', async () => {
+    const { wt, makePool } = await fixture((initial, turn) => turn === 0
+      ? [call('write_file', { path: initial.task, content: 'Delegated content.\n' })]
+      : 'Delegated note finished');
+    const pool = makePool();
+    for (const [claim, path] of [
+      ['wiki/engineering/index.md', 'wiki/engineering/index.md'],
+      ['wiki/engineering/notes/', 'wiki/engineering/notes/topic.md'],
+      ['wiki/concepts/', 'wiki/concepts/AGENTS.md'],
+      ['wiki/entities/', 'wiki/entities/tool.md'],
+    ]) {
+      const child = await invoke<Spawned>(pool.tools(), 'spawn_subagent', { name: 'allowed', task: path, files: [claim] });
+      expect((await waitFor(pool, [child.id])).settled[0]).toMatchObject({ status: 'completed', toolCalls: 1 });
+      expect(await wt.read(path)).toBe('Delegated content.\n');
+    }
   });
 
   it('rejects ill-formed UTF-16 claims and mutations instead of aliasing replacement-character files', async () => {
