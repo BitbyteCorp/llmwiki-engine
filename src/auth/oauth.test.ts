@@ -67,7 +67,7 @@ const clientMetadata = {
 };
 interface Tokens { access_token: string; refresh_token: string; token_type: string; scope: string; expires_in: number }
 
-async function setup(options: { denyGoogle?: boolean; allowedDomains?: string[] } = {}) {
+async function setup(options: { denyGoogle?: boolean; allowedDomains?: string[]; noGoogle?: boolean } = {}) {
   const db = openDb(':memory:');
   cleanups.push(() => { db.close(); });
   runMigrations(db);
@@ -118,7 +118,8 @@ async function setup(options: { denyGoogle?: boolean; allowedDomains?: string[] 
 
   const app = express();
   const url = await listen(createServer(app));
-  const config = loadConfig({ NODE_ENV: 'test', PUBLIC_URL: url, GOOGLE_CLIENT_ID: 'test', GOOGLE_CLIENT_SECRET: 'test', SESSION_SECRET: 'oauth-test-secret' });
+  const config = loadConfig({ NODE_ENV: 'test', PUBLIC_URL: url,
+    ...(options.noGoogle ? {} : { GOOGLE_CLIENT_ID: 'test', GOOGLE_CLIENT_SECRET: 'test' }), SESSION_SECRET: 'oauth-test-secret' });
   const logger = pino({ enabled: false });
   @Global()
   @Module({
@@ -136,7 +137,7 @@ async function setup(options: { denyGoogle?: boolean; allowedDomains?: string[] 
     providers: [HttpExceptionFilter],
   }).overrideProvider(GOOGLE_ISSUER).useValue(issuer).compile();
   const users = module.get(UsersService);
-  const user = users.create({ email: 'admin@example.com', name: 'Admin', role: 'admin' });
+  const user = await users.create({ email: 'admin@example.com', name: 'Admin', role: 'admin', password: 'initial-password' });
   if (options.allowedDomains) users.setSettings({ allowedDomains: options.allowedDomains });
   const nest = module.createNestApplication(new ExpressAdapter(app), { logger: false });
   cleanups.push(async () => { await nest.close(); });
@@ -168,13 +169,29 @@ async function setup(options: { denyGoogle?: boolean; allowedDomains?: string[] 
     }
     return target;
   }
-  async function authorizationResult(clientId: string) {
+  async function loginRequest(clientId: string) {
     const begin = await fetch(authorizationUrl(clientId), { redirect: 'manual' });
+    expect(begin.status).toBe(302);
+    const login = new URL(begin.headers.get('location')!, url);
+    expect(login.origin).toBe(url);
+    expect(login.pathname).toBe('/login');
+    const request = login.searchParams.get('request');
+    expect(request).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const browser = begin.headers.getSetCookie().find((cookie) => cookie.startsWith('llmwiki_oidc='))?.split(';')[0];
+    expect(browser).toBeDefined();
+    return { request: request!, browser: browser! };
+  }
+  function passwordLogin(body: unknown, browser?: string, origin = url) {
+    return fetch(`${url}/auth/password/login`, { method: 'POST', redirect: 'manual',
+      headers: { 'content-type': 'application/json', origin, ...(browser ? { cookie: browser } : {}) },
+      body: JSON.stringify(body) });
+  }
+  async function authorizationResult(clientId: string) {
+    const { request, browser } = await loginRequest(clientId);
+    const begin = await fetch(`${url}/auth/google/login?request=${request}`, { redirect: 'manual', headers: { cookie: browser } });
     expect(begin.status).toBe(302);
     const googleLocation = new URL(begin.headers.get('location')!);
     expect(googleLocation.origin).toBe(googleUrl);
-    const browser = begin.headers.getSetCookie().find((cookie) => cookie.startsWith('llmwiki_oidc='))?.split(';')[0];
-    expect(browser).toBeDefined();
     const googleResponse = await fetch(googleLocation, { redirect: 'manual' });
     expect(googleResponse.status).toBe(302);
     const callback = new URL(googleResponse.headers.get('location')!);
@@ -224,10 +241,113 @@ async function setup(options: { denyGoogle?: boolean; allowedDomains?: string[] 
     db.prepare(`UPDATE ${tables[kind]} SET expires_at=? WHERE ${column}=?`)
       .run('2000-01-01T00:00:00.000Z', createHash('sha256').update(token).digest('hex'));
   }
-  return { url, user, googleAccessToken, form, register, authorizationUrl, authorizationResult, authorize, exchange, grant, refresh, protectedRequest, expectDenied, expireCredential };
+  return { url, user, users, db, googleAccessToken, form, register, authorizationUrl, authorizationResult, authorize,
+    exchange, grant, refresh, protectedRequest, expectDenied, expireCredential, loginRequest, passwordLogin };
 }
 
 describe('MCP OAuth authorization server', () => {
+  it('offers password authentication even without Google and creates a normal audited web session', async () => {
+    const fixture = await setup({ noGoogle: true });
+    const providers = await fetch(`${fixture.url}/auth/providers`);
+    expect(await providers.json()).toEqual({ google: false, password: true });
+    const response = await fixture.passwordLogin({ email: 'ADMIN@example.com', password: 'initial-password', next: '/wiki?from=login' });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ redirectTo: '/wiki?from=login' });
+    expect(response.headers.getSetCookie().some(cookie => cookie.startsWith('llmwiki_session='))).toBe(true);
+    expect(fixture.users.getById(fixture.user.id)?.lastLoginAt).not.toBeNull();
+    const fallback = await fixture.passwordLogin({ email: fixture.user.email, password: 'initial-password', next: '//evil.example' });
+    expect(await fallback.json()).toEqual({ redirectTo: '/wiki' });
+    expect(fixture.db.prepare("SELECT outcome FROM audit_events WHERE action = 'auth.password.login'").all())
+      .toEqual([{ outcome: 'success' }, { outcome: 'success' }]);
+  });
+
+  it('returns identical credential errors for unknown, passwordless and wrong-password accounts without provisioning', async () => {
+    const fixture = await setup();
+    await fixture.users.create({ email: 'no-password@example.com', role: 'viewer' });
+    fixture.users.setSettings({ allowlistEnabled: false });
+    const errors: unknown[] = [];
+    for (const email of ['unknown@example.com', 'no-password@example.com', fixture.user.email]) {
+      const response = await fixture.passwordLogin({ email, password: 'wrong-password' });
+      expect(response.status).toBe(401);
+      expect(response.headers.get('set-cookie')).toBeNull();
+      errors.push(await response.json());
+    }
+    expect(errors[0]).toMatchObject({ error: { code: 'invalid_credentials' } });
+    expect(errors[1]).toEqual(errors[0]);
+    expect(errors[2]).toEqual(errors[0]);
+    expect(fixture.users.getByEmail('unknown@example.com')).toBeNull();
+  });
+
+  it('enforces email-only domain policy, input validation and same-origin password login', async () => {
+    const fixture = await setup({ allowedDomains: ['example.com'] });
+    expect((await fixture.passwordLogin({ email: fixture.user.email, password: 'initial-password' })).status).toBe(200);
+    fixture.users.setSettings({ allowedDomains: ['outside.example.com'] });
+    const denied = await fixture.passwordLogin({ email: fixture.user.email, password: 'initial-password' });
+    expect(denied.status).toBe(403);
+    expect(await denied.json()).toMatchObject({ error: { code: 'login_denied' } });
+    const malformed = await fixture.passwordLogin({ email: 42, password: 'initial-password' });
+    expect(malformed.status).toBe(400);
+    expect(await malformed.json()).toMatchObject({ error: { code: 'invalid_input' } });
+    const csrf = await fixture.passwordLogin({ email: fixture.user.email, password: 'initial-password' }, undefined, 'https://evil.example');
+    expect(csrf.status).toBe(403);
+    expect(await csrf.json()).toMatchObject({ error: { code: 'csrf_rejected' } });
+  });
+
+  it('completes a browser-bound single-use password MCP login and exchanges its engine code without Google', async () => {
+    const fixture = await setup({ noGoogle: true });
+    const clientId = await fixture.register();
+    const { request, browser } = await fixture.loginRequest(clientId);
+    const body = { email: fixture.user.email, password: 'initial-password', request };
+    const foreignBrowser = await fixture.passwordLogin(body);
+    expect(foreignBrowser.status).toBe(404);
+    expect(await foreignBrowser.json()).toMatchObject({ error: { code: 'login_request_not_found' } });
+    const wrongPassword = await fixture.passwordLogin({ ...body, password: 'wrong-password' }, browser);
+    expect(wrongPassword.status).toBe(401);
+    const response = await fixture.passwordLogin(body, browser);
+    expect(response.status).toBe(200);
+    const redirect = new URL((await response.json()).redirectTo);
+    expect(`${redirect.origin}${redirect.pathname}`).toBe(redirectUri);
+    expect(redirect.searchParams.get('state')).toBe('client-state');
+    expect(redirect.searchParams.get('iss')).toBe(fixture.url);
+    const tokens = await fixture.exchange(clientId, redirect.searchParams.get('code')!);
+    expect(tokens.status).toBe(200);
+    expect((await fixture.protectedRequest((await tokens.json()).access_token)).status).toBe(200);
+    const replay = await fixture.passwordLogin(body, browser);
+    expect(replay.status).toBe(404);
+    expect(await replay.json()).toMatchObject({ error: { code: 'login_request_not_found' } });
+    const googleReplay = await fetch(`${fixture.url}/auth/google/login?request=${request}`, { redirect: 'manual', headers: { cookie: browser } });
+    expect(googleReplay.status).toBe(404);
+  });
+
+  it('rejects expired and unknown MCP login requests and concurrent completion', async () => {
+    const fixture = await setup({ noGoogle: true });
+    const clientId = await fixture.register();
+    const expired = await fixture.loginRequest(clientId);
+    fixture.db.prepare('UPDATE mcp_login_requests SET expires_at = ?').run('2000-01-01T00:00:00.000Z');
+    for (const request of [expired.request, 'a'.repeat(43)]) {
+      const response = await fixture.passwordLogin({ email: fixture.user.email, password: 'initial-password', request }, expired.browser);
+      expect(response.status).toBe(404);
+      expect(await response.json()).toMatchObject({ error: { code: 'login_request_not_found' } });
+    }
+    const fresh = await fixture.loginRequest(clientId);
+    const body = { email: fixture.user.email, password: 'initial-password', request: fresh.request };
+    const responses = await Promise.all([fixture.passwordLogin(body, fresh.browser), fixture.passwordLogin(body, fresh.browser)]);
+    expect(responses.map(response => response.status).sort()).toEqual([200, 404]);
+  });
+
+  it('rejects URL-normalized external redirects containing control characters for both login methods', async () => {
+    const fixture = await setup();
+    const next = '/\t/evil.example';
+    const password = await fixture.passwordLogin({ email: fixture.user.email, password: 'initial-password', next });
+    expect(await password.json()).toEqual({ redirectTo: '/wiki' });
+    const google = await fetch(`${fixture.url}/auth/google/login?next=${encodeURIComponent(next)}`, { redirect: 'manual' });
+    expect(google.status).toBe(302);
+    const browser = google.headers.getSetCookie().find(cookie => cookie.startsWith('llmwiki_oidc='))?.split(';')[0];
+    const callback = await fetch(google.headers.get('location')!, { redirect: 'manual' });
+    const complete = await fetch(callback.headers.get('location')!, { redirect: 'manual', headers: { cookie: browser! } });
+    expect(complete.headers.get('location')).toBe('/');
+  });
+
   it('advertises protected resources at both discovery paths and public-client authorization capabilities', async () => {
     const fixture = await setup();
     for (const path of ['/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/mcp']) {

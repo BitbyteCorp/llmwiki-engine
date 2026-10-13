@@ -28,7 +28,7 @@ import { ActivityService } from './activity.service.js';
 import { OpsController } from './ops.controller.js';
 
 const stamp = '2026-01-02T00:00:00.000Z';
-const viewer: User = { id: 1, email: 'viewer@example.test', name: 'Viewer', role: 'viewer', createdAt: stamp, lastLoginAt: null };
+const viewer: User = { id: 1, email: 'viewer@example.test', name: 'Viewer', role: 'viewer', createdAt: stamp, lastLoginAt: null, hasPassword: false };
 const admin: User = { ...viewer, id: 3, email: 'admin@example.test', role: 'admin' };
 function commit(sha: string, at = stamp, source = 'web', jobId?: string): CommitInfo {
   return { sha, parents: [], authorName: 'Writer', authorEmail: 'writer@example.test', date: at,

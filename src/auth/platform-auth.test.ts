@@ -25,6 +25,7 @@ import { SessionOnlyGuard } from './guards/session-only.guard.js';
 import { GoogleOidcService } from './google-oidc.service.js';
 import { OAuthController } from './oauth.controller.js';
 import { OAuthRepository } from './oauth.repository.js';
+import { LoginRequestsService } from './login-requests.service.js';
 import { OAuthService } from './oauth.service.js';
 import { SessionsService } from './sessions.service.js';
 import { UsersRepository } from './users.repository.js';
@@ -62,13 +63,13 @@ function cookie(user: User): string {
 beforeEach(async () => {
   db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
-  for (const name of ['001_core.sql', '002_auth.sql', '011_platform.sql', '013_acl.sql']) {
+  for (const name of ['001_core.sql', '002_auth.sql', '011_platform.sql', '013_acl.sql', '027_user_passwords.sql', '028_mcp_login_requests.sql']) {
     db.exec(readFileSync(new URL(`../db/migrations/${name}`, import.meta.url), 'utf8'));
   }
   const module = await Test.createTestingModule({
     controllers: [AuthController, OAuthController, ApiTokensController, PolicyController],
     providers: [UsersRepository, UsersService, SessionsService, ApiTokensRepository, ApiTokensService,
-      AuditService, SessionGuard, SessionOnlyGuard, RolesGuard, OAuthRepository, OAuthService,
+      AuditService, LoginRequestsService, SessionGuard, SessionOnlyGuard, RolesGuard, OAuthRepository, OAuthService,
       { provide: GoogleOidcService, useValue: {} },
       { provide: CONFIG, useValue: loadConfig({ NODE_ENV: 'test', PUBLIC_URL: origin, SESSION_SECRET: 'test-secret', AUTH_CLEANUP_INTERVAL_MS: '1000' }) },
       { provide: DB, useValue: db }],
@@ -79,9 +80,9 @@ beforeEach(async () => {
   users = app.get(UsersService);
   tokens = app.get(ApiTokensService);
   sessions = app.get(SessionsService);
-  owner = users.create({ email: 'owner@example.com', role: 'viewer' });
-  admin = users.create({ email: 'admin@example.com', role: 'admin' });
-  other = users.create({ email: 'other@example.com', role: 'editor' });
+  owner = await users.create({ email: 'owner@example.com', role: 'viewer' });
+  admin = await users.create({ email: 'admin@example.com', role: 'admin' });
+  other = await users.create({ email: 'other@example.com', role: 'editor' });
   cleanup = new AuthCleanupService(loadConfig({ NODE_ENV: 'test', AUTH_CLEANUP_INTERVAL_MS: '1000' }), db);
 });
 

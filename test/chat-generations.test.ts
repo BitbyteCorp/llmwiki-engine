@@ -21,7 +21,7 @@ import { AuditService } from '../src/audit/audit.service.js';
 import { UsersService } from '../src/auth/users.service.js';
 import { UsersRepository } from '../src/auth/users.repository.js';
 
-const schemas = ['001_core.sql', '002_auth.sql', '004_chat.sql', '010_chat.sql', '011_platform.sql', '013_acl.sql', '023_message_error_code.sql'].map((name) =>
+const schemas = ['001_core.sql', '002_auth.sql', '004_chat.sql', '010_chat.sql', '011_platform.sql', '013_acl.sql', '023_message_error_code.sql', '027_user_passwords.sql'].map((name) =>
   readFileSync(new URL(`../src/db/migrations/${name}`, import.meta.url), 'utf8'));
 const stamp = '2026-10-07T00:00:00.000Z';
 const legacyConversationId = '00000000-0000-4000-8000-000000000001';

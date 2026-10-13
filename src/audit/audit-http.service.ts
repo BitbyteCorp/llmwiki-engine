@@ -12,9 +12,16 @@ export class AuditHttpService {
     if (this.recorded.has(req)) return;
     const path = req.originalUrl.split('?')[0]!.replace(/\/$/, '');
     const userRoute = /^\/api\/admin\/users(?:\/([^/]+))?$/i.exec(path);
+    const passwordRoute = /^\/api\/admin\/users\/([^/]+)\/password$/i.exec(path);
     let action: string;
     let target: string;
-    if (userRoute && req.method === 'POST' && !userRoute[1]) {
+    if (passwordRoute && (req.method === 'PUT' || req.method === 'DELETE')) {
+      action = req.method === 'PUT' ? 'user.password.set' : 'user.password.clear';
+      target = `user:${passwordRoute[1]}`;
+    } else if (path.toLowerCase() === '/api/me/password' && req.method === 'POST') {
+      action = 'user.password.change';
+      target = req.user ? `user:${req.user.id}` : 'users';
+    } else if (userRoute && req.method === 'POST' && !userRoute[1]) {
       action = 'user.create';
       target = typeof req.body?.email === 'string' ? `user:${req.body.email.trim().toLowerCase()}` : 'users';
     } else if (userRoute?.[1] && req.method === 'PATCH') {

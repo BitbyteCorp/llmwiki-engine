@@ -22,6 +22,6 @@ export class AuditModule implements NestModule {
     consumer.apply((req: Request, res: Response, next: NextFunction) => {
       res.once('finish', () => this.audit.record(req, res.statusCode));
       next();
-    }).forRoutes('api/admin/{*path}');
+    }).forRoutes('api/admin/{*path}', 'api/me/password');
   }
 }

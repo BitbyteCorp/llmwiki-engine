@@ -9,7 +9,7 @@ export class SessionOnlyGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const req = context.switchToHttp().getRequest<Request>();
     if (req.get('authorization') !== undefined) {
-      throw new ForbiddenException({ code: 'session_required', message: 'API tokens can only be created from a web session' });
+      throw new ForbiddenException({ code: 'session_required', message: 'This action requires a web session' });
     }
     const user = this.sessions.sessionUser(req);
     if (!user) throw new UnauthorizedException({ code: 'unauthorized', message: 'Login required' });

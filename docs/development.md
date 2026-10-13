@@ -27,7 +27,7 @@ Next의 CommonJS 진입점은 호출 가능한 함수를 내보내지만 `NodeNe
 | `src/knowledge/`, `src/jobs/` | 지식 저장소의 git 조작과 쓰기 작업의 실행·상태·머지를 담당한다. |
 | `src/agent/`, `src/knowledge/seed/` | 에이전트 루프와 도구, 빈 지식 저장소의 초기 문서를 담당한다. |
 | `src/rag/` | 파생 검색 인덱스와 검색·재구축 명령을 담당한다. |
-| `src/auth/` | 사용자·권한·설정, Google 로그인, 웹 세션, MCP OAuth를 담당한다. |
+| `src/auth/` | 사용자·권한·설정, 이메일·비밀번호와 Google 로그인, 웹 세션, MCP OAuth를 담당한다. |
 | `src/mcp/`, `src/api/` | MCP 도구와 웹 REST API·대화 저장을 각각 담당한다. |
 | `src/dreaming/` | 정기 정리와 수동 실행 명령을 담당한다. |
 | `src/ingest/`, `src/export/`, `src/backup/`, `src/skill/` | 원문 수집, main 내보내기, 오프라인 백업·복원, 버전 관리 Skill 설치를 담당한다. |
@@ -74,6 +74,16 @@ SQLite는 기존 `CHECK` 제약을 `ALTER TABLE`로 변경할 수 없으므로 �
 | `pnpm test` | 데코레이터 메타데이터를 생성하는 SWC 변환을 적용해 Vitest를 실행한다. |
 
 빌드 결과에는 `dist/main.js`, `dist/cli.js`, `dist/db/migrations/*.sql`, `dist/knowledge/seed/`와 `web/.next/`가 들어간다. SQL과 seed는 TypeScript 컴파일만으로 생성되지 않으므로 자산 복사 단계를 생략하지 않는다. 실행 시에는 루트 운영 의존성, Next 설정, `web/public/`, Skill 설치 명령의 원본인 루트 `skills/`도 필요하다. 웹은 항상 함께 빌드하며 Next standalone 출력이나 별도 웹 서버를 사용하지 않는다.
+
+### 사용자 관리 CLI
+| 명령 | 동작 |
+| --- | --- |
+| `pnpm cli user add <email> --role <admin\|editor\|viewer> [--name <name>] [--password]` | 사용자를 등록한다. `--password`를 지정하면 표준 입력에서 초기 비밀번호를 읽으며, 생략하면 비밀번호 없는 계정을 만든다. |
+| `pnpm cli user password <email> [--clear]` | 기존 사용자의 비밀번호를 설정·교체한다. `--clear`는 비밀번호를 제거하며 입력을 받지 않는다. |
+| `pnpm cli user role <email> <role>` | 마지막 관리자 보호를 적용해 역할을 변경한다. |
+| `pnpm cli user list` | 등록된 사용자 목록을 JSON으로 출력한다. 비밀번호 원문·해시는 포함하지 않고 `hasPassword`로 설정 여부만 표시한다. |
+
+`--password`는 값을 받지 않는 플래그다. 비밀번호를 명령행 인자나 환경 변수로 전달하지 않는다. TTY에서는 입력을 숨기고 비밀번호와 확인값을 두 번 받으며, 비TTY에서는 표준 입력 한 줄을 읽는다. 자동화에서는 비밀값을 안전한 표준 입력으로 전달한다. 비밀번호 정책·세션 폐기·감사 기록은 [인증](auth.md#비밀번호-정책과-저장)을 따른다.
 
 ### 내보내기·백업·Skill CLI
 `pnpm cli export --out wiki.zip [--prefix wiki/] [--format zip|bundle]`은 현재 main을 내보낸다. ZIP은 선택한 경로와 HEAD manifest를 포함한다. bundle은 저장소 복원용 git 이력이며 prefix와 함께 사용할 수 없다.
@@ -130,7 +140,7 @@ fixture의 범위를 검증하는 명령은 `pnpm vitest run test/fake-openai.te
 | `SEARCH_RERANK` | `off` | `llm`이면 설정한 LLM 모델로 검색 후보를 재정렬한다. |
 | `SEARCH_EXPAND` | `off` | `llm`이면 검색 질의 확장을 사용한다. |
 | `INDEX_POLL_SECONDS` | `60` | 외부 git 변경과 지식 저장소 HEAD를 확인하는 인덱스 동기화 주기다. |
-| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | 미설정 | Google 로그인에 필요하다. 미설정 상태에서도 부팅할 수 있지만 Google 로그인은 실패한다. |
+| `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | 미설정 | Google 로그인에만 필요하다. 미설정 상태에서도 부팅과 이메일·비밀번호 로그인이 가능하며 Google 로그인은 제공하지 않는다. |
 | `KNOWLEDGE_REPO_URL` | 미설정 | 지식 저장소의 git 원격 주소다. 없으면 로컬 `main` 저장소를 생성하고 일일 push를 건너뛰며 로그로 남긴다. |
 | `GIT_SSH_KEY_PATH` | 미설정 | git의 `GIT_SSH_COMMAND`에서 사용하는 SSH 배포 키 경로다. |
 | `GIT_BOT_NAME`, `GIT_BOT_EMAIL` | `도니`, `dony@llmwiki.local` | git 커미터 정보다. |
@@ -151,20 +161,20 @@ corepack prepare pnpm@10.34.6 --activate
 pnpm install --frozen-lockfile
 
 cp .env.example .env
-# .env의 SESSION_SECRET, DEV_LOGIN_EMAIL 등 로컬 값을 채운다.
-pnpm cli user add admin@example.com --role admin
+# .env의 SESSION_SECRET 등 로컬 값을 채운다.
+pnpm cli user add admin@example.com --role admin --password
 pnpm dev
 ```
 
 `pnpm dev`와 `pnpm cli`는 저장소 루트의 `.env`가 있으면 Node의 `--env-file-if-exists=.env`로 읽는다. 셸에서 이미 지정한 환경변수가 `.env`보다 우선하므로 `DEV_LOGIN_EMAIL=admin@example.com pnpm dev`처럼 일회성으로 덮어쓸 수 있다. `pnpm dev`는 항상 `NODE_ENV=development`로 실행한다. `.env`에 `NODE_ENV=production`이 남아 있으면 개발 서버가 빌드된 Next 앱을 찾고 개발 로그인을 거부하기 때문이다. 같은 이유로 `.env.example`에는 `NODE_ENV`를 두지 않으며, Docker 이미지와 Compose는 각자 `production`을 고정한다. `pnpm start`는 `.env`를 읽지 않는다.
 
-`pnpm dev` 하나로 API와 UI를 함께 실행하므로 별도 UI 개발 서버를 띄우지 않는다. 서버가 준비되면 `http://localhost:3000/auth/dev-login`에 접근해 등록한 관리자 세션을 만든다. 개발 로그인은 Google 없이 로컬 화면을 확인하기 위한 접점이며 신규 사용자를 자동 생성하지 않는다. 사용자 이메일은 CLI로 미리 등록해야 한다. API 키 없이 로컬 인증과 저장소를 확인할 수 있지만 도니의 응답과 임베딩을 확인하려면 `OPENAI_API_KEY`가 필요하다.
+`pnpm dev` 하나로 API와 UI를 함께 실행하므로 별도 UI 개발 서버를 띄우지 않는다. 서버가 준비되면 `http://localhost:3000/login`에서 등록한 이메일과 비밀번호로 로그인한다. 위 초기 설정에는 Google 설정이나 `DEV_LOGIN_EMAIL`이 필요하지 않다. `/auth/dev-login`은 `DEV_LOGIN_EMAIL`을 지정한 개발 환경에서만 제공하는 선택적 접점이며 기존 사용자만 사용한다. API 키 없이 로컬 인증과 저장소를 확인할 수 있지만 도니의 응답과 임베딩을 확인하려면 `OPENAI_API_KEY`가 필요하다.
 
 Next custom server에는 `PUBLIC_URL`의 호스트 이름과 `PORT`를 전달한다. Next 개발 모드는 이 호스트와 `localhost`를 개발 자산·HMR의 허용 origin으로 사용한다. 이를 생략하면 Next가 `localhost:3000`을 기준으로 초기화되어 `127.0.0.1` 같은 설정된 주소에서 HMR 연결이 거절되고 화면이 로딩 상태에 머무를 수 있다. 브라우저에서는 `PUBLIC_URL`에 설정한 호스트로 접근한다.
 
 `pnpm dev`에서 Next 화면은 HMR로 즉시 갱신되지만 Nest 서버 코드(`src/`)와 SQL 마이그레이션은 프로세스 시작 시 한 번만 로드된다. 따라서 서버 코드를 바꾼 뒤 `pnpm dev`를 다시 시작하지 않으면 새 화면이 아직 없는 API를 호출해 Express 기본 404(`Cannot GET /api/...`)를 받는다. 마이그레이션도 재시작할 때 적용된다. `/readyz`가 404면 재시작 전의 서버가 떠 있는 상태다.
 
-빌드된 서버와 웹을 확인할 때는 `pnpm build` 후 `NODE_ENV=production pnpm start`를 사용한다. 이 모드에서는 개발 로그인을 사용할 수 없으므로 Google 로그인 설정이 필요하다. 관리자 권한 복구는 `pnpm cli user role admin@example.com admin`으로 수행한다. 첫 관리자 이후의 사용자·권한·허용 도메인 설정은 웹 관리 화면에서 변경하며 정책은 [인증](auth.md)에 기록한다.
+빌드된 서버와 웹을 확인할 때는 `pnpm build` 후 `NODE_ENV=production pnpm start`를 사용한다. 이 모드에서는 개발 로그인을 사용할 수 없지만 등록한 이메일·비밀번호로 로그인할 수 있으므로 Google 설정은 필수가 아니다. 관리자 권한 복구는 `pnpm cli user role admin@example.com admin`, 비밀번호 복구는 `pnpm cli user password admin@example.com`으로 수행한다. 첫 관리자 이후의 사용자·권한·허용 도메인 설정은 웹 관리 화면에서 변경하며 정책은 [인증](auth.md)에 기록한다.
 
 ### 개발 서버 출력과 병렬 실행
 VS Code의 `pnpm dev` 터미널 출력이 일시 정지되거나 계속 배출되지 않는 상태에서는 동기 TTY 쓰기가 Node 프로세스 전체를 막을 수 있다. 실제로 이 상태에서 Next 화면뿐 아니라 `/healthz`도 응답하지 않는 현상이 관찰됐다. API와 Next가 한 이벤트 루프를 공유하므로 생존 확인 경로도 이 차단을 우회하지 못한다. 이를 DB·git·네트워크 지연으로 단정하기 전에 터미널 출력을 다시 흐르게 하고 로그 소비가 계속되는 실행 환경인지 확인한다.
@@ -199,11 +209,11 @@ docker run -d --name llmwiki-local \
   -v llmwiki-local-data:/data \
   -e SESSION_SECRET="$LOCAL_SESSION_SECRET" \
   llmwiki-engine:local
-docker exec llmwiki-local llmwiki user add admin@example.com --role admin
+docker exec -it llmwiki-local llmwiki user add admin@example.com --role admin --password
 curl --fail http://localhost:3000/readyz
 ```
 
-관리자를 등록한 뒤 Google 로그인 설정이 있는 경우 `PUBLIC_URL`의 `/auth/google/login`을 연다. Google 없는 개발 로그인은 앞의 로컬 소스 실행 절차를 사용한다. 이미지 실행에 OpenAI 기능이 필요하면 `OPENAI_API_KEY`를 실행 환경으로 전달한다. `/data`를 named volume으로 보존하면 컨테이너를 다시 만들어도 지식과 SQLite 상태를 유지한다. 호스트 디렉터리를 bind mount할 경우 이미지의 `node` 사용자 UID/GID가 쓰기 가능한 권한을 미리 설정해야 한다. 볼륨 전체 백업과 지식 저장소의 git 원격 백업은 서로 다른 범위를 보호한다.
+관리자와 비밀번호를 등록한 뒤 `PUBLIC_URL`의 `/login`에서 이메일·비밀번호로 로그인한다. Google 설정을 추가한 경우 같은 화면에서 Google 로그인도 선택할 수 있다. 비밀번호 변경은 `docker exec -it llmwiki-local llmwiki user password admin@example.com`으로 수행한다. 이미지 실행에 OpenAI 기능이 필요하면 `OPENAI_API_KEY`를 실행 환경으로 전달한다. `/data`를 named volume으로 보존하면 컨테이너를 다시 만들어도 지식과 SQLite 상태를 유지한다. 호스트 디렉터리를 bind mount할 경우 이미지의 `node` 사용자 UID/GID가 쓰기 가능한 권한을 미리 설정해야 한다. 볼륨 전체 백업과 지식 저장소의 git 원격 백업은 서로 다른 범위를 보호한다.
 
 SSH 키는 이미지에 복사하지 않는다. 원격 git이 필요할 때는 키와 검증된 `known_hosts`를 실행 사용자에게 읽기 가능한 읽기 전용 마운트로 제공하고 `GIT_SSH_KEY_PATH`를 설정한다. `.dockerignore`는 git 메타데이터, 설치·빌드 결과, 로컬 데이터, 환경 파일, SSH 디렉터리와 키 파일을 빌드 컨텍스트에서 제외한다.
 
@@ -214,7 +224,7 @@ SSH 키는 이미지에 복사하지 않는다. 원격 git이 필요할 때는 �
 cp .env.example .env
 # .env의 SESSION_SECRET에 로컬에서 생성한 무작위 값을 기록한다.
 docker compose --profile dev up --build -d
-docker compose --profile dev exec llmwiki llmwiki user add admin@example.com --role admin
+docker compose --profile dev exec llmwiki llmwiki user add admin@example.com --role admin --password
 docker compose --profile dev ps
 docker compose --profile dev down
 ```

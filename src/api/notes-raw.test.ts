@@ -73,8 +73,8 @@ describe('raw note assets HTTP with real Git and viewer sessions', () => {
       ],
     }).compile();
     acl = module.get(AclService);
-    admin = module.get(UsersService).create({ email: 'admin@example.test', role: 'admin' });
-    const viewer = module.get(UsersService).create({ email: 'viewer@example.test', role: 'viewer' });
+    admin = await module.get(UsersService).create({ email: 'admin@example.test', role: 'admin' });
+    const viewer = await module.get(UsersService).create({ email: 'viewer@example.test', role: 'viewer' });
     module.get(SessionsService).create({
       cookie: (name: string, value: string) => { cookie = `${name}=${value}`; },
     } as unknown as ExpressResponse, viewer);

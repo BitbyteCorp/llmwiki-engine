@@ -57,8 +57,8 @@ async function fixture() {
   const config = loadConfig({ NODE_ENV: 'test', DATA_DIR: dir, JOBS_AUTOSTART: 'false', PUBLIC_URL: 'http://localhost:3000' });
   const db = openDb(':memory:'); runMigrations(db);
   const users = new UsersService(new UsersRepository(db));
-  const owner = users.create({ email: 'editor@example.com', role: 'editor' });
-  const other = users.create({ email: 'other@example.com', role: 'viewer' });
+  const owner = await users.create({ email: 'editor@example.com', role: 'editor' });
+  const other = await users.create({ email: 'other@example.com', role: 'viewer' });
   const log = pino({ level: 'silent' });
   const repo = await KnowledgeRepo.open(config, log);
   const events = new EventsService();

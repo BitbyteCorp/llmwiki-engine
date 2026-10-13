@@ -15,6 +15,7 @@ import { SessionsService } from '../auth/sessions.service.js';
 import { ApiTokensService } from '../auth/api-tokens.service.js';
 import { assertSameOrigin } from '../auth/csrf.js';
 import { SessionGuard } from '../auth/guards/session.guard.js';
+import { SessionOnlyGuard } from '../auth/guards/session-only.guard.js';
 import { RolesGuard } from '../auth/guards/roles.guard.js';
 import { HttpExceptionFilter } from '../common/filters/http-exception.filter.js';
 import { configureApp } from '../common/http/configure-app.js';
@@ -99,7 +100,7 @@ describe('web REST API', () => {
   let users: {
     getById: ReturnType<typeof vi.fn<(id: number) => User | null>>;
     list: ReturnType<typeof vi.fn<() => User[]>>;
-    create: ReturnType<typeof vi.fn<(input: { email: string; name?: string | null; role: Role }) => User>>;
+    create: Mock<(input: { email: string; name?: string | null; role: Role; password?: string }) => Promise<User>>;
     update: ReturnType<typeof vi.fn<(id: number, input: { role?: Role; name?: string | null }) => User>>;
     delete: ReturnType<typeof vi.fn<(id: number) => void>>;
     getSettings: ReturnType<typeof vi.fn<() => { allowlistEnabled: boolean; allowedDomains: string[] }>>;
@@ -113,7 +114,7 @@ describe('web REST API', () => {
     userRows = new Map([1, 2, 3].map((id) => [id, {
       id, email: `user${id}@example.com`, name: `User ${id}`,
       role: id === 3 ? 'admin' as const : 'viewer' as const,
-      createdAt: stamp, lastLoginAt: null,
+      createdAt: stamp, lastLoginAt: null, hasPassword: false,
     }]));
     for (const user of userRows.values()) {
       db.prepare('INSERT INTO users (id, email, name, role, created_at) VALUES (?, ?, ?, ?, ?)')
@@ -143,8 +144,8 @@ describe('web REST API', () => {
     users = {
       getById: vi.fn((id) => userRows.get(id) ?? null),
       list: vi.fn(() => [...userRows.values()]),
-      create: vi.fn((input) => {
-        const user = { ...input, id: 4, name: input.name ?? null, createdAt: stamp, lastLoginAt: null };
+      create: vi.fn(async (input) => {
+        const user = { email: input.email, role: input.role, id: 4, name: input.name ?? null, createdAt: stamp, lastLoginAt: null, hasPassword: input.password !== undefined };
         userRows.set(user.id, user);
         return user;
       }),
@@ -173,7 +174,7 @@ describe('web REST API', () => {
       ],
       providers: [
         ConversationsRepository, ConversationsService, GenerationsService, AgentCheckpointsRepository, NotesService, HistoryService,
-        SessionGuard, RolesGuard, AclService, AuditService, WriteJobsService,
+        SessionGuard, SessionOnlyGuard, RolesGuard, AclService, AuditService, WriteJobsService,
         { provide: DB, useValue: db },
         { provide: LOGGER, useValue: log },
         { provide: KnowledgeRepo, useValue: repo },
@@ -192,7 +193,7 @@ describe('web REST API', () => {
             return {
               id: Number(id), email: `user${id}@example.com`, name: `User ${id}`,
               role: (req.get('x-role') ?? 'viewer') as Role,
-              createdAt: stamp, lastLoginAt: null,
+              createdAt: stamp, lastLoginAt: null, hasPassword: false,
             };
           },
         } },
@@ -260,7 +261,7 @@ describe('web REST API', () => {
       await expectError(await request('/admin/users', {}, 1, role), 403, 'forbidden');
       await expectError(await request('/admin/settings', { method: 'PUT', body: '{"allowlistEnabled":false}' }, 1, role), 403, 'forbidden');
     }
-    expect(await (await request('/me')).json()).toMatchObject({ user: { id: 1, role: 'viewer', email: 'user1@example.com' } });
+    expect(await (await request('/me')).json()).toMatchObject({ user: { id: 1, role: 'viewer', email: 'user1@example.com', hasPassword: false } });
   });
 
   it('reads main Markdown with parsed frontmatter and resolves wikilinks by case-insensitive basename', async () => {
@@ -450,7 +451,7 @@ describe('web REST API', () => {
     expect(await (await request('/admin/users', {}, 3, 'admin')).json()).toEqual({ users: [...userRows.values()] });
     const created = await request('/admin/users', { method: 'POST', body: '{"email":"new@example.com","name":"New editor","role":"editor"}' }, 3, 'admin');
     expect(created.status).toBe(201);
-    expect(await created.json()).toMatchObject({ user: { id: 4, email: 'new@example.com', name: 'New editor', role: 'editor' } });
+    expect(await created.json()).toMatchObject({ user: { id: 4, email: 'new@example.com', name: 'New editor', role: 'editor', hasPassword: false } });
     expect(await (await request('/admin/users/4', { method: 'PATCH', body: '{"role":"viewer"}' }, 3, 'admin')).json()).toMatchObject({ user: { id: 4, role: 'viewer' } });
     expect((await request('/admin/users/4', { method: 'DELETE' }, 3, 'admin')).status).toBe(204);
     const remaining = await (await request('/admin/users', {}, 3, 'admin')).json() as { users: User[] };

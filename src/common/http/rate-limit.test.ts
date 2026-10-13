@@ -18,14 +18,14 @@ class LimitsConfigModule {}
 class ResolveUserGuard implements CanActivate {
   canActivate(context: ExecutionContext): boolean {
     const req = context.switchToHttp().getRequest<Request>();
-    req.user = { id: Number(req.get('x-user') ?? 1), role: 'editor', email: 'user@example.com', name: null, createdAt: '', lastLoginAt: null };
+    req.user = { id: Number(req.get('x-user') ?? 1), role: 'editor', email: 'user@example.com', name: null, createdAt: '', lastLoginAt: null, hasPassword: false };
     return true;
   }
 }
 
 @Controller()
 class RateSurface {
-  @Post(['oauth/token', 'oauth/register'])
+  @Post(['oauth/token', 'oauth/register', 'auth/password/login'])
   auth() { return { accepted: true }; }
 
   @Get('auth/google/login')
@@ -76,6 +76,15 @@ describe('shared HTTP rate budgets', () => {
     expect(repeated.headers['retry-after']).toBe('59');
     now += 59_000;
     await request(server).post('/oauth/token').expect(201);
+  });
+
+  it('shares password login with the Google and OAuth IP budget', async () => {
+    const server = app.getHttpServer();
+    await request(server).get('/auth/google/login').expect(200);
+    await request(server).post('/auth/password/login').expect(201);
+    const denied = await request(server).post('/auth/password/login').expect(429);
+    expect(denied.body.error.code).toBe('rate_limited');
+    expect(denied.headers['retry-after']).toBe('60');
   });
 
   it('honors forwarding only when explicitly configured', async () => {

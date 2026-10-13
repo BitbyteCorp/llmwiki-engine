@@ -11,7 +11,7 @@ import { openDb, runMigrations, type Db } from '../db/index.js';
 import { EventsController } from './events.controller.js';
 import { EventsService } from './events.service.js';
 
-const user = (id: number, role: User['role'] = 'viewer'): User => ({ id, role, name: null, email: `${id}@example.com`, createdAt: '', lastLoginAt: null });
+const user = (id: number, role: User['role'] = 'viewer'): User => ({ id, role, name: null, email: `${id}@example.com`, createdAt: '', lastLoginAt: null, hasPassword: false });
 function connection(controller: EventsController, viewer: User) {
   const response = new EventEmitter();
   const frames: string[] = [];
@@ -24,11 +24,11 @@ function connection(controller: EventsController, viewer: User) {
 let db: Db;
 let users: UsersService;
 let acl: AclService;
-beforeEach(() => {
+beforeEach(async () => {
   db = openDb(':memory:');
   runMigrations(db);
   users = new UsersService(new UsersRepository(db));
-  for (const id of [1, 2, 3]) users.create({ email: user(id).email, role: id === 3 ? 'admin' : 'viewer' });
+  for (const id of [1, 2, 3]) await users.create({ email: user(id).email, role: id === 3 ? 'admin' : 'viewer' });
   acl = new AclService(db, users, new AuditService(db));
 });
 afterEach(() => { vi.useRealTimers(); db.close(); });

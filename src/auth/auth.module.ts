@@ -15,6 +15,7 @@ import { ApiTokensRepository } from './api-tokens.repository.js';
 import { ApiTokensService } from './api-tokens.service.js';
 import { AuthCleanupService } from './auth-cleanup.service.js';
 import { SessionOnlyGuard } from './guards/session-only.guard.js';
+import { LoginRequestsService } from './login-requests.service.js';
 
 @Module({
   controllers: [AuthController, OAuthController, ApiTokensController],
@@ -22,6 +23,7 @@ import { SessionOnlyGuard } from './guards/session-only.guard.js';
     UsersRepository,
     UsersService,
     SessionsService,
+    LoginRequestsService,
     GoogleOidcService,
     { provide: GOOGLE_ISSUER, useValue: DEFAULT_GOOGLE_ISSUER },
     OAuthRepository,

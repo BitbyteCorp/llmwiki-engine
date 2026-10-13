@@ -35,7 +35,7 @@ const mcpAuthGuard: CanActivate = {
     const id = Number(identity[2]);
     req.user = {
       id, role: identity[1] as Role, email: `user-${id}@example.test`, name: `User ${id}`,
-      createdAt: '2026-01-01T00:00:00.000Z', lastLoginAt: null,
+      createdAt: '2026-01-01T00:00:00.000Z', lastLoginAt: null, hasPassword: false,
     };
     return true;
   },

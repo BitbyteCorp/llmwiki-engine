@@ -63,9 +63,9 @@ describe('ACL-aware RAG HTTP with a real repository and index', () => {
     db = openDb(join(directory, 'engine.sqlite'));
     runMigrations(db);
     const users = new UsersService(new UsersRepository(db));
-    admin = users.create({ email: 'admin@example.com', role: 'admin' });
-    alice = users.create({ email: 'alice@example.com', role: 'viewer' });
-    bob = users.create({ email: 'bob@example.com', role: 'viewer' });
+    admin = await users.create({ email: 'admin@example.com', role: 'admin' });
+    alice = await users.create({ email: 'alice@example.com', role: 'viewer' });
+    bob = await users.create({ email: 'bob@example.com', role: 'viewer' });
     acl = new AclService(db, users, new AuditService(db));
     acl.create({ prefix: 'wiki/hidden/', subjectType: 'everyone', subject: '', access: 'none' }, admin);
     acl.create({ prefix: 'wiki/hidden/', subjectType: 'user', subject: String(bob.id), access: 'read' }, admin);

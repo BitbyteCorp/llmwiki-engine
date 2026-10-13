@@ -32,11 +32,11 @@ async function setup() {
   const jwk = { ...await exportJWK(keys.publicKey), kid: 'google-test', alg: 'RS256', use: 'sig' };
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
-  for (const migration of ['001_core.sql', '002_auth.sql', '011_platform.sql', '013_acl.sql']) {
+  for (const migration of ['001_core.sql', '002_auth.sql', '011_platform.sql', '013_acl.sql', '027_user_passwords.sql']) {
     db.exec(readFileSync(new URL(`../db/migrations/${migration}`, import.meta.url), 'utf8'));
   }
   const users = new UsersService(new UsersRepository(db));
-  const user = users.create({ email: 'admin@example.com', role: 'admin', name: 'Admin' });
+  const user = await users.create({ email: 'admin@example.com', role: 'admin', name: 'Admin' });
   users.setSettings({ allowlistEnabled: true, allowedDomains: ['example.com'] });
   const codes = new Map<string, { nonce: string; challenge: string }>();
   const tokenRequests: URLSearchParams[] = [];

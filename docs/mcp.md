@@ -11,6 +11,8 @@ Claude Code, Codex, Hermes가 같은 지식 저장소를 활용하려면 각 클
 
 MCP 엔드포인트는 `/mcp`이며, 전송 방식은 Streamable HTTP다. 클라이언트는 각 요청에 엔진의 Bearer 토큰을 보내며, 토큰 발급은 [인증과 권한](auth.md)을 따른다.
 
+브라우저 인증은 관리자에게 발급받은 이메일·비밀번호 또는 설정된 Google 로그인을 선택한다. `/oauth/authorize`가 검증한 인가 요청은 `/login?request=…`로 이어지며, 로그인 이후 클라이언트는 엔진 인가 코드를 PKCE로 교환한다. 비밀번호 로그인도 MCP 토큰 발급 절차를 우회하지 않으며, 비밀번호를 MCP Bearer 토큰으로 사용하지 않는다. 요청의 브라우저 결합·수명·일회용 규칙은 [MCP 로그인 흐름](auth.md#mcp-로그인-흐름)에 기록한다.
+
 서버는 **stateless** 방식을 사용한다. 인증을 통과한 POST마다 새 `McpServer`와 `StreamableHTTPServerTransport`를 만들고, `sessionIdGenerator: undefined`와 `enableJsonResponse: true`를 설정한다. 응답 연결이 닫히면 해당 서버와 전송을 정리한다. 응답에 `mcp-session-id`를 발급하지 않으며, 지속적인 MCP 세션이나 SSE 구독을 유지하지 않는다.
 
 각 요청은 `McpController`의 `McpAuthGuard`로 다시 인증하고, `@CurrentUser()`가 전달한 현재 사용자·역할과 검증된 OAuth 토큰의 등록 클라이언트 이름을 `McpService`에 연결한다. 이전 요청의 신원이나 권한은 재사용하지 않는다. `write`는 현재 사용자를 소유자로, `source: "mcp"`와 인증된 클라이언트 이름을 작업에 기록한다. 클라이언트가 MCP 초기화 때 보낸 이름을 인증 정보로 신뢰하지 않는다. 비동기 쓰기 상태는 MCP 세션이 아니라 작업 큐에 보관하므로 이후 별도 POST에서 `jobId`로 조회한다.

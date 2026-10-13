@@ -297,7 +297,7 @@ async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'llmwiki-dreaming-'));
   const db = new Database(':memory:');
   resources.push({ root, db });
-  for (const migration of ['001_core', '002_auth', '005_dreaming', '008_ops', '011_platform', '013_acl', '021_dream_modes']) db.exec(await readFile(new URL(`../../src/db/migrations/${migration}.sql`, import.meta.url), 'utf8'));
+  for (const migration of ['001_core', '002_auth', '005_dreaming', '008_ops', '011_platform', '013_acl', '021_dream_modes', '027_user_passwords']) db.exec(await readFile(new URL(`../../src/db/migrations/${migration}.sql`, import.meta.url), 'utf8'));
   db.exec(`CREATE TABLE messages (
     id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('user', 'assistant')), content TEXT NOT NULL,

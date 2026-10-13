@@ -55,9 +55,9 @@ async function fixture(script: FakeScript = []) {
   cleanup.push(() => module.close());
   await module.init();
   const users = module.get(UsersService);
-  const admin = users.create({ email: 'admin@acl.test', role: 'admin' });
-  const editor = users.create({ email: 'editor@acl.test', role: 'editor' });
-  const other = users.create({ email: 'other@acl.test', role: 'editor' });
+  const admin = await users.create({ email: 'admin@acl.test', role: 'admin' });
+  const editor = await users.create({ email: 'editor@acl.test', role: 'editor' });
+  const other = await users.create({ email: 'other@acl.test', role: 'editor' });
   const acl = module.get(AclService);
   acl.create({ prefix: 'wiki/private/', subjectType: 'everyone', subject: '', access: 'none' }, admin);
   acl.create({ prefix: 'wiki/readonly/', subjectType: 'everyone', subject: '', access: 'read' }, admin);

@@ -31,13 +31,13 @@ describe('NotesService resolver with authorized repository candidates', () => {
   let grantedViewer: User;
   let repo: FixtureRepository;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     db = openDb(':memory:');
     runMigrations(db);
     const users = new UsersService(new UsersRepository(db));
-    admin = users.create({ email: 'admin@example.test', role: 'admin' });
-    viewer = users.create({ email: 'viewer@example.test', role: 'viewer' });
-    grantedViewer = users.create({ email: 'granted@example.test', role: 'viewer' });
+    admin = await users.create({ email: 'admin@example.test', role: 'admin' });
+    viewer = await users.create({ email: 'viewer@example.test', role: 'viewer' });
+    grantedViewer = await users.create({ email: 'granted@example.test', role: 'viewer' });
     acl = new AclService(db, users, new AuditService(db));
     repo = new FixtureRepository();
     notes = new NotesService(repo as unknown as KnowledgeRepo, acl);

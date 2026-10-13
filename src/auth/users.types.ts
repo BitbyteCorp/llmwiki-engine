@@ -7,6 +7,7 @@ export interface User {
   role: Role;
   createdAt: string;
   lastLoginAt: string | null;
+  hasPassword: boolean;
 }
 
 export interface Settings {

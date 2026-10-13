@@ -74,7 +74,23 @@ export const createUserSchema = z.object({
   email: z.email().trim().toLowerCase(),
   name: z.string().trim().max(200).nullable().optional(),
   role: roleSchema,
+  password: z.string().optional(),
 });
+export type UserCreateDto = z.infer<typeof createUserSchema>;
+export const passwordLoginSchema = z.object({
+  email: z.email().trim().toLowerCase(),
+  password: z.string(),
+  next: z.string().max(4096).optional(),
+  request: z.string().min(1).max(200).optional(),
+}).strict();
+export type PasswordLoginDto = z.infer<typeof passwordLoginSchema>;
+export const changePasswordSchema = z.object({
+  currentPassword: z.string().optional(),
+  newPassword: z.string(),
+}).strict();
+export type ChangePasswordDto = z.infer<typeof changePasswordSchema>;
+export const setPasswordSchema = z.object({ password: z.string() }).strict();
+export type SetPasswordDto = z.infer<typeof setPasswordSchema>;
 export const updateUserSchema = z.object({
   role: roleSchema.optional(), name: z.string().trim().max(200).nullable().optional(),
 }).refine((value) => value.role !== undefined || value.name !== undefined, 'At least one change is required');

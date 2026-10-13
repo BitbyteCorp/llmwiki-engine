@@ -3,15 +3,16 @@ import type { z } from 'zod';
 import { Roles } from '../auth/decorators/roles.decorator.js';
 import { RolesGuard } from '../auth/guards/roles.guard.js';
 import { SessionGuard } from '../auth/guards/session.guard.js';
+import { SessionsService } from '../auth/sessions.service.js';
 import { UsersService } from '../auth/users.service.js';
 import { ZodValidationPipe } from '../common/pipes/zod-validation.pipe.js';
-import { createUserSchema, settingsSchema, updateUserSchema, userIdSchema } from './api.dto.js';
+import { createUserSchema, settingsSchema, setPasswordSchema, updateUserSchema, userIdSchema, type SetPasswordDto } from './api.dto.js';
 
 @Controller('api/admin')
 @UseGuards(SessionGuard, RolesGuard)
 @Roles('admin')
 export class AdminController {
-  constructor(private readonly users: UsersService) {}
+  constructor(private readonly users: UsersService, private readonly sessions: SessionsService) {}
 
   @Get('users')
   listUsers() {
@@ -19,8 +20,8 @@ export class AdminController {
   }
 
   @Post('users')
-  createUser(@Body(new ZodValidationPipe(createUserSchema)) input: z.infer<typeof createUserSchema>) {
-    return { user: this.users.create(input) };
+  async createUser(@Body(new ZodValidationPipe(createUserSchema)) input: z.infer<typeof createUserSchema>) {
+    return { user: await this.users.create(input) };
   }
 
   @Patch('users/:id')
@@ -35,6 +36,25 @@ export class AdminController {
   @HttpCode(204)
   deleteUser(@Param('id', new ZodValidationPipe(userIdSchema)) id: z.infer<typeof userIdSchema>): void {
     this.users.delete(id);
+  }
+
+  @Put('users/:id/password')
+  @HttpCode(204)
+  async setPassword(
+    @Param('id', new ZodValidationPipe(userIdSchema)) id: z.infer<typeof userIdSchema>,
+    @Body(new ZodValidationPipe(setPasswordSchema)) input: SetPasswordDto,
+  ): Promise<void> {
+    await this.users.setPassword(id, input.password, () => {
+      this.sessions.revokeUser(id);
+    });
+  }
+
+  @Delete('users/:id/password')
+  @HttpCode(204)
+  clearPassword(@Param('id', new ZodValidationPipe(userIdSchema)) id: z.infer<typeof userIdSchema>): void {
+    this.users.clearPassword(id, () => {
+      this.sessions.revokeUser(id);
+    });
   }
 
   @Get('settings')

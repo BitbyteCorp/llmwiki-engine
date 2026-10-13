@@ -203,7 +203,7 @@ describe('catalog REST routes', () => {
         { provide: SessionsService, useValue: {
           sessionUser: (req: Request): User | null => req.get('x-session') ? {
             id: 1, email: 'viewer@example.com', name: 'Viewer', role: 'viewer',
-            createdAt: '2026-01-01T00:00:00.000Z', lastLoginAt: null,
+            createdAt: '2026-01-01T00:00:00.000Z', lastLoginAt: null, hasPassword: false,
           } : null,
           assertSameOrigin: () => {},
         } },

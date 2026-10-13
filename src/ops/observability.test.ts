@@ -65,8 +65,8 @@ describe('operations HTTP boundary', () => {
     if (db?.open) db.close();
   });
 
-  function sessionCookie(role: 'admin' | 'viewer'): string {
-    const user = users.create({ email: `${role}@example.com`, role });
+  async function sessionCookie(role: 'admin' | 'viewer'): Promise<string> {
+    const user = await users.create({ email: `${role}@example.com`, role });
     let cookie = '';
     sessions.create({ cookie: (name: string, value: string) => { cookie = `${name}=${encodeURIComponent(value)}`; } } as Response, user);
     return cookie;
@@ -110,8 +110,8 @@ describe('operations HTTP boundary', () => {
 
   it('requires an admin session or dedicated metrics bearer and rejects invalid or disabled bearer even with admin cookies', async () => {
     await request(app.getHttpServer()).get('/metrics').expect(401);
-    await request(app.getHttpServer()).get('/metrics').set('Cookie', sessionCookie('viewer')).expect(403);
-    const admin = sessionCookie('admin');
+    await request(app.getHttpServer()).get('/metrics').set('Cookie', await sessionCookie('viewer')).expect(403);
+    const admin = await sessionCookie('admin');
     await request(app.getHttpServer()).get('/metrics').set('Cookie', admin).expect(200);
     await request(app.getHttpServer()).get('/metrics').set('Authorization', 'Bearer scrape-secret').expect(200);
     for (const token of ['wrong', 'scrape-secreu', 'lwk_' + 'a'.repeat(43)]) {

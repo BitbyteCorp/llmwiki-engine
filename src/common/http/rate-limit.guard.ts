@@ -4,6 +4,7 @@ import { RateLimitService } from './rate-limit.service.js';
 
 const authPaths: Record<string, true> = {
   '/auth/google/login': true, '/auth/google/callback': true, '/auth/dev-login': true,
+  '/auth/password/login': true,
   '/oauth/authorize': true, '/oauth/register': true, '/oauth/token': true, '/oauth/revoke': true,
 };
 

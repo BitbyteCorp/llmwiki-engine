@@ -46,9 +46,9 @@ async function fixture() {
   modules.push(module);
   await module.init();
   const users = module.get(UsersService);
-  const editor = users.create({ ...author, role: 'editor' });
-  const viewer = users.create({ email: 'viewer@example.test', role: 'viewer' });
-  const admin = users.create({ email: 'admin@example.test', role: 'admin' });
+  const editor = await users.create({ ...author, role: 'editor' });
+  const viewer = await users.create({ email: 'viewer@example.test', role: 'viewer' });
+  const admin = await users.create({ email: 'admin@example.test', role: 'admin' });
   const repo = module.get(KnowledgeRepo);
   const seed = await repo.createWorktree('seed-parity');
   await seed.write('index.md', '# Index\n\n[[wiki/engine]]\n');

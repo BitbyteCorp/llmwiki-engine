@@ -77,9 +77,9 @@ describe('folder ACL at notes, history and job HTTP boundaries', () => {
       ],
     }).compile();
     const users = module.get(UsersService);
-    alice = users.create({ email: 'alice@example.test', role: 'editor' });
-    bob = users.create({ email: 'bob@example.test', role: 'editor' });
-    admin = users.create({ email: 'admin@example.test', role: 'admin' });
+    alice = await users.create({ email: 'alice@example.test', role: 'editor' });
+    bob = await users.create({ email: 'bob@example.test', role: 'editor' });
+    admin = await users.create({ email: 'admin@example.test', role: 'admin' });
     cookies = new Map();
     for (const user of [alice, bob, admin]) module.get(SessionsService).create({
       cookie: (name: string, value: string) => { cookies.set(user.id, `${name}=${value}`); },

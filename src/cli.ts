@@ -2,7 +2,7 @@
 import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import type { INestApplicationContext } from '@nestjs/common';
-import { Command } from 'commander';
+import { Command, CommanderError } from 'commander';
 import { AppModule } from './app.module.js';
 import { registerAuthCommands } from './auth/auth.commands.js';
 import { registerRagCommands } from './rag/rag.commands.js';
@@ -28,7 +28,11 @@ try {
   registerSkillCommands(program);
   await program.parseAsync(process.argv);
 } catch (error) {
-  logger.error({ err: error }, 'llmwiki command failed');
+  if (error instanceof CommanderError) {
+    logger.error({ code: error.code }, 'Invalid command arguments; passwords must be supplied through stdin, never arguments');
+  } else {
+    logger.error({ err: error }, 'llmwiki command failed');
+  }
   process.exitCode = 1;
 } finally {
   if (pendingApp) {

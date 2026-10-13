@@ -8,6 +8,7 @@ import { CONFIG, DB } from '../common/tokens.js';
 import { UsersService } from './users.service.js';
 import type { User } from './users.types.js';
 import type { AuthFlow, GoogleIssuer } from './google-oidc.types.js';
+import { authBrowser, ensureAuthBrowser, opaquePattern } from './auth-browser.js';
 
 export const GOOGLE_ISSUER = Symbol('GOOGLE_ISSUER');
 export const DEFAULT_GOOGLE_ISSUER: GoogleIssuer = {
@@ -16,10 +17,7 @@ export const DEFAULT_GOOGLE_ISSUER: GoogleIssuer = {
   tokenEndpoint: 'https://oauth2.googleapis.com/token',
   jwksUri: 'https://www.googleapis.com/oauth2/v3/certs',
 };
-const BROWSER_COOKIE = 'llmwiki_oidc';
-const BROWSER_TTL = 30 * 24 * 60 * 60 * 1000;
 const PENDING_TTL = 10 * 60 * 1000;
-const OPAQUE = /^[A-Za-z0-9_-]{43}$/;
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
 const random = () => randomBytes(32).toString('base64url');
 
@@ -27,16 +25,6 @@ function authError(status: number, code: string, message: string): Error & { sta
   return Object.assign(new Error(message), { status, code });
 }
 
-function cookie(req: Request, name: string): string | undefined {
-  const header = req.get('cookie');
-  if (!header) return undefined;
-  for (const part of header.split(';')) {
-    const separator = part.indexOf('=');
-    if (separator < 0 || part.slice(0, separator).trim() !== name) continue;
-    try { return decodeURIComponent(part.slice(separator + 1).trim()); } catch { return undefined; }
-  }
-  return undefined;
-}
 
 interface Pending {
   nonce: string;
@@ -77,14 +65,10 @@ export class GoogleOidcService {
     const state = random();
     const nonce = random();
     const verifier = random();
-    const existingBrowser = cookie(req, BROWSER_COOKIE);
-    const browser = existingBrowser && OPAQUE.test(existingBrowser) ? existingBrowser : random();
+    const browser = ensureAuthBrowser(req, res, this.config.publicUrl);
     const expiresAt = new Date(Date.now() + PENDING_TTL).toISOString();
     this.db.prepare('INSERT INTO auth_pending (state_hash, nonce, verifier, flow, expires_at, browser_hash) VALUES (?, ?, ?, ?, ?, ?)')
       .run(hash(state), nonce, verifier, JSON.stringify(flow), expiresAt, hash(browser));
-    if (browser !== existingBrowser) res.cookie(BROWSER_COOKIE, browser, {
-      httpOnly: true, sameSite: 'lax', secure: new URL(this.config.publicUrl).protocol === 'https:', path: '/', maxAge: BROWSER_TTL,
-    });
     const target = new URL(this.issuer.authorizationEndpoint);
     target.searchParams.set('client_id', config.clientId);
     target.searchParams.set('redirect_uri', config.redirectUri);
@@ -100,8 +84,8 @@ export class GoogleOidcService {
   async callback(req: Request, _res: Response): Promise<{ user: User; flow: AuthFlow }> {
     const config = this.configuration();
     const state = req.query.state;
-    const browser = cookie(req, BROWSER_COOKIE);
-    if (typeof state !== 'string' || !OPAQUE.test(state) || !browser || !OPAQUE.test(browser)) {
+    const browser = authBrowser(req);
+    if (typeof state !== 'string' || !opaquePattern.test(state) || !browser) {
       throw authError(401, 'invalid_google_state', 'Invalid or missing Google login state');
     }
     // Atomically consume only this browser's pending flow, before any asynchronous work.

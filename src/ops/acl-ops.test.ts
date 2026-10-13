@@ -73,10 +73,10 @@ describe('public operations, live events and archives obey folder ACL', () => {
     db = openDb(join(root, 'llmwiki.db'));
     runMigrations(db);
     users = new UsersService(new UsersRepository(db));
-    viewer = users.create({ email: 'reader@example.test', role: 'viewer' });
-    collaborator = users.create({ email: 'collaborator@example.test', role: 'editor' });
-    admin = users.create({ email: 'admin@example.test', role: 'admin' });
-    users.create({ email: 'guardian@example.test', role: 'admin' });
+    viewer = await users.create({ email: 'reader@example.test', role: 'viewer' });
+    collaborator = await users.create({ email: 'collaborator@example.test', role: 'editor' });
+    admin = await users.create({ email: 'admin@example.test', role: 'admin' });
+    await users.create({ email: 'guardian@example.test', role: 'admin' });
     const audit = new AuditService(db);
     acl = new AclService(db, users, audit);
     acl.create({ prefix: 'wiki/private/', subjectType: 'everyone', subject: '', access: 'none' }, admin);

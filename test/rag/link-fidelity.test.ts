@@ -30,7 +30,10 @@ async function fixture(legacy = false) {
   if (legacy) {
     const migrations = new URL('../../src/db/migrations/', import.meta.url);
     db.exec('CREATE TABLE schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)');
-    for (const name of readdirSync(migrations).filter((name) => name.endsWith('.sql') && name < '014_').sort()) {
+    // Keep the index schema legacy while satisfying UsersRepository's password columns.
+    for (const name of readdirSync(migrations)
+      .filter((name) => name.endsWith('.sql') && (name < '014_' || name === '027_user_passwords.sql'))
+      .sort()) {
       db.exec(readFileSync(new URL(name, migrations), 'utf8'));
       db.prepare('INSERT INTO schema_migrations(name,applied_at) VALUES (?,?)').run(name, '2026-01-01T00:00:00.000Z');
     }

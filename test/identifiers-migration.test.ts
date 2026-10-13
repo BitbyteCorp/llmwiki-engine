@@ -192,7 +192,7 @@ const idInventory: IdInventory[] = [
 ];
 
 const preservedQueries = [
-  'SELECT * FROM users ORDER BY id',
+  'SELECT id, email, name, role, created_at, last_login_at FROM users ORDER BY id',
   'SELECT user_id, kind, source, input, status, summary, commits, conflicts, merge_sha, error, created_at, started_at, finished_at FROM write_jobs ORDER BY rowid',
   'SELECT seq, phase, at FROM write_job_events ORDER BY seq',
   'SELECT user_id, title, summary, created_at, updated_at FROM conversations ORDER BY rowid',
@@ -276,6 +276,7 @@ function assertMigratedIds(db: Db): void {
 
 function migratedSnapshot(db: Db): unknown[] {
   return [...idInventory.map(({ table }) => `SELECT * FROM ${table} ORDER BY rowid`),
+    'SELECT * FROM users ORDER BY id',
     'SELECT * FROM audit_events ORDER BY id',
     'SELECT * FROM schema_migrations ORDER BY name',
     ...preservedQueries].map((sql) => db.prepare(sql).all());
@@ -299,6 +300,10 @@ describe('identifier database migration', () => {
       expect(db.prepare('SELECT note_type, description, aliases, aliases_json FROM chunks WHERE id = 1').get()).toEqual({
         note_type: null, description: null, aliases: null, aliases_json: '[]',
       });
+      expect(db.prepare('SELECT id, password_hash, password_revision FROM users ORDER BY id').all()).toEqual([
+        { id: 1, password_hash: null, password_revision: 0 },
+        { id: 2, password_hash: null, password_revision: 0 },
+      ]);
       const migrated = migratedSnapshot(db);
       runMigrations(db);
       expect(migratedSnapshot(db)).toEqual(migrated);

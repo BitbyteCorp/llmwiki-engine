@@ -25,6 +25,7 @@ export class AuthCleanupService implements OnModuleInit, OnModuleDestroy {
     this.db.transaction(() => {
       this.db.prepare('DELETE FROM web_sessions WHERE expires_at <= ?').run(now);
       this.db.prepare('DELETE FROM auth_pending WHERE expires_at <= ?').run(now);
+      this.db.prepare('DELETE FROM mcp_login_requests WHERE expires_at <= ?').run(now);
       this.db.prepare('DELETE FROM oauth_codes WHERE expires_at <= ?').run(now);
       this.db.prepare('DELETE FROM oauth_access_tokens WHERE expires_at <= ? OR revoked = 1').run(now);
       this.db.prepare('DELETE FROM oauth_refresh_tokens WHERE expires_at <= ?').run(now);

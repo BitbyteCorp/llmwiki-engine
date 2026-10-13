@@ -52,10 +52,10 @@ describe('repository path access policy', () => {
         assertSameOrigin() {},
       }).compile();
     users = module.get(UsersService);
-    admin = users.create({ email: 'admin@example.com', role: 'admin' });
-    editor = users.create({ email: 'editor@example.com', role: 'editor' });
-    viewer = users.create({ email: 'viewer@example.com', role: 'viewer' });
-    otherEditor = users.create({ email: 'other@example.com', role: 'editor' });
+    admin = await users.create({ email: 'admin@example.com', role: 'admin' });
+    editor = await users.create({ email: 'editor@example.com', role: 'editor' });
+    viewer = await users.create({ email: 'viewer@example.com', role: 'viewer' });
+    otherEditor = await users.create({ email: 'other@example.com', role: 'editor' });
     acl = module.get(AclService);
     audit = module.get(AuditService);
     app = module.createNestApplication({ logger: false });
@@ -172,7 +172,7 @@ describe('repository path access policy', () => {
     users.delete(otherEditor.id);
     expect(cachedReader.policyKey(otherEditor)).not.toBe(grantedPolicyKey);
     expect(cachedReader.access(otherEditor, 'private/secret.md')).toBe('none');
-    const replacement = users.create({ email: 'replacement@example.com', role: 'editor' });
+    const replacement = await users.create({ email: 'replacement@example.com', role: 'editor' });
     expect(replacement.id).toBeGreaterThan(otherEditor.id);
     expect(cachedReader.policyKey(replacement)).not.toBe(grantedPolicyKey);
     expect(cachedReader.access(replacement, 'private/secret.md')).toBe('none');

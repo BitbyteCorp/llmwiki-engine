@@ -10,7 +10,7 @@ import type { Request, Response } from 'express';
 import type { Config } from '../config.js';
 import type { Db } from '../db/index.js';
 import { CONFIG, DB } from '../common/tokens.js';
-import { GoogleOidcService } from './google-oidc.service.js';
+import { LoginRequestsService } from './login-requests.service.js';
 import type { AuthFlow } from './google-oidc.types.js';
 import { UsersService } from './users.service.js';
 import { OAuthRepository } from './oauth.repository.js';
@@ -77,7 +77,7 @@ export class OAuthService {
     @Inject(CONFIG) private readonly config: Config,
     @Inject(DB) private readonly db: Db,
     private readonly users: UsersService,
-    private readonly google: GoogleOidcService,
+    private readonly loginRequests: LoginRequestsService,
     private readonly repository: OAuthRepository,
   ) {}
 
@@ -134,7 +134,7 @@ export class OAuthService {
     return { access_token: access, token_type: 'Bearer', expires_in: 3600, refresh_token: refresh, scope: 'mcp' };
   }
 
-  finishAuthorization(res: Response, userId: number, flow: Extract<AuthFlow, { kind: 'mcp' }>): void {
+  finishAuthorization(userId: number, flow: Extract<AuthFlow, { kind: 'mcp' }>): string {
     const code = random();
     this.repository.insertCode(hash(code), { client_id: flow.clientId, user_id: userId, redirect_uri: flow.redirectUri,
       challenge: flow.challenge, resource: flow.resource, expires_at: expiry(300) });
@@ -142,7 +142,7 @@ export class OAuthService {
     redirect.searchParams.set('code', code);
     if (flow.state !== undefined) redirect.searchParams.set('state', flow.state);
     redirect.searchParams.set('iss', this.issuerUrl());
-    res.redirect(redirect.href);
+    return redirect.href;
   }
 
   register(input: unknown): ClientMetadata {
@@ -167,7 +167,10 @@ export class OAuthService {
       const scope = field(req.query, 'scope', true);
       if (scope && scope.split(' ').some((s) => s !== 'mcp')) throw new OAuthFailure('invalid_scope', 'Only mcp scope is supported');
       const state = field(req.query, 'state', true);
-      await this.google.begin(req, res, { kind: 'mcp', clientId: id, redirectUri: redirect, challenge, resource, ...(state ? { state } : {}) });
+      const request = this.loginRequests.create(req, res, {
+        kind: 'mcp', clientId: id, redirectUri: redirect, challenge, resource, ...(state ? { state } : {}),
+      });
+      res.redirect(`/login?request=${encodeURIComponent(request)}`);
     } catch (error) {
       // Once the client and exact redirect URI are trusted, OAuth errors go back to that client.
       const target = new URL(redirect);

@@ -38,9 +38,9 @@ async function fixture() {
   cleanup.push(() => module.close());
   await module.init();
   const users = module.get(UsersService);
-  const admin = users.create({ email: 'admin@mcp-acl.test', role: 'admin' });
-  const viewer = users.create({ email: 'viewer@mcp-acl.test', role: 'viewer' });
-  const editor = users.create({ email: 'editor@mcp-acl.test', role: 'editor' });
+  const admin = await users.create({ email: 'admin@mcp-acl.test', role: 'admin' });
+  const viewer = await users.create({ email: 'viewer@mcp-acl.test', role: 'viewer' });
+  const editor = await users.create({ email: 'editor@mcp-acl.test', role: 'editor' });
   const acl = module.get(AclService);
   acl.create({ prefix: 'wiki/private/', subjectType: 'everyone', subject: '', access: 'none' }, admin);
   acl.create({ prefix: 'index.md', subjectType: 'everyone', subject: '', access: 'none' }, admin);

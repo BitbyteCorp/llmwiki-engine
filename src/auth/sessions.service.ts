@@ -51,6 +51,20 @@ export class SessionsService {
     res.clearCookie(SESSION_COOKIE, this.cookieOptions());
   }
 
+  revokeUser(userId: number, keepRequest?: Request): void {
+    const id = keepRequest ? this.sessionId(keepRequest) : null;
+    if (id) {
+      // The signed cookie must also name a live session owned by this user.
+      const session = this.db.prepare('SELECT user_id, expires_at FROM web_sessions WHERE id_hash = ?')
+        .get(hash(id)) as { user_id: number; expires_at: string } | undefined;
+      if (session?.user_id === userId && session.expires_at > new Date().toISOString()) {
+        this.db.prepare('DELETE FROM web_sessions WHERE user_id = ? AND id_hash != ?').run(userId, hash(id));
+        return;
+      }
+    }
+    this.db.prepare('DELETE FROM web_sessions WHERE user_id = ?').run(userId);
+  }
+
   private cookieOptions(): CookieOptions {
     return { httpOnly: true, sameSite: 'lax', secure: new URL(this.config.publicUrl).protocol === 'https:', path: '/' };
   }

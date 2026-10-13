@@ -54,7 +54,7 @@ class AuditedMutations {
   constructor(private readonly users: UsersService) {}
 
   @Post('users')
-  create(@Body(new ZodValidationPipe(createUserSchema)) input: z.infer<typeof createUserSchema>) { return this.users.create(input); }
+  async create(@Body(new ZodValidationPipe(createUserSchema)) input: z.infer<typeof createUserSchema>) { return await this.users.create(input); }
 
   @Patch('users/:id')
   update(@Param('id', new ZodValidationPipe(userIdSchema)) id: number, @Body(new ZodValidationPipe(updateUserSchema)) input: z.infer<typeof updateUserSchema>) { return this.users.update(id, input); }
@@ -78,8 +78,8 @@ describe('admin audit history', () => {
     const module = await Test.createTestingModule({ imports: [AuditTestInfrastructure, AuditModule, AuthModule], controllers: [AuditedMutations] })
       .overrideModule(AuthModule).useModule(AuditTestAuth).compile();
     const users = module.get(UsersService);
-    adminId = users.create({ email: 'admin@example.com', role: 'admin' }).id;
-    viewerId = users.create({ email: 'viewer@example.com', role: 'viewer' }).id;
+    adminId = (await users.create({ email: 'admin@example.com', role: 'admin' })).id;
+    viewerId = (await users.create({ email: 'viewer@example.com', role: 'viewer' })).id;
     audit = module.get(AuditService);
     app = module.createNestApplication({ logger: false });
     configureApp(app);

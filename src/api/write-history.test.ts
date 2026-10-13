@@ -113,10 +113,10 @@ describe('write and history HTTP acceptance with real Git and SQLite', () => {
       ],
     }).compile();
     const users = module.get(UsersService);
-    viewer = users.create({ email: 'viewer@example.test', name: 'Viewer', role: 'viewer' });
-    editor = users.create({ email: 'editor@example.test', name: 'Editor', role: 'editor' });
-    other = users.create({ email: 'other@example.test', name: 'Other editor', role: 'editor' });
-    admin = users.create({ email: 'admin@example.test', name: 'Administrator', role: 'admin' });
+    viewer = await users.create({ email: 'viewer@example.test', name: 'Viewer', role: 'viewer' });
+    editor = await users.create({ email: 'editor@example.test', name: 'Editor', role: 'editor' });
+    other = await users.create({ email: 'other@example.test', name: 'Other editor', role: 'editor' });
+    admin = await users.create({ email: 'admin@example.test', name: 'Administrator', role: 'admin' });
     cookies = new Map();
     for (const user of [viewer, editor, other, admin]) {
       module.get(SessionsService).create({
