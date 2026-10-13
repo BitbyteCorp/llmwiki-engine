@@ -175,7 +175,7 @@ describe('IngestService with real uploads, SQLite and git', () => {
   });
   it.each(['new', 'legacy'] as const)('reuses the %s stored upload under its original owner for an admin retry', async (version) => {
     const ctx = await fixture();
-    const admin = ctx.users.create({ email: 'admin@example.com', role: 'admin' });
+    const admin = await ctx.users.create({ email: 'admin@example.com', role: 'admin' });
     const upload = await ctx.uploads.save(ctx.owner.id, { name: 'upload.md', mediaType: 'text/markdown', buffer: Buffer.from('# Uploaded\nOwned knowledge') });
     let id: string;
     if (version === 'new') {
@@ -482,8 +482,8 @@ describe('IngestService with real uploads, SQLite and git', () => {
 describe('import retry HTTP authorization with real service, Git and SQLite', () => {
   it.each(['owner', 'admin'] as const)('allows %s retry while denying viewers and hiding other-owner records', async (actor) => {
     const ctx = await fixture();
-    const foreign = ctx.users.create({ email: 'foreign-editor@example.com', role: 'editor' });
-    const admin = ctx.users.create({ email: 'http-admin@example.com', role: 'admin' });
+    const foreign = await ctx.users.create({ email: 'foreign-editor@example.com', role: 'editor' });
+    const admin = await ctx.users.create({ email: 'http-admin@example.com', role: 'admin' });
     const module = await Test.createTestingModule({
       controllers: [ImportsController],
       providers: [

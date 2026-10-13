@@ -2,11 +2,13 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pino from 'pino';
+import matter from 'gray-matter';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { newId } from '../src/common/ids.js';
 import { loadConfig } from '../src/config.js';
 import type { ResponseInputContent } from 'openai/resources/responses/responses';
 import type { AnswerCheckpoint } from '../src/agent/agent.types.js';
+import { PAGE_MAX_CHARS } from '../src/agent/output.js';
 import { KnowledgeRepo } from '../src/knowledge/repo.js';
 import { AgentService } from '../src/agent/agent.service.js';
 import { SearchService } from '../src/rag/search.service.js';
@@ -118,6 +120,9 @@ describe('grounded chat citations', () => {
       '[tail](wiki/facts.md#tail-fact)',
     ], { 'wiki/facts.md': original });
     const oldSha = await repo.headSha();
+    const committed = (await repo.readFile('wiki/facts.md', oldSha))!;
+    const committedFirstPage = committed.split('\n').slice(0, 300).join('\n') + '\n';
+    const remainingFacts = Array.from({ length: 5 }, (_, index) => `Fact ${295 + index}\n`).join('');
     const wt = await repo.createWorktree('replace-large-context');
     try {
       await wt.write('wiki/facts.md', '# Replacement\nChanged tail.');
@@ -129,19 +134,25 @@ describe('grounded chat citations', () => {
     });
     const initial = fake.requests[0]!.body.input as Array<{ content: string }>;
     const page = JSON.parse(initial[0]!.content.split('\n')[1]!);
-    expect(page).toMatchObject({ path: 'wiki/facts.md', sha: oldSha, content: firstPage, totalLines: 302, nextOffset: 300, truncated: true });
+    expect(page).toMatchObject({ path: 'wiki/facts.md', sha: oldSha, content: committedFirstPage, totalLines: 307, nextOffset: 300, truncated: true });
     const continued = fake.requests[1]!.body.input as Array<{ type?: string; output?: string }>;
     const lastPage = JSON.parse(continued.find((item) => item.type === 'function_call_output')!.output!);
-    expect(lastPage).toMatchObject({ content: tail, nextOffset: null, truncated: false, sha: oldSha });
-    expect(page.content + lastPage.content).toBe(original);
+    expect(lastPage).toMatchObject({ content: remainingFacts + tail, nextOffset: null, truncated: false, sha: oldSha });
+    expect(page.content + lastPage.content).toBe(committed);
+    expect(matter(page.content + lastPage.content).content).toBe(original);
     expect(result.citations).toEqual([{ path: 'wiki/facts.md', sha: oldSha, anchor: 'tail-fact', heading: 'Tail fact' }]);
   });
 
   it('caps pinned long lines and selection without splitting emoji and permits character paging', async () => {
-    const firstPage = 'a'.repeat(11_997);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-10-10T00:00:00.000Z'));
+    const frontmatter = '---\ntype: note\naliases: []\ndescription: Tests character paging.\nauthor: ["Chat fixture"]\ndate created: 2026-10-10\ndate modified: 2026-10-10\ntags: [paging]\n---\n';
+    // Leave only one serialized code unit, so the next emoji must stay intact.
+    const bodyPrefix = 'a'.repeat(PAGE_MAX_CHARS - JSON.stringify(frontmatter).length - 1);
+    const firstPage = frontmatter + bodyPrefix;
     const tail = '😀'.repeat(2_000);
     const { agent, fake } = await fixture([
-      { name: 'read_note', arguments: { path: 'wiki/facts.md', offset: 0, charOffset: 11_997 } },
+      { name: 'read_note', arguments: { path: 'wiki/facts.md', offset: 9, charOffset: bodyPrefix.length } },
       'Done.',
     ], { 'wiki/facts.md': firstPage + tail });
     await agent.answer([{ role: 'user', content: 'Continue this note' }], () => {}, undefined, {
@@ -150,12 +161,16 @@ describe('grounded chat citations', () => {
     const initial = fake.requests[0]!.body.input as Array<{ content: string }>;
     const lines = initial[0]!.content.split('\n');
     const page = JSON.parse(lines[1]!);
-    expect(page).toMatchObject({ content: firstPage, totalLines: 1, nextOffset: 0, nextCharOffset: 11_997, truncated: true });
+    expect(page).toMatchObject({ content: firstPage, totalLines: 10, nextOffset: 9, nextCharOffset: bodyPrefix.length, truncated: true });
+    expect(JSON.stringify(page.content).length).toBe(PAGE_MAX_CHARS - 1);
+    expect(page.content.isWellFormed()).toBe(true);
     expect(JSON.parse(lines.at(-1)!)).toBe('b'.repeat(31_999));
     const continued = fake.requests[1]!.body.input as Array<{ type?: string; output?: string }>;
     const lastPage = JSON.parse(continued.find((item) => item.type === 'function_call_output')!.output!);
     expect(lastPage.content).toBe(tail);
     expect(lastPage.nextOffset).toBeNull();
+    expect(lastPage.content.isWellFormed()).toBe(true);
+    expect(page.content + lastPage.content).toBe(firstPage + tail);
   });
 
   it('restores the whole historical pinned note from a legacy paged checkpoint', async () => {
@@ -183,7 +198,8 @@ describe('grounded chat citations', () => {
     const result = await agent.answer([], () => {}, undefined, { resume: legacyCheckpoint });
     const continued = fake.requests[2]!.body.input as Array<{ type?: string; output?: string }>;
     const pages = continued.filter((item) => item.type === 'function_call_output').map((item) => JSON.parse(item.output!));
-    expect(pages.find((page) => page.path === 'wiki/facts.md')).toMatchObject({ content: tail, totalLines: 302, sha: oldSha });
+    const remainingFacts = Array.from({ length: 5 }, (_, index) => `Fact ${295 + index}\n`).join('');
+    expect(pages.find((page) => page.path === 'wiki/facts.md')).toMatchObject({ content: remainingFacts + tail, totalLines: 307, sha: oldSha });
     expect(result.citations).toEqual([{ path: 'wiki/facts.md', sha: oldSha, anchor: 'historical-tail', heading: 'Historical tail' }]);
   });
 

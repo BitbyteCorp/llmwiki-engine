@@ -2,6 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pino from 'pino';
+import matter from 'gray-matter';
 import { z } from 'zod';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AclService } from '../../src/acl/acl.service.js';
@@ -123,15 +124,18 @@ describe('paged worktree tools', () => {
     await seed.write(path, base);
     await seed.commit('Seed conflict note', author);
     await seed.fastForwardMain();
+    const committedBase = (await repo.readFile(path))!;
     const wt = await repo.createWorktree('conflict-work');
     cleanup.push(() => wt.dispose());
     const concurrent = await repo.createWorktree('conflict-main');
     cleanup.push(() => concurrent.dispose());
     await wt.write(path, workBranch);
     await wt.commit('Add work tail knowledge', author);
+    const committedWorkBranch = (await wt.read(path))!;
     await concurrent.write(path, main);
     await concurrent.commit('Add main tail knowledge', author);
     await concurrent.fastForwardMain();
+    const committedMain = (await repo.readFile(path))!;
     expect(await wt.mergeMain()).toEqual({ ok: false, conflicts: [path] });
     const conflicted = await wt.read(path);
     expect(conflicted).toContain('<<<<<<<');
@@ -142,7 +146,9 @@ describe('paged worktree tools', () => {
       runAgent: async (options: RunAgentOptions) => {
         const input = JSON.parse(options.input as string) as { files: Array<Record<string, ContentPage>> };
         const file = input.files[0];
-        for (const [version, expected] of Object.entries({ base, workBranch, main, conflicted })) {
+        for (const [version, expected] of Object.entries({
+          base: committedBase, workBranch: committedWorkBranch, main: committedMain, conflicted,
+        })) {
           let page = file[version];
           expect(page.truncated).toBe(true);
           expect(JSON.stringify(page.content).length).toBeLessThanOrEqual(PAGE_MAX_CHARS);
@@ -160,14 +166,15 @@ describe('paged worktree tools', () => {
         }
         await invoke(options.tools as AgentTool[], 'write_file', { path, content: resolved });
         expect(await invoke<ContentPage>(options.tools as AgentTool[], 'read_conflict_version',
-          { path, version: 'workBranch', offset: 803 })).toMatchObject({ content: 'work intent\nwork tail knowledge\n' });
+          // Commit autofill adds five frontmatter lines before the work tail.
+          { path, version: 'workBranch', offset: 808 })).toMatchObject({ content: 'work intent\nwork tail knowledge\n' });
         return { text: 'Resolved', toolCalls: 3 };
       },
     } as unknown as AgentService;
     await resolveConflicts(agent, repo, acl, wt, [path]);
     await wt.finishMerge(author);
     await wt.fastForwardMain();
-    expect(await repo.readFile(path)).toBe(resolved);
+    expect(matter((await repo.readFile(path))!).content).toBe(resolved);
   });
 
   it('distinguishes missing and empty revisions, caps injected lines, and validates revision paging scope', async () => {
@@ -213,8 +220,8 @@ describe('paged worktree tools', () => {
     runMigrations(db);
     cleanup.push(async () => db.close());
     const users = new UsersService(new UsersRepository(db));
-    const admin = users.create({ email: 'admin@conflict.test', role: 'admin' });
-    const editor = users.create({ email: 'editor@conflict.test', role: 'editor' });
+    const admin = await users.create({ email: 'admin@conflict.test', role: 'admin' });
+    const editor = await users.create({ email: 'editor@conflict.test', role: 'editor' });
     const acl = new AclService(db, users, new AuditService(db));
     const path = 'wiki/conflict.md';
     await wt.write(path, '<<<<<<< HEAD\nwork\n=======\nmain\n>>>>>>> main\n');

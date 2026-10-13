@@ -695,8 +695,8 @@ describe('runWrite subagent integration', () => {
       }
       return '읽을 수 없는 원문 위임을 거절했다.';
     });
-    const admin = users.create({ email: 'admin@example.com', role: 'admin' });
-    const editor = users.create({ email: 'editor@example.com', role: 'editor' });
+    const admin = await users.create({ email: 'admin@example.com', role: 'admin' });
+    const editor = await users.create({ email: 'editor@example.com', role: 'editor' });
     acl.create({ prefix: 'private/', subjectType: 'everyone', access: 'none' }, admin);
     await wt.write('private/source.md', 'Restricted source.\n');
     await wt.write('raw/allowed.md', 'Readable source.\n');

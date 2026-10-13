@@ -104,7 +104,7 @@ describe('write job continuation with real Dony and git', () => {
     const content = 'first fact\nsecond fact\nthird fact\nlast fact\n';
     const published = 'wiki/imported.md';
     const f = await fixture((request, turn) => {
-      if (turn === 0) return { name: 'write_file', arguments: { path: published, content: '# Imported facts\nAll four facts are preserved.\n' } };
+      if (turn === 0) return { name: 'write_file', arguments: { path: published, content: note('# Imported facts\nAll four facts are preserved.\n') } };
       if (turn === 1) return 'PREMATURE_FIRST_SUMMARY';
       if (turn === 2) {
         expect(lastUserMessage(request)).toContain(path);
@@ -129,7 +129,7 @@ describe('write job continuation with real Dony and git', () => {
     const job = f.jobs.submit({ userId: 1, source: 'import', input: 'Integrate every assigned fact', requiredReads: [path] });
     const result = await settled(f.jobs, job.id);
     expect(result).toMatchObject({ status: 'succeeded', summary: 'Publish all four imported facts' });
-    expect(await f.repo.readFile(published)).toBe('# Imported facts\nAll four facts are preserved.\n');
+    expect(matter((await f.repo.readFile(published))!).content).toBe('# Imported facts\nAll four facts are preserved.\n');
     expect(await f.repo.readFile(path)).toBe(content);
     expect(f.checkpoints.get(`job:${job.id}`)).toBeUndefined();
   }, 20000);
@@ -175,7 +175,7 @@ describe('write job continuation with real Dony and git', () => {
       if (!retrying) {
         if (turn === 0) return { functionCalls: [
           { name: 'read_file', arguments: { path: first }, call_id: 'original-source-read' },
-          { name: 'write_file', arguments: { path: published, content: '# Imported knowledge\nBoth assigned facts.\n' }, call_id: 'preserved-import-write' },
+          { name: 'write_file', arguments: { path: published, content: note('# Imported knowledge\nBoth assigned facts.\n') }, call_id: 'preserved-import-write' },
         ] };
         if (turn === 1) return 'REJECTED_BEFORE_PROVIDER_FAILURE';
         expect(lastUserMessage(request)).toContain(second);
@@ -227,7 +227,7 @@ describe('write job continuation with real Dony and git', () => {
     f.jobs.start();
     const succeeded = await settled(f.jobs, retry.id);
     expect(succeeded).toMatchObject({ status: 'succeeded', summary: 'Publish freshly reviewed resumed import' });
-    expect(await f.repo.readFile(published)).toBe('# Imported knowledge\nBoth assigned facts.\n');
+    expect(matter((await f.repo.readFile(published))!).content).toBe('# Imported knowledge\nBoth assigned facts.\n');
     expect(f.jobs.get(original.id)).toEqual(failed);
     expect(f.checkpoints.get(`job:${retry.id}`)).toBeUndefined();
   }, 20000);
@@ -247,7 +247,7 @@ describe('write job continuation with real Dony and git', () => {
         }
         if (turn === 2) {
           expect(output(request, 'child-head')).toMatchObject({ content: 'First fact\nSecond fact\n', nextOffset: 2 });
-          return { name: 'write_file', arguments: { path: published, content: '# Delegated facts\nAll four source facts.\n' } };
+          return { name: 'write_file', arguments: { path: published, content: note('# Delegated facts\nAll four source facts.\n') } };
         }
         return 'Reviewed and recorded all delegated facts';
       }
@@ -270,7 +270,7 @@ describe('write job continuation with real Dony and git', () => {
     const job = f.jobs.submit({ userId: 1, source: 'import', input: 'Delegate assigned source review', requiredReads: [path] });
     const result = await settled(f.jobs, job.id);
     expect(result).toMatchObject({ status: 'succeeded', summary: 'Publish delegated import' });
-    expect(await f.repo.readFile(published)).toBe('# Delegated facts\nAll four source facts.\n');
+    expect(matter((await f.repo.readFile(published))!).content).toBe('# Delegated facts\nAll four source facts.\n');
     expect(f.checkpoints.get(`job:${job.id}`)).toBeUndefined();
   }, 20000);
 
@@ -294,10 +294,10 @@ describe('write job continuation with real Dony and git', () => {
   it.each(['missing', 'denied'] as const)('does not credit a %s read_file result as assigned-source coverage', async (kind) => {
     const path = `raw/import/${kind}.md`;
     const published = 'wiki/unread-import.md';
-    const f = await fixture((request, turn) => {
+    const f = await fixture(async (request, turn) => {
       if (turn === 0) {
         if (kind === 'denied') {
-          const admin = f.users.create({ email: 'coverage-admin@example.test', role: 'admin' });
+          const admin = await f.users.create({ email: 'coverage-admin@example.test', role: 'admin' });
           f.acl.create({ prefix: path, subjectType: 'everyone', subject: '', access: 'none' }, admin);
         }
         return { functionCalls: [

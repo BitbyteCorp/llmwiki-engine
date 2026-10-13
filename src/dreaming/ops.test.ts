@@ -188,7 +188,7 @@ it.each([false, true])('schedules only when jobsAutostart is enabled (%s)', asyn
     const run = enabled ? await runOnce.mock.results[0].value : await f.dreaming.runManual();
     expect(run).toMatchObject({ status: 'succeeded', error: null });
     expect(f.runs.get(run.id)).toEqual(run);
-    expect(await f.repo.readFile('wiki/result.md')).toBe('# Reviewed knowledge\n');
+    expect(matter((await f.repo.readFile('wiki/result.md'))!).content).toBe('# Reviewed knowledge\n');
   } finally {
     await f.dreaming.stop();
     vi.useRealTimers();

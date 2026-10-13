@@ -78,10 +78,10 @@ it('leaves persisted direct/revert retries queued while explicit edits and rever
   await f.jobs.waitForSettled(directId, 20);
   for (const id of [directId, revertId]) expect(f.jobs.get(id)).toMatchObject({ status: 'queued', startedAt: null });
   expect(await f.repo.readFile('wiki/startup.md')).toBeNull();
-  expect(await f.repo.readFile('wiki/existing.md')).toBe('preserve until explicitly reverted');
+  expect(matter((await f.repo.readFile('wiki/existing.md'))!).content).toBe('preserve until explicitly reverted');
   const edited = await f.put('wiki/interactive.md', 'manual write');
   expect(f.jobs.get(edited.jobId)?.status).toBe('succeeded');
-  expect(await f.repo.readFile('wiki/interactive.md')).toBe('manual write');
+  expect(matter((await f.repo.readFile('wiki/interactive.md'))!).content).toBe('manual write');
   const reverted = await f.writer.applyRevert({ userId: 1, sha: edited.mergeSha });
   expect(f.jobs.get(reverted.jobId)?.status).toBe('succeeded');
   expect(await f.repo.readFile('wiki/interactive.md')).toBeNull();

@@ -52,8 +52,8 @@ describe('usage ledger admin HTTP boundary', () => {
     vi.useRealTimers();
   });
 
-  function cookie(role: 'admin' | 'viewer'): string {
-    const user = app.get(UsersService).create({ email: `${role}@example.com`, role });
+  async function cookie(role: 'admin' | 'viewer'): Promise<string> {
+    const user = await app.get(UsersService).create({ email: `${role}@example.com`, role });
     let cookie = '';
     app.get(SessionsService).create({ cookie: (name: string, value: string) => {
       cookie = `${name}=${encodeURIComponent(value)}`;
@@ -63,8 +63,8 @@ describe('usage ledger admin HTTP boundary', () => {
 
   it('rejects anonymous and viewer requests while allowing administrators without caching', async () => {
     await request(app.getHttpServer()).get('/api/admin/usage').expect(401);
-    await request(app.getHttpServer()).get('/api/admin/usage').set('Cookie', cookie('viewer')).expect(403);
-    const response = await request(app.getHttpServer()).get('/api/admin/usage').set('Cookie', cookie('admin')).expect(200);
+    await request(app.getHttpServer()).get('/api/admin/usage').set('Cookie', await cookie('viewer')).expect(403);
+    const response = await request(app.getHttpServer()).get('/api/admin/usage').set('Cookie', await cookie('admin')).expect(200);
     expect(response.body).toEqual({ days: 30, rows: [] });
     expect(response.headers['cache-control']).toBe('no-store');
   });
@@ -80,7 +80,7 @@ describe('usage ledger admin HTTP boundary', () => {
     ];
     for (const [at, lane, model] of entries) repository.record({ lane: lane!, model: model!, ...counts,
       owner: 'user:42', ref: 'job:opaque-api-id' }, new Date(at!));
-    const admin = cookie('admin');
+    const admin = await cookie('admin');
     const response = await request(app.getHttpServer()).get('/api/admin/usage?days=2').set('Cookie', admin).expect(200);
     expect(response.body).toEqual({ days: 2, rows: [
       { day: '2026-10-08', lane: 'chat', model: 'model-a', calls: 1, ...counts },
@@ -94,7 +94,7 @@ describe('usage ledger admin HTTP boundary', () => {
   });
 
   it('accepts the 90-day bound and rejects invalid window sizes', async () => {
-    const admin = cookie('admin');
+    const admin = await cookie('admin');
     await request(app.getHttpServer()).get('/api/admin/usage?days=90').set('Cookie', admin).expect(200, { days: 90, rows: [] });
     for (const days of ['0', '91', '1.5', 'nope', '']) {
       await request(app.getHttpServer()).get(`/api/admin/usage?days=${days}`).set('Cookie', admin).expect(400);
