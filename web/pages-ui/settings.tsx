@@ -1,15 +1,19 @@
 'use client'
 
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState, type FormEvent } from 'react'
 import { useViewLocation } from '@/components/workspace/view-location'
 import { usePublicUrl } from '@/components/app-shell'
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTheme } from 'next-themes'
-import { Laptop, Moon, Sun, UserRound } from 'lucide-react'
-import { api, type Role } from '@/lib/api'
+import { KeyRound, Laptop, Moon, Sun, UserRound } from 'lucide-react'
+import { api, type Role, type User } from '@/lib/api'
+import { passwordErrorMessage, validateNewPassword } from '@/lib/password'
 import { EmptyState, ErrorNotice, Loading, PageHeader, formatDate } from '@/components/common'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { notify } from '@/components/notifications'
 import { TokenSettings } from '@/components/admin/token-settings'
 import { ExportPanel } from '@/components/admin/export-panel'
 import { OpsOverview } from '@/components/admin/ops-overview'
@@ -72,7 +76,10 @@ export function SettingsPage() {
       </div>
       <div role="tabpanel" id={`settings-panel-${tab}`} aria-labelledby={denied ? undefined : `settings-tab-${tab}`} aria-label={denied ? '관리자 권한 필요' : undefined} tabIndex={0} className="@container/settings-panel min-w-0 space-y-4 rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
         {denied ? <EmptyState title="관리자 권한이 필요합니다" description="이 설정은 관리자만 확인하거나 변경할 수 있습니다." /> : <>
-          {tab === 'account' && <section aria-labelledby="account-heading" className="space-y-2"><h2 id="account-heading" className="flex h-7 items-center gap-1.5 border-b text-label-13 font-semibold"><UserRound className="size-3.5" />내 계정</h2><div className="flex flex-wrap items-center gap-2 text-label-13"><p className="break-all font-medium">{me.data.user.name || me.data.user.email}</p><Badge variant="secondary">{roleLabels[me.data.user.role]}</Badge></div><dl className="grid gap-x-6 gap-y-1.5 text-label-13 @2xl/settings-panel:grid-cols-2"><div className="space-y-1"><dt className="text-xs text-muted-foreground">이메일</dt><dd className="break-all">{me.data.user.email}</dd></div><div className="space-y-1"><dt className="text-xs text-muted-foreground">가입일</dt><dd>{formatDate(me.data.user.createdAt)}</dd></div></dl></section>}
+          {tab === 'account' && <>
+            <section aria-labelledby="account-heading" className="space-y-2"><h2 id="account-heading" className="flex h-7 items-center gap-1.5 border-b text-label-13 font-semibold"><UserRound className="size-3.5" />내 계정</h2><div className="flex flex-wrap items-center gap-2 text-label-13"><p className="break-all font-medium">{me.data.user.name || me.data.user.email}</p><Badge variant="secondary">{roleLabels[me.data.user.role]}</Badge></div><dl className="grid gap-x-6 gap-y-1.5 text-label-13 @2xl/settings-panel:grid-cols-2"><div className="space-y-1"><dt className="text-xs text-muted-foreground">이메일</dt><dd className="break-all">{me.data.user.email}</dd></div><div className="space-y-1"><dt className="text-xs text-muted-foreground">가입일</dt><dd>{formatDate(me.data.user.createdAt)}</dd></div></dl></section>
+            <AccountPasswordSettings key={me.data.user.id} user={me.data.user} />
+          </>}
           {tab === 'appearance' && <AppearanceSettings />}
           {tab === 'tokens' && <TokenSettings user={me.data.user} />}
           {tab === 'mcp' && <McpHelp publicUrl={publicUrl} />}
@@ -86,6 +93,72 @@ export function SettingsPage() {
       </div>
     </div>}
   </div>
+}
+
+function AccountPasswordSettings({ user }: { user: User }) {
+  const id = useId()
+  const queryClient = useQueryClient()
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmation, setConfirmation] = useState('')
+  const [validationError, setValidationError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const title = user.hasPassword ? '비밀번호 변경' : '비밀번호 설정'
+  const save = useMutation({
+    // Keep password values in this form, not in cached mutation variables.
+    mutationFn: () => api.changeMyPassword({ newPassword, ...(user.hasPassword ? { currentPassword } : {}) }),
+    onSuccess: () => {
+      setCurrentPassword('')
+      setNewPassword('')
+      setConfirmation('')
+      setValidationError(null)
+      const message = user.hasPassword ? '비밀번호를 변경했습니다.' : '비밀번호를 설정했습니다.'
+      setNotice(message)
+      notify({ title: message, tone: 'success' })
+      queryClient.setQueryData<{ user: User }>(['me'], previous => previous?.user.id === user.id ? { user: { ...previous.user, hasPassword: true } } : previous)
+      void queryClient.invalidateQueries({ queryKey: ['me'] })
+      void queryClient.invalidateQueries({ queryKey: ['users'] })
+    },
+    onSettled: () => { void queryClient.invalidateQueries({ queryKey: ['audit'] }) },
+  })
+
+  function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (save.isPending) return
+    save.reset()
+    setNotice(null)
+    const error = validateNewPassword(newPassword, confirmation)
+      ?? (user.hasPassword && !currentPassword ? '현재 비밀번호를 입력해 주세요.' : null)
+    setValidationError(error)
+    if (error) return
+    save.mutate()
+  }
+
+  return <section aria-labelledby={`${id}-heading`} className="space-y-2">
+    <h2 id={`${id}-heading`} className="flex h-7 items-center gap-1.5 border-b text-label-13 font-semibold"><KeyRound className="size-3.5" />{title}</h2>
+    <p className="text-label-13 text-muted-foreground">비밀번호를 설정하거나 변경해도 현재 로그인은 유지되며, 다른 기기와 브라우저의 로그인 세션은 종료됩니다.</p>
+    <form onSubmit={submit} noValidate className="space-y-2">
+      <fieldset disabled={save.isPending} className="grid gap-x-6 gap-y-1.5 @2xl/settings-panel:grid-cols-2">
+        <legend className="sr-only">{title}</legend>
+        {user.hasPassword && <div className="space-y-2 @2xl/settings-panel:col-span-2">
+          <Label htmlFor={`${id}-current`}>현재 비밀번호</Label>
+          <Input id={`${id}-current`} name="currentPassword" type="password" autoComplete="current-password" required value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} />
+        </div>}
+        <div className="space-y-2">
+          <Label htmlFor={`${id}-new`}>새 비밀번호</Label>
+          <Input id={`${id}-new`} name="newPassword" type="password" autoComplete="new-password" aria-describedby={`${id}-policy`} required value={newPassword} onChange={event => setNewPassword(event.target.value)} />
+        </div>
+        <div className="space-y-2">
+          <Label htmlFor={`${id}-confirmation`}>새 비밀번호 확인</Label>
+          <Input id={`${id}-confirmation`} name="passwordConfirmation" type="password" autoComplete="new-password" aria-describedby={`${id}-policy`} required value={confirmation} onChange={event => setConfirmation(event.target.value)} />
+        </div>
+      </fieldset>
+      <p id={`${id}-policy`} className="text-xs text-muted-foreground">비밀번호는 유니코드 정규화(NFKC) 전후 모두 8~128자여야 합니다. 앞뒤 공백도 비밀번호에 포함되며, 확인 값은 정규화 후 일치해야 합니다.</p>
+      <ErrorNotice error={validationError ?? (save.error ? passwordErrorMessage(save.error) : null)} />
+      <Button type="submit" disabled={save.isPending}>{save.isPending ? '저장 중…' : title}</Button>
+      {notice && <p role="status" className="text-label-13">{notice}</p>}
+    </form>
+  </section>
 }
 
 function AppearanceSettings() {

@@ -1,7 +1,7 @@
 import type { AnswerErrorCode } from '../../src/common/openai-errors'
 
 export type Role = 'admin' | 'editor' | 'viewer'
-export interface User { id: number; email: string; name: string | null; role: Role; createdAt: string; lastLoginAt: string | null }
+export interface User { id: number; email: string; name: string | null; role: Role; hasPassword: boolean; createdAt: string; lastLoginAt: string | null }
 export interface Note { path: string; content: string; frontmatter: Record<string, unknown>; body: string; updatedSha: string }
 // Search and knowledge catalog contracts.
 export interface SearchHit { path: string; title: string; heading: string; snippet: string; score: number; kind: 'wiki' | 'journal' | 'raw' | 'other'; related: string[]; anchor: string | null; excerpt: string; highlights: Array<[number, number]>; tags: string[]; updatedAt: string | null }
@@ -33,7 +33,7 @@ export async function request<T>(path: string, init: RequestInit = {}): Promise<
   const response = await fetch(path, { ...init, credentials: 'same-origin', headers })
   if (!response.ok) {
     const payload = await response.json().catch(() => null) as { error?: { code?: string; message?: string } } | null
-    if (response.status === 401) window.dispatchEvent(new CustomEvent('session-expired'))
+    if (response.status === 401 && path !== '/auth/password/login') window.dispatchEvent(new CustomEvent('session-expired'))
     throw new ApiError(response.status, payload?.error?.code ?? 'request_failed', payload?.error?.message ?? `요청에 실패했다 (${response.status}).`)
   }
   if (response.status === 204) return undefined as T
@@ -48,6 +48,9 @@ function query(values: Record<string, string | number | undefined>) {
 
 export const api = {
   me: () => request<{ user: User }>('/api/me'),
+  providers: () => request<{ google: boolean; password: true }>('/auth/providers'),
+  passwordLogin: (input: { email: string; password: string; next?: string; request?: string }) => request<{ redirectTo: string }>('/auth/password/login', { method: 'POST', body: JSON.stringify(input) }),
+  changeMyPassword: (input: { currentPassword?: string; newPassword: string }) => request<void>('/api/me/password', { method: 'POST', body: JSON.stringify(input) }),
   tree: () => request<{ files: string[] }>('/api/notes/tree'),
   note: (path: string, ref?: string) => request<Note>(`/api/notes/content${query({ path, ref })}`),
   resolve: (name: string) => request<{ path: string | null; candidates?: string[] }>(`/api/notes/resolve${query({ name })}`),
@@ -69,9 +72,11 @@ export const api = {
   conversation: (id: string) => request<{ conversation: Conversation; messages: Message[] }>(`/api/conversations/${encodeURIComponent(id)}`),
   deleteConversation: (id: string) => request<void>(`/api/conversations/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   users: () => request<{ users: User[] }>('/api/admin/users'),
-  createUser: (input: { email: string; name?: string; role: Role }) => request<{ user: User }>('/api/admin/users', { method: 'POST', body: JSON.stringify(input) }),
+  createUser: (input: { email: string; name?: string; role: Role; password?: string }) => request<{ user: User }>('/api/admin/users', { method: 'POST', body: JSON.stringify(input) }),
   updateUser: (id: number, input: { role?: Role; name?: string }) => request<{ user: User }>(`/api/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify(input) }),
   deleteUser: (id: number) => request<void>(`/api/admin/users/${id}`, { method: 'DELETE' }),
+  setUserPassword: (id: number, password: string) => request<void>(`/api/admin/users/${id}/password`, { method: 'PUT', body: JSON.stringify({ password }) }),
+  clearUserPassword: (id: number) => request<void>(`/api/admin/users/${id}/password`, { method: 'DELETE' }),
   settings: () => request<Settings>('/api/admin/settings'),
   updateSettings: (input: Partial<Settings>) => request<Settings>('/api/admin/settings', { method: 'PUT', body: JSON.stringify(input) }),
   logout: () => request<void>('/auth/logout', { method: 'POST' }),
