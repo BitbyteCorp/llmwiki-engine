@@ -186,7 +186,14 @@ describe('detached replayable generations', () => {
     emit('delta', { text: 'Before connection' });
     const connection = await replay(generation.id);
     const reader = connection.body!.getReader();
-    const initial = new TextDecoder().decode((await reader.read()).value);
+    const decoder = new TextDecoder();
+    let initial = '';
+    // Network chunks need not align with the three replayed SSE frames.
+    while (initial.split('\n\n').length - 1 < 3) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      initial += decoder.decode(value, { stream: true });
+    }
     expect(events(initial).map(({ id, event }) => ({ id, event }))).toEqual([
       { id: 1, event: 'generation' }, { id: 2, event: 'status' }, { id: 3, event: 'delta' },
     ]);
