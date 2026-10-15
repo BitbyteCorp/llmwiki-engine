@@ -140,8 +140,10 @@ export class IngestService implements OnApplicationBootstrap, OnModuleDestroy {
       const content = [
         '---', `title: ${JSON.stringify(title)}`, `import_id: ${JSON.stringify(importId)}`, `importer: ${userId}`, `kind: ${input.kind}`,
         `source: ${JSON.stringify(source)}`, ...(finalUrl ? [`resolved_url: ${JSON.stringify(finalUrl)}`] : []),
+        ...(extraction.skippedFiles !== undefined ? [`skipped_files: ${extraction.skippedFiles}`] : []),
         `sha256: ${sha}`, `filename: ${JSON.stringify(filename)}`, `imported_at: ${JSON.stringify(new Date().toISOString())}`, '---', '',
         `# ${title}`, '', `[Immutable original](<${markdownHref(`../original/${filename}`)}>)`, '',
+        ...(extraction.skippedFiles !== undefined ? [`Skipped files: ${extraction.skippedFiles} (dependency/build/VCS directories and vault metadata).`, ''] : []),
         ...(extraction.files.length ? extraction.files.filter((file) => file.markdown).map((file) => `- [${file.path.replace(/[\[\]\\]/g, '\\$&')}](<${markdownHref(`../extracted/${input.kind}/files/${file.path}`)}>)`) : [extraction.markdown]), '',
       ].join('\n');
       ops.push({ op: 'put', path: sourcePath, content, create: true });
@@ -152,7 +154,7 @@ export class IngestService implements OnApplicationBootstrap, OnModuleDestroy {
         path: `${extractedRoot}/files/${file.path}`, chars: file.buffer.toString('utf8').length,
       })));
       const batches = planned.length ? planned : [[]];
-      const provenance = `Provenance: ${JSON.stringify({ importId, kind: input.kind, source, ...(finalUrl ? { resolvedUrl: finalUrl } : {}), sha256: sha, filename, path: sourcePath })}`;
+      const provenance = `Provenance: ${JSON.stringify({ importId, kind: input.kind, source, ...(finalUrl ? { resolvedUrl: finalUrl } : {}), sha256: sha, filename, path: sourcePath, ...(extraction.skippedFiles !== undefined ? { skippedFiles: extraction.skippedFiles } : {}) })}`;
       const submitted = batches.map((files, batch) => {
         const integrationInput = [
           'Integrate this imported source into the wiki using the normal writing rules.',

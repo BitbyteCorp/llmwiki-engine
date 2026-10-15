@@ -48,6 +48,38 @@ describe('source extraction', () => {
     expect(result.files.find((file) => file.path === 'notes/First.md')!.buffer.toString()).toContain('[[Second]]');
     expect(result.files.find((file) => file.path === 'notes/image.png')!.buffer).toEqual(Buffer.from([137, 80, 78, 71, 0, 255]));
   });
+  it.each(['obsidian', 'notion'] as const)('excludes dependency files from %s imports and reports their count', (kind) => {
+    const result = extractVault(Buffer.from(zipSync({
+      'pkg/node_modules/x/README.md': strToU8('# Dependency'),
+      'docs/a.md': strToU8('# Project knowledge'),
+    })), kind);
+    expect(result.files.map((file) => file.path)).toEqual(['docs/a.md']);
+    expect(result.skippedFiles).toBe(1);
+    expect(result.markdown).not.toContain('README.md');
+  });
+  it.each(['node_modules', 'bower_components', 'vendor', '.git', '.venv', 'venv', '__pycache__', 'dist', 'build', '.next', 'target'])('excludes %s at any folder depth without counting directory entries', (directory) => {
+    const result = extractVault(Buffer.from(zipSync({
+      [`pkg/${directory}/`]: new Uint8Array(),
+      [`pkg/${directory}/nested/README.md`]: strToU8('# Generated noise'),
+      'docs/a.md': strToU8('# Knowledge'),
+      'docs/build.md': strToU8('# Building the project'),
+    })), 'obsidian');
+    expect(result.files.map((file) => file.path)).toEqual(['docs/a.md', 'docs/build.md']);
+    expect(result.skippedFiles).toBe(1);
+  });
+  it('excludes Notion folders after stripping their export IDs', () => {
+    const id = '0123456789abcdef0123456789abcdef';
+    const result = extractVault(Buffer.from(zipSync({
+      [`build ${id}/generated.md`]: strToU8('# Generated'),
+      'docs/a.md': strToU8('# Knowledge'),
+    })), 'notion');
+    expect(result.files.map((file) => file.path)).toEqual(['docs/a.md']);
+    expect(result.skippedFiles).toBe(1);
+  });
+  it('reports the skipped count when exclusions leave no Markdown notes', () => {
+    const archive = Buffer.from(zipSync({ 'pkg/node_modules/x/README.md': strToU8('# Dependency') }));
+    expect(() => extractVault(archive, 'obsidian')).toThrow('1 skipped files');
+  });
   it('normalizes Notion IDs consistently in nested filenames, Markdown links and attachments', () => {
     const id = '0123456789abcdef0123456789abcdef';
     const result = extractVault(Buffer.from(zipSync({
@@ -66,7 +98,7 @@ describe('source extraction', () => {
     })), 'notion');
     expect(result.files.find((file) => file.path === 'Home.md')!.buffer.toString()).toBe(`[page][ref]\n[ref]: <Child%20%28draft%29.md#heading> "Title"\n[external](https://example.com/Child%20${id}.md)`);
   });
-  it.each(['../escape.md', '/absolute.md', 'folder/../../escape.md', 'folder\\escape.md', '.git/config'])('rejects unsafe ZIP path %s', (path) => {
+  it.each(['../escape.md', '/absolute.md', 'folder/../../escape.md', 'folder\\escape.md'])('rejects unsafe ZIP path %s', (path) => {
     expect(() => extractVault(Buffer.from(zipSync({ [path]: strToU8('danger') })), 'obsidian')).toThrow('Unsafe ZIP');
   });
   it('rejects a compressed ZIP bomb before extracting it', () => {

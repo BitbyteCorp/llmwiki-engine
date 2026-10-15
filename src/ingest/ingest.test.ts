@@ -35,6 +35,7 @@ import { NoteWriterService } from '../jobs/note-writer.service.js';
 import { WriteJobsRepository } from '../jobs/write-jobs.repository.js';
 import { WriteJobsService } from '../jobs/write-jobs.service.js';
 import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
+import { WikiCatalog } from '../knowledge/wiki-catalog.js';
 import { AgentService } from '../agent/agent.service.js';
 import type { IndexerService } from '../rag/indexer.service.js';
 import { SearchService } from '../rag/search.service.js';
@@ -145,7 +146,7 @@ describe('IngestService with real uploads, SQLite and git', () => {
     });
     providers.push(fake);
     const ctx = await fixture(fake.url);
-    const agent = new AgentService(ctx.config, ctx.log, ctx.repo, new SearchService(ctx.config, ctx.db, ctx.log, ctx.acl, ctx.repo), ctx.acl);
+    const agent = new AgentService(ctx.config, ctx.log, ctx.repo, new SearchService(ctx.config, ctx.db, ctx.log, ctx.acl, ctx.repo), ctx.acl, new WikiCatalog(ctx.repo, ctx.acl));
     vi.mocked(ctx.agent.runWrite).mockImplementation(agent.runWrite.bind(agent));
     const text = Array.from({ length: 100 }, (_, index) => `Durable fact ${index}\n`).join('');
     const result = await ctx.ingest.ingest({ userId: ctx.owner.id, kind: 'text', text });
@@ -512,6 +513,25 @@ describe('IngestService with real uploads, SQLite and git', () => {
     const count = await git('git', ['rev-list', '--count', `${before}..main`], { cwd: join(ctx.dir, 'knowledge') });
     expect(count.stdout.trim()).toBe('1');
   });
+  it.each(['obsidian', 'notion'] as const)('keeps only source knowledge and records excluded file counts for %s', async (kind) => {
+    const ctx = await fixture();
+    const buffer = Buffer.from(zipSync({
+      'pkg/node_modules/x/README.md': strToU8('# Dependency documentation'),
+      'docs/a.md': strToU8('# Project knowledge'),
+    }));
+    const upload = await ctx.uploads.save(ctx.owner.id, { name: 'folder.zip', mediaType: 'application/zip', purpose: 'import', buffer });
+    const result = await ctx.ingest.ingest({ userId: ctx.owner.id, kind, uploadId: upload.id });
+    const item = ctx.ingest.get(result.importId, ctx.owner.id);
+    const kept = `raw/${item.sha}/extracted/${kind}/files/docs/a.md`;
+    expect(item.rawPaths.slice(2)).toEqual([kept]);
+    expect(item.jobs.map((job) => job.files)).toEqual([1]);
+    expect(ctx.repository.getRequiredReads(result.jobIds[0]!)).toEqual([kept]);
+    const manifest = (await ctx.repo.readFile(item.rawPaths[1]!))!;
+    expect(matter(manifest).data.skipped_files).toBe(1);
+    expect(manifest).toContain('Skipped files: 1');
+    expect(manifest).not.toContain('node_modules');
+    expect(provenanceContext(ctx.jobs.get(result.jobIds[0]!)!.input)).toMatchObject({ skippedFiles: 1 });
+  });
   it('covers every vault Markdown in disjoint serial batches and retries only the failed batch', async () => {
     const ctx = await fixture();
     const pages = Array.from({ length: 81 }, (_, index) => `Page-${String(index).padStart(2, '0')}.md`);
@@ -537,7 +557,7 @@ describe('IngestService with real uploads, SQLite and git', () => {
       const input = ctx.jobs.get(jobId)!.input;
       expect(provenanceContext(input)).toEqual({
         importId: result.importId, kind: 'obsidian', source: `upload:${upload.id}`,
-        sha256: original.sha, filename: 'large.zip', path: original.rawPaths[1],
+        sha256: original.sha, filename: 'large.zip', path: original.rawPaths[1], skippedFiles: 0,
       });
       expect(input).not.toMatch(/Read .*provenance\/source Markdown/);
       expect(input).toMatch(/cit[ae].*without reading/i);

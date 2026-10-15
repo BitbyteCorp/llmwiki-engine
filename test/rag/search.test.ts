@@ -127,6 +127,58 @@ describe('SearchService', () => {
     }]);
   });
 
+  it('prefers an equally matching curated wiki note over its raw source without a folder filter', async () => {
+    const f = await fixture();
+    f.chunk({ path: 'raw/source.md', kind: 'raw', title: 'Storage', content: 'Storage policy.' });
+    f.chunk({ path: 'wiki/storage.md', title: 'Storage', content: 'Storage policy.' });
+    const hits = await f.search.search('storage');
+    expect(hits.map((hit) => hit.path)).toEqual(['wiki/storage.md', 'raw/source.md']);
+    expect(hits[0]!.score).toBeGreaterThan(hits[1]!.score);
+  });
+
+  it('applies the curated preference after optional reranking of equally matching notes', async () => {
+    const fake = await startFakeOpenAI(['[0,1]']);
+    cleanup.push(() => fake.close());
+    const f = await fixture({ openaiApiKey: 'test-key', openaiBaseUrl: fake.url, searchRerank: 'llm' });
+    f.chunk({ path: 'raw/source.md', kind: 'raw', title: 'Storage', content: 'Storage policy.' });
+    f.chunk({ path: 'wiki/storage.md', title: 'Storage', content: 'Storage policy.' });
+    const hits = await f.search.search('storage');
+    expect(fake.requests.map((request) => request.path)).toEqual(['/v1/responses']);
+    expect(hits.map((hit) => hit.path)).toEqual(['wiki/storage.md', 'raw/source.md']);
+    expect(hits[0]!.score).toBeGreaterThan(hits[1]!.score);
+  });
+
+  it('prefers an equally matching wiki note in hybrid search as well', async () => {
+    const f = await vectorFixture('storage');
+    f.chunk({ path: 'raw/source.md', kind: 'raw', title: 'Storage', content: 'Storage policy.', vector: f.queryVector });
+    f.chunk({ path: 'wiki/storage.md', title: 'Storage', content: 'Storage policy.', vector: f.queryVector });
+    const result = await f.search.query('storage');
+    expect(result.mode).toBe('hybrid');
+    expect(result.hits.map((hit) => hit.path)).toEqual(['wiki/storage.md', 'raw/source.md']);
+  });
+
+  it('keeps stronger raw title evidence ahead of an incidental wiki body match', async () => {
+    const f = await fixture();
+    f.chunk({ path: 'raw/source.md', kind: 'raw', title: 'Storage', content: 'Storage policy.' });
+    f.chunk({ path: 'wiki/garden.md', title: 'Garden', content: 'Storage policy.' });
+    expect((await f.search.search('storage')).map((hit) => hit.path)).toEqual(['raw/source.md', 'wiki/garden.md']);
+  });
+
+  it.each(['off', 'llm'] as const)('leaves raw-folder scores and ordering unchanged with reranking %s', async (searchRerank) => {
+    const fake = await startFakeOpenAI(() => '[1,0]');
+    cleanup.push(() => fake.close());
+    const f = await fixture({ openaiApiKey: 'test-key', openaiBaseUrl: fake.url, searchRerank });
+    f.chunk({ path: 'raw/a.md', kind: 'raw', title: 'Storage', content: 'Storage policy.' });
+    f.chunk({ path: 'raw/b.md', kind: 'raw', title: 'Storage', content: 'Storage policy.' });
+    f.chunk({ path: 'wiki/storage.md', title: 'Storage', content: 'Storage policy.' });
+    f.chunk({ path: 'raw-extra/excluded.md', title: 'Storage', content: 'Storage policy.' });
+    const unscopedRaw = await f.search.search('storage', { kinds: ['raw'] });
+    const expectedPaths = searchRerank === 'llm' ? ['raw/b.md', 'raw/a.md'] : ['raw/a.md', 'raw/b.md'];
+    expect(unscopedRaw.map((hit) => hit.path)).toEqual(expectedPaths);
+    expect(await f.search.search('storage', { folder: 'raw' })).toEqual(unscopedRaw);
+    expect(await f.search.search('storage', { folder: 'raw/' })).toEqual(unscopedRaw);
+  });
+
   it('still retrieves vector candidates for short queries', async () => {
     const f = await vectorFixture('저장');
     f.chunk({ path: 'wiki/a.md', content: '파일 보존 정책', vector: f.queryVector });

@@ -249,6 +249,12 @@ export class SearchService {
     hits = await this.rerank(query, hits, signal);
     signal?.throwIfAborted();
     this.assertPolicy(opts, policyKey);
+    if (!opts.folder) {
+      // Prefer curated notes when relevance is comparable, including after LLM reranking.
+      // Keep the bias below direct title evidence and leave explicit folder searches unchanged.
+      for (const hit of hits) if (hit.kind === 'wiki') hit.score *= 1.1;
+      hits.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path, 'en'));
+    }
     const related = this.db.prepare(`SELECT target_path AS path FROM links WHERE source_path=? AND target_path IS NOT NULL
       UNION SELECT source_path AS path FROM links WHERE target_path=?`);
     for (const hit of hits) {

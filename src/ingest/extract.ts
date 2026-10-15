@@ -12,7 +12,7 @@ export const VAULT_BYTES = 100 * 1024 * 1024;
 export const VAULT_FILES = 1000;
 function fail(message: string): never { throw new ApiError(400, 'invalid_source', message); }
 export interface ExtractedFile { path: string; buffer: Buffer; markdown: boolean }
-export interface Extraction { title: string; markdown: string; files: ExtractedFile[] }
+export interface Extraction { title: string; markdown: string; files: ExtractedFile[]; skippedFiles?: number }
 
 export function safeFilename(input: string): string {
   return (input.normalize('NFC').replace(/[\\/\x00-\x1f\x7f]/g, '_').replace(/^\.+/, '').slice(0, 160) || 'source');
@@ -73,9 +73,21 @@ export async function extractDocument(buffer: Buffer, mediaType: string, name: s
 
 function safeArchivePath(path: string): string {
   if (path.startsWith('/') || win32.isAbsolute(path) || /[\\\x00-\x1f\x7f]/.test(path) ||
-    path.split('/').some((part) => part === '..' || part === '.' || part.toLowerCase() === '.git') ||
+    path.split('/').some((part) => part === '..' || part === '.') ||
     path.replace(/\/$/, '').split('/').some((part) => !part) || path.length > 1024) fail('Unsafe ZIP entry path');
   return path.normalize('NFC');
+}
+
+const EXCLUDED_DIRECTORIES: Record<string, true> = {
+  node_modules: true, bower_components: true, vendor: true, '.git': true, '.venv': true,
+  venv: true, __pycache__: true, dist: true, build: true, '.next': true, target: true,
+};
+
+function excludedVaultPath(path: string): boolean {
+  const parts = path.split('/');
+  // Preserve the existing hidden-metadata exclusion, including hidden files.
+  return parts.some((part) => part.startsWith('.')) || parts[0] === '__MACOSX' ||
+    parts.some((part, index) => index < parts.length - 1 && EXCLUDED_DIRECTORIES[part.toLowerCase()] === true);
 }
 
 const NOTION_ID = /(?: |%20|[-_])(?:[a-f\d]{32}|[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12})(?=\.[^.]+$|$)/gi;
@@ -173,6 +185,7 @@ export function extractVault(buffer: Buffer, kind: 'obsidian' | 'notion'): Extra
   const files: ExtractedFile[] = [];
   const seen = new Set<string>();
   const consumed = new Set<string>();
+  let skippedFiles = 0;
   let total = 0;
   let completed = 0;
   const unzip = new Unzip((file) => {
@@ -184,6 +197,7 @@ export function extractVault(buffer: Buffer, kind: 'obsidian' | 'notion'): Extra
     // Invariant guard: renaming must never merge two entries into one path.
     if (seen.has(path)) fail('Normalized ZIP paths collide');
     seen.add(path);
+    const excluded = excludedVaultPath(original) || excludedVaultPath(path);
     let actual = 0;
     const chunks: Buffer[] = [];
     file.ondata = (error, chunk, final) => {
@@ -191,13 +205,12 @@ export function extractVault(buffer: Buffer, kind: 'obsidian' | 'notion'): Extra
       actual += chunk.length;
       total += chunk.length;
       if (actual > size || total > VAULT_BYTES) throw new ApiError(413, 'source_too_large', 'ZIP expanded size exceeds its declared limit');
-      chunks.push(Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+      if (!excluded && !path.endsWith('/')) chunks.push(Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength));
       if (final) {
         if (actual !== size) fail('ZIP entry has an invalid size');
         completed++;
         if (path.endsWith('/')) return;
-        // Internal vault metadata is not knowledge or an attachment.
-        if (path.split('/').some((part) => part.startsWith('.')) || path.startsWith('__MACOSX/')) return;
+        if (excluded) { skippedFiles++; return; }
         const markdown = /\.md$/i.test(path);
         let content = Buffer.concat(chunks, actual);
         if (markdown) content = Buffer.from(paths ? rewriteNotionLinks(decodeText(content), original, paths) : decodeText(content));
@@ -214,11 +227,12 @@ export function extractVault(buffer: Buffer, kind: 'obsidian' | 'notion'): Extra
     if (error instanceof ApiError) throw error;
     fail('ZIP could not be decoded');
   }
-  if (consumed.size !== expected.size || completed !== expected.size || !files.some((file) => file.markdown)) fail('ZIP must contain complete Markdown notes');
+  if (consumed.size !== expected.size || completed !== expected.size) fail('ZIP must contain complete Markdown notes');
+  if (!files.some((file) => file.markdown)) fail(`ZIP must contain Markdown notes after exclusions (${skippedFiles} skipped files)`);
   files.sort((a, b) => a.path.localeCompare(b.path));
   const notes = files.filter((file) => file.markdown);
   return {
     title: kind === 'notion' ? 'Notion export' : 'Obsidian vault',
-    markdown: notes.map((file) => `- [${posix.basename(file.path).replace(/[\[\]\\]/g, '\\$&')}](<${markdownHref(`files/${file.path}`)}>)`).join('\n'), files,
+    markdown: notes.map((file) => `- [${posix.basename(file.path).replace(/[\[\]\\]/g, '\\$&')}](<${markdownHref(`files/${file.path}`)}>)`).join('\n'), files, skippedFiles,
   };
 }
