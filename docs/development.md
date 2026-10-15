@@ -92,7 +92,7 @@ SQLite는 기존 `CHECK` 제약을 `ALTER TABLE`로 변경할 수 없으므로 �
 
 `pnpm cli backup create --out backup.zip`, `pnpm cli backup verify backup.zip`, `pnpm cli backup restore backup.zip [--force]`는 SQLite와 지식 git 저장소를 묶어 보관·검증·복원한다. 복원은 HTTP 서비스를 시작하지 않는 오프라인 명령이며 먼저 서버를 중지한다. 데이터 경로와 스키마 호환성, 체크섬 규칙은 [백업과 복원](backup.md)을 따른다.
 
-`pnpm cli skill install codex [--project /path/to/project]`, `pnpm cli skill update codex`, `pnpm cli skill status codex`는 설치 상태와 버전을 관리한다. 대상은 `claude-code`, `codex`, `hermes`다. 로컬 수정 파일은 `--force` 없이 덮어쓰지 않으며 MCP 연결과 OAuth는 별도로 수행한다. 설치 위치와 클라이언트별 절차는 [설치형 Skills](skills.md)를 따른다.
+Skill만 설치할 때는 엔진 의존성이나 빌드 없이 저장소 루트에서 `sh skills/install.sh install codex [--project /path/to/project]`, `sh skills/install.sh update codex`, `sh skills/install.sh status codex`를 사용한다. 엔진 개발 환경의 `pnpm cli skill install|update|status codex`와 빌드된 `llmwiki skill`도 같은 버전·해시 표식과 수정 보호 계약을 사용한다. 대상은 `claude-code`, `codex`, `hermes`다. 로컬 수정 파일은 `--force` 없이 덮어쓰지 않으며 MCP 연결과 OAuth는 별도로 수행한다. 설치 위치, Claude 마켓플레이스와 Codex·Hermes 기본 설치 경로는 [설치형 Skills](skills.md)를 따른다.
 
 ### 지식 구조 점검 CLI
 `pnpm cli lint`는 현재 `main`의 지식 구조를 읽기 전용으로 보고한다. 기본 출력은 사람이 읽는 보고서이며 `pnpm cli lint --json`은 JSON으로 출력한다. 노트·schema·허브를 수정하거나 이동하지 않고, 워크트리·커밋을 만들거나 꿈꾸기를 실행하지 않는다.
