@@ -80,7 +80,7 @@ describe('retrieval upgrade public search contract', () => {
       { path: 'wiki/garden.md', markdown: '# 정원\n꽃을 심었다.' },
     ]);
     expect(await f.search.query(query)).toMatchObject({ mode: 'keyword', degraded: { reason: 'no_api_key' },
-      hits: [{ path: 'wiki/access.md' }], nextCursor: null });
+      hits: [{ path: 'wiki/access.md', via: null }], nextCursor: null });
     expect((await f.search.search(query)).map((hit) => hit.path)).toEqual(['wiki/access.md']);
   });
 
@@ -339,9 +339,7 @@ describe('curated bilingual retrieval evaluation', () => {
     expect(metrics.mrr).toBeGreaterThanOrEqual(0.7);
     const durable = await f.search.search('durable storage', { limit: 100 });
     expect(durable.map((hit) => hit.path)).toContain('wiki/english/durable.md');
-    expect(durable.map((hit) => hit.path)).toContain('raw/repeated-advertisement.md');
-    expect(durable.findIndex((hit) => hit.path === 'wiki/english/durable.md'))
-      .toBeLessThan(durable.findIndex((hit) => hit.path === 'raw/repeated-advertisement.md'));
+    expect(durable.map((hit) => hit.path)).not.toContain('raw/repeated-advertisement.md');
   }, 30_000);
 });
 

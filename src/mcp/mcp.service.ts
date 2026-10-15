@@ -95,7 +95,7 @@ export class McpService {
     );
 
     server.registerTool('search', {
-      description: 'Search shared wiki knowledge using hybrid keyword and semantic search. Read relevant notes with read_note before using the results as authoritative context.',
+      description: 'Search shared wiki knowledge using hybrid keyword and semantic search. Without kinds or folder, search curated notes first; only without strong lexical evidence, fall back to raw sources and pivot to citing notes. via identifies the source chunk behind a pivot; direct hits have via: null. Use kinds: ["raw"] or folder: "raw/" to search sources directly; explicit kinds or folder keeps single-stage search. Read relevant notes with read_note before using the results as authoritative context.',
       inputSchema: {
         query: z.string().trim().min(1).describe('Question or keywords to search for.'),
         limit: z.number().int().min(1).max(100).optional().describe('Maximum number of hits, from 1 to 100.'),

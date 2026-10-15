@@ -1,6 +1,14 @@
 import type { User } from '../auth/users.types.js';
 import type { NoteType } from '../knowledge/note-metadata.js';
 
+export interface SearchVia {
+  path: string;
+  heading: string;
+  anchor: string | null;
+  excerpt: string;
+  highlights: Array<[number, number]>;
+}
+
 export interface SearchHit {
   path: string;
   title: string;
@@ -16,6 +24,7 @@ export interface SearchHit {
   highlights: Array<[number, number]>;
   tags: string[];
   updatedAt: string | null;
+  via: SearchVia | null;
 }
 
 export interface SearchFilters {

@@ -90,13 +90,13 @@ async function fixture() {
           path: 'wiki/engine.md', title: 'Engine', heading: 'Shared knowledge',
           snippet: 'The engine keeps durable shared knowledge.', score: 0.9,
           kind: 'wiki' as const, related: ['wiki/backups.md'],
-          type: 'guide', description: 'Shared engine knowledge.',
+          type: 'guide', description: 'Shared engine knowledge.', via: null,
         },
         {
           path: 'wiki/backups.md', title: 'Backups', heading: 'Schedule',
           snippet: 'The main branch is backed up daily.', score: 0.6,
           kind: 'wiki' as const, related: ['wiki/engine.md'],
-          type: null, description: null,
+          type: null, description: null, via: null,
         },
       ];
       return query === 'engine' ? hits.slice(0, options?.limit ?? hits.length) : [];
@@ -257,7 +257,7 @@ describe('MCP Streamable HTTP protocol', () => {
         path: 'wiki/engine.md', title: 'Engine', heading: 'Shared knowledge',
         snippet: 'The engine keeps durable shared knowledge.', score: 0.9,
         kind: 'wiki', related: ['wiki/backups.md'],
-        type: 'guide', description: 'Shared engine knowledge.',
+        type: 'guide', description: 'Shared engine knowledge.', via: null,
       }],
     });
     expect(search.search).toHaveBeenCalledWith('engine', expect.objectContaining({ limit: 1, type: 'guide' }));

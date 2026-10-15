@@ -93,7 +93,7 @@ SDK는 60초를 초과하는 대기 힌트를 무시하고 기본 백오프로 �
 `baseInstructions()`는 main의 루트 작성 규칙·메모리와 함께 공유 `WikiCatalog`의 읽기 권한별 목차를 인용된 참고 자료로 제공한다. 도메인 허브와 설명, 주제 폴더별 노트 수, 아직 주제 폴더에 배치되지 않은 노트 수를 표시하며 공유 개념·엔티티는 제목과 설명을 표시한다. 코드가 파일과 frontmatter에서 생성하므로 허브에 연결되지 않은 노트도 목록에서 사라지지 않는다. 목차의 크기·캐시·권한 경계는 [MCP의 서버 지침](mcp.md#서버-지침과-개인정보-경계)을 따른다. 도니는 해당 도메인에 쓰거나 편집하기 전에 `wiki/<domain>/AGENTS.md`가 있으면 읽는다. 도메인 schema의 적용 범위와 우선순위는 [도메인 schema](knowledge-domains.md#도메인-schema)를 따른다.
 
 ### 엔진이 정의하는 함수 도구
-도니에게는 OpenAI 호스티드 셸 대신 엔진이 정의한 함수 도구를 제공한다. `search`는 main의 검색 색인을 사용한다. `browse_catalog`는 `{ folder: "wiki/<domain>/<topic>/" }`를 받아 현재 사용자가 읽을 수 있는 main의 전체 하위 노트 목차를 `{ folder, listing }`으로 반환한다. 각 항목은 제목·경로·유형·설명을 담으며 인바운드 링크가 없어도 포함된다. 이 도구와 검색 결과는 작업 워크트리의 미머지 편집을 포함하지 않는다. 작업 파일을 읽거나 편집할 때는 `list_files`, `read_file`, `write_file`, `delete_file`, `move_file`, `commit`을 사용하며 이 도구는 작업 워크트리 안으로 제한된다.
+도니에게는 OpenAI 호스티드 셸 대신 엔진이 정의한 함수 도구를 제공한다. `search`는 main의 검색 색인과 [RAG의 두 단계 기본 검색](rag.md#기본-검색의-두-단계)을 사용한다. `browse_catalog`는 `{ folder: "wiki/<domain>/<topic>/" }`를 받아 현재 사용자가 읽을 수 있는 main의 전체 하위 노트 목차를 `{ folder, listing }`으로 반환한다. 각 항목은 제목·경로·유형·설명을 담으며 인바운드 링크가 없어도 포함된다. 이 도구와 검색 결과는 작업 워크트리의 미머지 편집을 포함하지 않는다. 작업 파일을 읽거나 편집할 때는 `list_files`, `read_file`, `write_file`, `delete_file`, `move_file`, `commit`을 사용하며 이 도구는 작업 워크트리 안으로 제한된다.
 
 예를 들어 지식 쓰기나 충돌 해결 중 파일을 편집할 때도, 도니가 도구를 통해 작업 워크트리 밖의 파일을 변경하지 못하게 한다. 작업 워크트리와 main의 관계는 [쓰기 흐름](write-flow.md)에서 설명한다.
 

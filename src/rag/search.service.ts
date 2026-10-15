@@ -25,6 +25,13 @@ interface ChunkRow {
 }
 interface Snapshot { fingerprint: string; expires: number; result: SearchResult }
 interface RetrievalFilter { sql: string; params: Array<string | number> }
+interface LexicalResult { channels: ChunkRow[][]; strongPaths: Set<string> }
+interface RetrievalStage {
+  hits: SearchHit[];
+  hybrid: boolean;
+  reason: DegradedReason | undefined;
+  strongPaths: Set<string>;
+}
 const CANDIDATES = 200;
 const DEFAULT_LIMIT = 20;
 const FIELDS = 'c.id,c.path,c.title,c.heading,c.content,c.kind,c.note_type,c.description,c.aliases,c.anchor,c.tags_json,c.updated_at';
@@ -150,12 +157,13 @@ export class SearchService {
     return new Date(value).toISOString();
   }
 
-  private lexical(query: string, filter: RetrievalFilter): ChunkRow[][] {
+  private lexical(query: string, filter: RetrievalFilter): LexicalResult {
     const trigram = Array.from(query).length < 3 ? [] : this.db.prepare(`SELECT ${FIELDS}
       FROM chunks_fts JOIN chunks c ON c.id=chunks_fts.rowid WHERE chunks_fts MATCH ?${filter.sql}
       ORDER BY bm25(chunks_fts,10,6,3,1,3,6),c.path,c.ordinal LIMIT ${CANDIDATES}`).all(quote(query), ...filter.params) as ChunkRow[];
     const terms = termsOf(query);
-    if (!terms.length) return [trigram, []];
+    const strongPaths = new Set(trigram.map((row) => row.path));
+    if (!terms.length) return { channels: [trigram, []], strongPaths };
     let termRows: ChunkRow[];
     if (terms.some((term) => Array.from(term).length < 3)) {
       const fields = ['title', 'heading', 'tags', 'content', 'description', 'aliases'];
@@ -166,20 +174,81 @@ export class SearchService {
         ORDER BY (${weights.map((entry) => entry.clause).join('+')}) DESC,c.path,c.ordinal LIMIT ${CANDIDATES}`)
         .all(...values, ...filter.params, ...weights.map((entry) => entry.value)) as ChunkRow[];
       termRows = select(' AND ');
+      for (const row of termRows) strongPaths.add(row.path);
       if (!termRows.length) termRows = select(' OR ');
     } else {
       const select = (operator: string) => this.db.prepare(`SELECT ${FIELDS} FROM chunks_terms JOIN chunks c ON c.id=chunks_terms.rowid
         WHERE chunks_terms MATCH ?${filter.sql} ORDER BY bm25(chunks_terms,10,6,3,1,3,6),c.path,c.ordinal LIMIT ${CANDIDATES}`)
         .all(terms.map((term) => `${quote(term)}*`).join(operator), ...filter.params) as ChunkRow[];
       termRows = select(' AND ');
+      for (const row of termRows) strongPaths.add(row.path);
       if (!termRows.length) termRows = select(' OR ');
     }
-    return [trigram, termRows];
+    return { channels: [trigram, termRows], strongPaths };
   }
 
   private async retrieve(query: string, opts: SearchOptions, policyKey: string, signal?: AbortSignal): Promise<SearchResult> {
+    const tiered = opts.kinds === undefined && !opts.folder;
+    const stage1Opts: SearchOptions = tiered ? { ...opts, kinds: ['wiki', 'journal', 'other'] } : opts;
+    const stage1 = await this.retrieveStage(query, stage1Opts, policyKey, false, signal);
+    let hits = stage1.hits;
+    let reason = stage1.reason;
+    if (tiered && !stage1.strongPaths.size) {
+      const stage2 = await this.retrieveStage(query, { ...opts, kinds: ['raw'] }, policyKey, true, signal);
+      reason ??= stage2.reason;
+      const rawHits = stage2.hits.filter((hit) => stage2.strongPaths.has(hit.path));
+      if (rawHits.length) hits = this.pivotRawHits(rawHits, stage1.hits, this.filter(stage1Opts), termsOf(query));
+    }
+    const related = this.db.prepare(`SELECT target_path AS path FROM links WHERE source_path=? AND target_path IS NOT NULL
+      UNION SELECT source_path AS path FROM links WHERE target_path=?`);
+    for (const hit of hits) {
+      const paths = (related.all(hit.path, hit.path) as Array<{ path: string }>).map((row) => row.path);
+      hit.related = (opts.user ? this.acl.filterPaths(opts.user, paths) : paths).filter((path) => path !== hit.path).sort();
+    }
+    return { mode: stage1.hybrid ? 'hybrid' : 'keyword', degraded: reason ? { reason } : null, hits, nextCursor: null };
+  }
+
+  private hitFor(chunk: ChunkRow, score: number, queryTerms: string[]): SearchHit {
+    return { path: chunk.path, title: chunk.title, heading: chunk.heading, snippet: chunk.content,
+      anchor: chunk.anchor, ...excerptFor(chunk.content, queryTerms), tags: JSON.parse(chunk.tags_json),
+      updatedAt: chunk.updated_at, kind: chunk.kind, type: chunk.note_type, description: chunk.description,
+      score, related: [], via: null };
+  }
+
+  private pivotRawHits(rawHits: SearchHit[], stage1Hits: SearchHit[], filter: RetrievalFilter, queryTerms: string[]): SearchHit[] {
+    const citingPaths = this.db.prepare(`SELECT DISTINCT l.source_path AS path FROM links l
+      WHERE l.target_path=? AND l.source_path NOT GLOB 'raw/*'
+      AND EXISTS (SELECT 1 FROM chunks c WHERE c.path=l.source_path${filter.sql})
+      ORDER BY l.source_path`);
+    const firstChunk = this.db.prepare(`SELECT ${FIELDS} FROM chunks c WHERE c.path=?${filter.sql}
+      ORDER BY c.ordinal,c.id LIMIT 1`);
+    const stage1ByPath = new Map(stage1Hits.map((hit) => [hit.path, hit]));
+    const emitted = new Set<string>();
+    const hits: SearchHit[] = [];
+    for (const raw of rawHits) {
+      const citing = citingPaths.all(raw.path, ...filter.params) as Array<{ path: string }>;
+      if (!citing.length) {
+        hits.push(raw);
+        emitted.add(raw.path);
+        continue;
+      }
+      const via = { path: raw.path, heading: raw.heading, anchor: raw.anchor, excerpt: raw.excerpt, highlights: raw.highlights };
+      for (const { path } of citing) {
+        if (emitted.has(path)) continue;
+        const hit = stage1ByPath.get(path)
+          ?? this.hitFor(firstChunk.get(path, ...filter.params) as ChunkRow, raw.score, queryTerms);
+        hits.push({ ...hit, score: raw.score, via });
+        emitted.add(path);
+      }
+    }
+    for (const hit of stage1Hits) if (!emitted.has(hit.path)) hits.push(hit);
+    return hits;
+  }
+
+  private async retrieveStage(query: string, opts: SearchOptions, policyKey: string, skipRerank: boolean, signal?: AbortSignal): Promise<RetrievalStage> {
     const filter = this.filter(opts);
-    const channels = query ? this.lexical(query, filter).map((rows) => ({ rows, weight: 1 })) : [];
+    const original = query ? this.lexical(query, filter) : { channels: [], strongPaths: new Set<string>() };
+    const channels = original.channels.map((rows) => ({ rows, weight: 1 }));
     let reason: DegradedReason | undefined;
     let hybrid = false;
     if (!this.config.openaiApiKey) reason = 'no_api_key';
@@ -193,7 +262,7 @@ export class SearchService {
       const expanded = await this.expand(query, signal);
       signal?.throwIfAborted();
       this.assertPolicy(opts, policyKey);
-      for (const alias of expanded) channels.push(...this.lexical(alias, filter).map((rows) => ({ rows, weight: 0.35 })));
+      for (const alias of expanded) channels.push(...this.lexical(alias, filter).channels.map((rows) => ({ rows, weight: 0.35 })));
       if (!reason) {
         let embeddingComplete = false;
         try {
@@ -241,13 +310,10 @@ export class SearchService {
       rows.sort((a, b) => b.score - a.score || a.chunk.id - b.chunk.id);
       const { chunk, score } = rows[0]!;
       const evidence = rows.slice(1, 4).reduce((sum, row, index) => sum + row.score * 0.1 * 0.5 ** index, 0);
-      return { path: chunk.path, title: chunk.title, heading: chunk.heading, snippet: chunk.content,
-        anchor: chunk.anchor, ...excerptFor(chunk.content, queryTerms), tags: JSON.parse(chunk.tags_json),
-        updatedAt: chunk.updated_at, kind: chunk.kind, type: chunk.note_type, description: chunk.description,
-        score: score + Math.min(score * 0.2, evidence), related: [] };
+      return this.hitFor(chunk, score + Math.min(score * 0.2, evidence), queryTerms);
     }).sort((a, b) => b.score - a.score || a.path.localeCompare(b.path, 'en'));
     this.assertPolicy(opts, policyKey);
-    hits = await this.rerank(query, hits, signal);
+    if (!skipRerank) hits = await this.rerank(query, hits, signal);
     signal?.throwIfAborted();
     this.assertPolicy(opts, policyKey);
     if (!opts.folder) {
@@ -256,13 +322,7 @@ export class SearchService {
       for (const hit of hits) if (hit.kind === 'wiki') hit.score *= 1.1;
       hits.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path, 'en'));
     }
-    const related = this.db.prepare(`SELECT target_path AS path FROM links WHERE source_path=? AND target_path IS NOT NULL
-      UNION SELECT source_path AS path FROM links WHERE target_path=?`);
-    for (const hit of hits) {
-      const paths = (related.all(hit.path, hit.path) as Array<{ path: string }>).map((row) => row.path);
-      hit.related = (opts.user ? this.acl.filterPaths(opts.user, paths) : paths).filter((path) => path !== hit.path).sort();
-    }
-    return { mode: hybrid ? 'hybrid' : 'keyword', degraded: reason ? { reason } : null, hits, nextCursor: null };
+    return { hits, hybrid, reason, strongPaths: original.strongPaths };
   }
 
   private async queryEmbedding(query: string, signal?: AbortSignal): Promise<number[]> {

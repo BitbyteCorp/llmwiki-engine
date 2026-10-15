@@ -91,7 +91,7 @@ const similarHit: SearchHit = {
   path: 'wiki/engineering/releases/release.md', title: 'Release process', heading: '',
   snippet: 'A reviewer approves each release.', score: 0.9, kind: 'wiki', related: [],
   anchor: null, excerpt: 'A reviewer approves each release.', highlights: [], tags: [], updatedAt: null,
-  type: null, description: null,
+  type: null, description: null, via: null,
 };
 type Author = { name: string; email: string };
 type MessageInput = { id: string; conversation_id: string; content: string; created_at: string };

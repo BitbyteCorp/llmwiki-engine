@@ -153,7 +153,7 @@ describe('MCP knowledge parity', () => {
       expect(result.isError).not.toBe(true);
       expect(result.structuredContent?.hits).toEqual(type === 'concept' ? [
         expect.objectContaining({ path: 'wiki/engine.md', type: 'concept',
-          description: 'Durable summary for versioned memory.' }),
+          description: 'Durable summary for versioned memory.', via: null }),
       ] : []);
     }
     for (const type of ['unknown', 'wiki', '', 'Concept', 'concept,entity', null, ['concept']]) {
@@ -170,12 +170,12 @@ describe('MCP knowledge parity', () => {
       const result = await call(client, 'search', { query, type: 'concept' });
       expect(result.structuredContent?.hits).toEqual([
         expect.objectContaining({ path: 'wiki/engine.md', type: 'concept',
-          description: 'Durable summary for versioned memory.' }),
+          description: 'Durable summary for versioned memory.', via: null }),
       ]);
     }
     const legacy = await call(client, 'search', { query: 'Engine knowledge', kinds: ['journal'] });
     expect(legacy.structuredContent?.hits).toEqual([
-      expect.objectContaining({ path: 'journal/other.md', type: null, description: null }),
+      expect.objectContaining({ path: 'journal/other.md', type: null, description: null, via: null }),
     ]);
   });
 
@@ -256,7 +256,7 @@ describe('MCP knowledge parity', () => {
     });
     expect(search.structuredContent?.hits).toEqual([
       expect.objectContaining({ path: 'wiki/engine.md', type: 'concept', description: 'Durable summary for versioned memory.',
-        anchor: 'durable-knowledge', tags: ['platform'], excerpt: expect.stringContaining('Engine knowledge') }),
+        anchor: 'durable-knowledge', tags: ['platform'], excerpt: expect.stringContaining('Engine knowledge'), via: null }),
     ]);
     expect((await call(client, 'search', { query: 'Engine knowledge', tags: ['unmatched'] })).structuredContent).toEqual({ hits: [] });
     expect((await call(client, 'search', { query: 'Engine knowledge', author: 'unknown-author' })).structuredContent).toEqual({ hits: [] });

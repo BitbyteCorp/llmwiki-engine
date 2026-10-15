@@ -65,7 +65,7 @@ describe('search workspace HTTP', () => {
   it('serves enriched filtered hits and quick-open suggestions to a viewer', async () => {
     const result = await request(app.getHttpServer()).get('/api/search').query({ q: '저장', type: 'guide', folder: 'wiki', tags: 'SEARCH', author: 'Ada', from: '2026-10-01', to: '2026-10-01' }).set('x-session', 'viewer').expect(200);
     expect(result.body).toMatchObject({ mode: 'keyword', degraded: { reason: 'no_api_key' }, nextCursor: null,
-      hits: [{ path: paths[0], type: 'guide', description: 'Durable storage procedure', anchor: '검색', excerpt: '저장 데이터 검색', tags: ['search'], updatedAt: '2026-10-01T00:00:00.000Z', highlights: [[0, 2]] }] });
+      hits: [{ path: paths[0], type: 'guide', description: 'Durable storage procedure', anchor: '검색', excerpt: '저장 데이터 검색', tags: ['search'], updatedAt: '2026-10-01T00:00:00.000Z', highlights: [[0, 2]], via: null }] });
     const suggest = await request(app.getHttpServer()).get('/api/search/suggest?q=Al').set('x-session', 'viewer').expect(200);
     expect(suggest.body.map((note: { path: string }) => note.path)).toEqual([paths[0], paths[2]]);
   });
@@ -83,14 +83,14 @@ describe('search workspace HTTP', () => {
     const result = await request(app.getHttpServer()).get('/api/search').query({ q, type: 'guide' })
       .set('x-session', 'viewer').expect(200);
     expect(result.body.hits).toEqual([expect.objectContaining({
-      path: paths[0], type: 'guide', description: 'Durable storage procedure',
+      path: paths[0], type: 'guide', description: 'Durable storage procedure', via: null,
     })]);
   });
 
   it('returns null metadata fields for notes without metadata', async () => {
     const result = await request(app.getHttpServer()).get('/api/search').query({ q: '일기' })
       .set('x-session', 'viewer').expect(200);
-    expect(result.body.hits).toEqual([expect.objectContaining({ path: paths[2], type: null, description: null })]);
+    expect(result.body.hits).toEqual([expect.objectContaining({ path: paths[2], type: null, description: null, via: null })]);
   });
 
   it('serves directional links, the full graph and distinct note tag facets', async () => {

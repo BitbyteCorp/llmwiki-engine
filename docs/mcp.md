@@ -35,7 +35,7 @@ MCP와 REST 가져오기(`/api/imports`)의 JSON 요청 본문 상한은 21 MiB�
 
 | 도구 | 인자 | 성공 반환값 | 권한과 동작 |
 | --- | --- | --- | --- |
-| `search` | `query: string`, 선택 `limit`, `folder`, `tags: string[]`, `from`, `to`, `author`, `kinds: ("wiki"\|"journal"\|"raw"\|"other")[]` | `{ hits: SearchHit[] }` | 모든 역할이 공유 검색 필터를 사용할 수 있다. `query`는 trim 후 비어 있지 않아야 한다. 날짜는 ISO 날짜 또는 시간대가 있는 ISO datetime이며 `from`은 포함, 날짜형 `to`는 해당 UTC 날짜 전체를 포함한다. 작성자·수정 시각은 Git 기준이다. |
+| `search` | `query: string`, 선택 `limit`, `folder`, `tags: string[]`, `from`, `to`, `author`, `kinds: ("wiki"\|"journal"\|"raw"\|"other")[]` | `{ hits: SearchHit[] }` | 모든 역할이 공유 검색 필터를 사용할 수 있다. 기본 검색은 raw를 제외하고, 필요할 때만 원문으로 fallback하여 인용 노트로 피벗하는 [두 단계 정책](rag.md#기본-검색의-두-단계)을 따른다. 원문 직접 검색은 `kinds: ["raw"]` 또는 `folder: "raw/"`를 사용한다. `query`는 trim 후 비어 있지 않아야 한다. 날짜는 ISO 날짜 또는 시간대가 있는 ISO datetime이며 `from`은 포함, 날짜형 `to`는 해당 UTC 날짜 전체를 포함한다. 작성자·수정 시각은 Git 기준이다. |
 | `read_note` | `path: string`, 선택 `ref: string` | `{ path, content, frontmatter, body, updatedSha, ref }` | 모든 역할이 노트를 읽는다. 생략한 `ref`는 현재 `main`이며, 내용과 두 SHA 필드는 한 커밋으로 고정한다. 과거 경로는 당시 경로를 사용한다. |
 | `browse` | `folder: string`으로 `wiki/` 아래 폴더를 지정한다. `"wiki/"`는 전체 catalog다. | `{ folder, listing: string }` | 모든 역할이 `WikiCatalog.listing`의 완전한 하위 트리 Markdown 목록을 읽는다. 경로·제목·설명·유형을 확인한 뒤 `read_note`로 본문을 읽는다. 지도에서 생략한 항목도 목록에는 포함하며 현재 사용자의 읽기 권한을 적용한다. |
 | `list_notes` | 선택 인자 `prefix: string`으로 저장소 상대 경로 접두사를 지정한다. | 접두사를 생략하거나 `""`로 보내면 `{ files: string[], index: string \| null }`을 반환한다. 비어 있지 않은 접두사를 보내면 `{ files: string[] }`만 반환한다. | 모든 역할이 `main`에서 추적하는 마크다운 중 읽을 수 있는 파일 목록을 볼 수 있다. `index`는 루트 `index.md`의 내용이며, 파일이 없거나 읽기 권한이 없으면 `null`이다. 별도 `index` 도구는 없다. |
@@ -51,7 +51,7 @@ MCP와 REST 가져오기(`/api/imports`)의 JSON 요청 본문 상한은 21 MiB�
 
 검색의 인덱스와 결과 구성은 [RAG](rag.md)에 기록한다.
 
-`SearchHit`에는 `path`, `title`, `heading`, `anchor`, `excerpt`, `highlights`, `tags`, `updatedAt`, `snippet`, `score`, `kind`, `related`가 들어 있다. `anchor`는 제목의 GitHub 방식 slug이며 제목이 없으면 `null`이다. `highlights`는 `excerpt` 안의 강조 범위다. 검색 스니펫만으로 판단하지 않고 `read_note`로 관련 노트 전체를 읽는다. 검색·연결·유사도의 인덱스 의미는 [RAG](rag.md)를 따른다.
+검색 hit의 전체 필드와 발췌·강조·앵커 해석은 [RAG의 검색 결과와 필터](rag.md#검색-결과와-필터)를 따른다. `via`는 피벗한 노트를 찾게 한 원문 청크의 근거이며 직접 검색된 hit에서는 `null`이다. 검색 스니펫만으로 판단하지 않고 `read_note`로 관련 노트 전체를 읽는다.
 
 메타데이터 검색은 선택적인 `type` 입력으로 [노트 메타데이터 표준](note-metadata.md)의 유형 하나를 지정한다. `kinds`는 저장소 영역이고 `type`은 노트의 역할이므로 서로 다른 필터다. 검색 hit에는 `type`, `description`도 포함되며, 없는 값은 `null`이다. 값의 해석과 검색 동작의 자세한 계약은 [RAG의 검색 결과와 필터](rag.md#검색-결과와-필터)를 따른다.
 
