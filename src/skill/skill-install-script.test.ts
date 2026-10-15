@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -45,6 +45,117 @@ function result(action: 'install' | 'update' | 'status', client: SkillClient = '
   expect(execution.status, execution.stderr).toBe(0);
   return JSON.parse(execution.stdout);
 }
+
+describe('interactive POSIX skill installer', () => {
+  it.each([{ args: [] }, { args: ['install'] }])('prints usage without a controlling tty for $args', async ({ args }) => {
+    const execution = await new Promise<{ status: number | null; signal: NodeJS.Signals | null; stderr: string }>((resolve, reject) => {
+      const child = spawn('sh', [script, ...args], {
+        cwd: root, env: { ...process.env, HOME: home }, stdio: ['ignore', 'pipe', 'pipe'], timeout: 3000, detached: true,
+      });
+      let stderr = '';
+      child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+      child.once('error', reject);
+      child.once('close', (status, signal) => resolve({ status, signal, stderr }));
+    });
+    expect(execution.signal).toBeNull();
+    expect(execution.status).not.toBe(0);
+    expect(execution.stderr).toContain('Usage:');
+    expect(execution.stderr).toContain('| sh -s -- install claude-code');
+    expect(installer.status('codex', { project }).state).toBe('not-installed');
+  });
+
+  describe.skipIf(process.platform !== 'linux' || spawnSync('script', ['--version']).status !== 0)('with a controlling tty', () => {
+    function interactive(answers: string, args: string[] = [], shell = 'sh') {
+      const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+      const command = `${shell} ${[script, ...args].map(quote).join(' ')}`;
+      const execution = spawnSync('script', ['-qec', command, '/dev/null'], {
+        cwd: project, encoding: 'utf8', env: { ...process.env, HOME: home }, input: answers, timeout: 10000,
+      });
+      expect(execution.error).toBeUndefined();
+      return { ...execution, transcript: execution.stdout + execution.stderr };
+    }
+
+    it.each(['dash', 'bash --posix'])('installs a project and skips a current install under %s', (shell) => {
+      const answers = `2\n2\n${project}\n`;
+      const initial = interactive(answers, [], shell);
+      expect(initial.status, initial.transcript).toBe(0);
+      expect(initial.transcript).toContain('"state": "current"');
+      expect(initial.transcript).toContain('Separate MCP/OAuth step');
+      expect(installer.status('codex', { project }).state).toBe('current');
+      const current = interactive(answers, [], shell);
+      expect(current.status, current.transcript).toBe(0);
+      expect(current.transcript).toContain('codex: current');
+      expect(current.transcript).not.toContain('"changed": true');
+    });
+
+    it('asks before overwriting modifications, defaults to no, and accepts explicit consent', () => {
+      const initial = installer.install('codex', 'install', { project });
+      writeFileSync(join(initial.directory, 'SKILL.md'), 'My local instructions');
+      const answers = `2\n2\n${project}\n`;
+      const skipped = interactive(`${answers}\n`);
+      expect(skipped.status, skipped.transcript).toBe(0);
+      expect(skipped.transcript).toContain('Overwrite skill files? [y/N]');
+      expect(installer.status('codex', { project }).state).toBe('modified');
+      const overwritten = interactive(`${answers}maybe\nyes\n`);
+      expect(overwritten.status, overwritten.transcript).toBe(0);
+      expect(overwritten.transcript).toContain('Answer yes or no.');
+      expect(installer.status('codex', { project }).state).toBe('current');
+    });
+
+    it('automatically updates outdated installs and protects unmanaged files', () => {
+      const initial = installer.install('codex', 'install', { project });
+      writeFileSync(join(assets, 'version.json'), '{"version":"2.0.0"}');
+      const answers = `2\n2\n${project}\n`;
+      const updated = interactive(answers);
+      expect(updated.status, updated.transcript).toBe(0);
+      expect(updated.transcript).toContain('codex: outdated');
+      expect(installer.status('codex', { project })).toMatchObject({ state: 'current', installedVersion: '2.0.0' });
+      rmSync(join(initial.directory, installMarker));
+      const skipped = interactive(`${answers}no\n`);
+      expect(skipped.status, skipped.transcript).toBe(0);
+      expect(skipped.transcript).toContain('Overwrite skill files? [y/N]');
+      expect(installer.status('codex', { project }).state).toBe('unmanaged');
+    });
+
+    it('prompts only for the missing client or directory in partial commands', () => {
+      const client = interactive('2\n', ['install', '--project', project]);
+      expect(client.status, client.transcript).toBe(0);
+      expect(client.transcript).toContain('Client [1]');
+      expect(client.transcript).not.toContain('Scope:');
+      expect(client.transcript).not.toContain('Project directory [');
+      const directory = interactive('\n', ['install', 'codex', '--project']);
+      expect(directory.status, directory.transcript).toBe(0);
+      expect(directory.transcript).not.toContain('Client [1]');
+      expect(directory.transcript).not.toContain('Scope:');
+      expect(installer.status('codex', { project }).state).toBe('current');
+    });
+
+    it('re-prompts invalid choices and accepts empty defaults', () => {
+      const execution = interactive('invalid\n\ninvalid\n\n');
+      expect(execution.status, execution.transcript).toBe(0);
+      expect(execution.transcript).toContain('Choose 1, 2, or 3.');
+      expect(execution.transcript).toContain('Choose 1 or 2.');
+      expect(installer.status('claude-code').state).toBe('current');
+    });
+
+    it('requires an existing git root when choosing a Hermes project', () => {
+      mkdirSync(join(project, '.git'));
+      const execution = interactive(`3\n2\n${home}\n\n`);
+      expect(execution.status, execution.transcript).toBe(0);
+      expect(execution.transcript).toContain('Hermes projects must be a git root');
+      expect(execution.transcript).toContain('Choose an existing directory');
+      expect(execution.transcript).toContain('hermes skills trust');
+      expect(installer.status('hermes', { project }).state).toBe('current');
+    });
+
+    it.each(['\u0004', '\u0003'])('aborts without installing on terminal EOF or interrupt (%j)', (abort) => {
+      const execution = interactive(abort);
+      expect(execution.status, execution.transcript).not.toBe(0);
+      expect(installer.status('claude-code').state).toBe('not-installed');
+      expect(installer.status('codex', { project }).state).toBe('not-installed');
+    });
+  });
+});
 
 describe('POSIX skill installer interoperability', () => {
   it.each(['claude-code', 'codex', 'hermes'] as const)('installs the repository bundle for %s in a project without Node', (client) => {

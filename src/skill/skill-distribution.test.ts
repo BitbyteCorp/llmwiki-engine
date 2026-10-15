@@ -85,6 +85,22 @@ describe('public skill distribution', () => {
     }
   });
 
+  it.skipIf(process.platform !== 'linux' || spawnSync('script', ['--version']).status !== 0)('reads interactive curl-pipe answers from the terminal, not script stdin', async () => {
+    const project = join(root, 'interactive project');
+    const home = join(root, 'interactive home');
+    mkdirSync(project);
+    mkdirSync(home);
+    const result = await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
+      const child = execFile('script', ['-qec', 'curl -fsSL "$SOURCE/skills/install.sh" | sh', '/dev/null'], {
+        cwd: project, env: { ...process.env, HOME: home, SOURCE: url, LLMWIKI_URL: url }, timeout: 10000,
+      }, (error, stdout, stderr) => error ? reject(error) : resolve({ stdout, stderr }));
+      child.stdin!.end(`2\n2\n${project}\n`);
+    });
+    expect(result.stdout).toContain('"state": "current"');
+    expect(result.stdout).toContain('Separate MCP/OAuth step');
+    expect(new SkillInstaller(assets, home).status('codex', { project }).state).toBe('current');
+  });
+
   it.each([
     ['dash', ['-s', '--']],
     ['bash', ['--posix', '-s', '--']],

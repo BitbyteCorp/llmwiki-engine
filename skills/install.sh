@@ -8,33 +8,99 @@ export LC_ALL
 engine_url=''
 
 fail() { printf '%s\n' "$*" >&2; exit 1; }
-usage() { fail 'Usage: sh skills/install.sh <install|update|status> <claude-code|codex|hermes> [--project dir] [--force]'; }
-[ "$#" -ge 2 ] || usage
-action=$1
-client=$2
-shift 2
-case $action in install|update|status) ;; *) usage ;; esac
+usage() {
+  printf '%s\n' \
+    'Usage: sh skills/install.sh [<install|update|status> <claude-code|codex|hermes> [--project dir] [--force]]' \
+    'Without arguments, choose the client and scope interactively using /dev/tty.' \
+    'Non-interactive examples (also work without a terminal):' \
+    '  curl -fsSL <ENGINE_URL>/skills/install.sh | sh -s -- install claude-code' \
+    '  sh skills/install.sh install codex --project /path/to/project' >&2
+  exit 1
+}
+trap 'exit 1' HUP INT TERM
+prompt() {
+  printf '%s' "$1" >&2
+  IFS= read -r answer < /dev/tty || fail 'Aborted: no answer read; no skill files were changed.'
+}
+action=auto
+client=''
+if [ "$#" -gt 0 ]; then
+  case $1 in install|update|status) action=$1; shift ;; *) usage ;; esac
+fi
+if [ "$#" -gt 0 ]; then
+  case $1 in --*) ;; *) client=$1; shift ;; esac
+fi
+force=false
+project_set=false
+project_missing=false
+base=${HOME-}
+while [ "$#" -gt 0 ]; do
+  case $1 in
+    --project)
+      if [ "$#" -ge 2 ]; then base=$2; shift 2
+      else project_missing=true; shift; fi
+      project_set=true
+      ;;
+    --force) force=true; shift ;;
+    *) usage ;;
+  esac
+done
+interactive=false
+if [ -z "$client" ] || [ "$project_missing" = true ]; then
+  # Opening /dev/tty fails immediately when there is no controlling terminal.
+  ( [ -t 0 ] < /dev/tty ) 2>/dev/null || usage
+  interactive=true
+fi
+if [ -z "$client" ]; then
+  # Local status is cheap; remote status would download three complete bundles.
+  case $0 in */*) preview_assets=${0%/*} ;; *) preview_assets=. ;; esac
+  if [ -f "$0" ] && [ -f "$preview_assets/llmwiki/SKILL.md" ]; then
+    printf '%s\n' 'Existing installations (personal unless --project was supplied):' >&2
+    for preview_client in claude-code codex hermes; do
+      if [ "$project_set" = true ] && [ "$project_missing" = false ]; then
+        preview_status=$(sh "$0" status "$preview_client" --project "$base" 2>/dev/null | awk '/"state":/ { gsub(/[",]/, "", $2); print $2 }')
+      else
+        preview_status=$(sh "$0" status "$preview_client" 2>/dev/null | awk '/"state":/ { gsub(/[",]/, "", $2); print $2 }')
+      fi
+      printf '  %s: %s\n' "$preview_client" "${preview_status:-unavailable}" >&2
+    done
+  fi
+  printf '%s\n' 'Choose a client:' '  1) Claude Code (default)' '  2) Codex' '  3) Hermes' >&2
+  while :; do
+    prompt 'Client [1]: '
+    case $answer in
+      ''|1|claude-code) client=claude-code; break ;;
+      2|codex) client=codex; break ;;
+      3|hermes) client=hermes; break ;;
+      *) printf '%s\n' 'Choose 1, 2, or 3.' >&2 ;;
+    esac
+  done
+fi
 case $client in
   claude-code) client_root=.claude ;;
   codex) client_root=.agents ;;
   hermes) client_root=.hermes ;;
   *) usage ;;
 esac
-force=false
-project_set=false
-base=${HOME-}
-while [ "$#" -gt 0 ]; do
-  case $1 in
-    --project)
-      [ "$#" -ge 2 ] || usage
-      base=$2
-      project_set=true
-      shift 2
-      ;;
-    --force) force=true; shift ;;
-    *) usage ;;
-  esac
-done
+if [ "$interactive" = true ] && [ "$project_set" = false ]; then
+  while :; do
+    prompt 'Scope: 1) personal (default) 2) project [1]: '
+    case $answer in
+      ''|1|personal) break ;;
+      2|project) project_set=true; project_missing=true; break ;;
+      *) printf '%s\n' 'Choose 1 or 2.' >&2 ;;
+    esac
+  done
+fi
+if [ "$project_missing" = true ]; then
+  if [ "$client" = hermes ]; then printf '%s\n' 'Hermes projects must be a git root (containing .git).' >&2; fi
+  while :; do
+    prompt 'Project directory [current directory]: '
+    base=${answer:-.}
+    if [ -d "$base" ] && { [ "$client" != hermes ] || [ -e "$base/.git" ]; }; then break; fi
+    printf '%s\n' 'Choose an existing directory (a git root for Hermes).' >&2
+  done
+fi
 [ "$project_set" = true ] || [ -n "$base" ] || fail 'HOME is not set; use --project dir.'
 current_directory=$(pwd -P; printf '.')
 current_directory=${current_directory%.}
@@ -427,6 +493,31 @@ print_status() {
   if [ "$action" != status ]; then printf ',\n  "changed": %s' "$changed"; fi
   printf '\n}\n'
 }
+if [ "$interactive" = true ]; then
+  printf '%s: %s (%s)\n' "$client" "$state" "$directory" >&2
+  if [ "$action" = auto ]; then
+    case $state in
+      not-installed) action=install ;;
+      current) action=status ;;
+      *) action=update ;;
+    esac
+  fi
+  if [ "$action" != status ] && [ "$force" = false ]; then
+    case $state in
+      modified|unmanaged)
+        printf '%s\n' 'Local modifications or unmanaged files will be replaced by --force.' >&2
+        while :; do
+          prompt 'Overwrite skill files? [y/N]: '
+          case $answer in
+            y|Y|yes|YES) force=true; break ;;
+            ''|n|N|no|NO) action=status; printf '%s\n' 'Skipped; no skill files were changed.' >&2; break ;;
+            *) printf '%s\n' 'Answer yes or no.' >&2 ;;
+          esac
+        done
+        ;;
+    esac
+  fi
+fi
 if [ "$action" != status ]; then
   if [ "$action" = update ] && [ "$state" = not-installed ]; then
     fail "Skill is not installed at $directory; run skill install $client first"

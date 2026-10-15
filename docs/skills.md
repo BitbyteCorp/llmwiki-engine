@@ -8,7 +8,15 @@ Skill 설치와 MCP 연결·OAuth 로그인은 별개다. 설치기는 로그인
 
 ## 내용
 ### 엔진에서 한 명령으로 설치와 갱신
-엔진의 공개 URL만 있으면 저장소를 복제하지 않고 macOS와 Linux에서 설치한다. `<ENGINE_URL>`은 실제 엔진 주소로 바꾸며, 마지막 클라이언트는 `claude-code`, `codex`, `hermes` 중에서 선택한다.
+엔진의 공개 URL만 있으면 저장소를 복제하지 않고 macOS와 Linux에서 설치한다. `<ENGINE_URL>`은 실제 엔진 주소로 바꾼다. 인수 없이 실행하면 터미널에서 클라이언트와 개인·프로젝트 범위를 선택한다.
+
+```bash
+curl -fsSL <ENGINE_URL>/skills/install.sh | sh
+```
+
+클라이언트는 Claude Code·Codex·Hermes 중 하나를 고른다. 기본값은 Claude Code와 개인 범위이며, 프로젝트 디렉터리의 기본값은 현재 디렉터리다. Hermes 프로젝트는 `.git`이 있는 루트를 지정한다. 복제본에서는 선택 전에 개인 범위(명시한 `--project`가 있으면 그 범위)의 상태도 표시하며, 원격 실행은 세 배포물의 불필요한 다운로드를 피하려고 선택한 대상의 상태만 확인한다. 미설치는 설치하고 오래된 설치는 갱신하며 최신 설치는 건너뛴다. 로컬 수정·관리 외 파일은 덮어쓸지 다시 묻고 기본값은 아니오다.
+
+자동화에서는 동작과 클라이언트(`claude-code`, `codex`, `hermes`)를 모두 지정한다.
 
 ```bash
 curl -fsSL <ENGINE_URL>/skills/install.sh | sh -s -- install claude-code
@@ -18,6 +26,8 @@ curl -fsSL <ENGINE_URL>/skills/install.sh | sh -s -- update codex --project /pat
 ```
 
 POSIX `sh`, 기본 파일 도구, `awk`, `sha256sum` 또는 macOS의 `shasum -a 256`, `curl` 또는 `wget`이 필요하다. Git, Node.js, pnpm, Python과 엔진 빌드는 필요 없다. `wget -qO- <ENGINE_URL>/skills/install.sh | sh -s -- install codex`도 가능하다. 설치기는 MCP 설정·OAuth 로그인·Hermes 프로젝트 신뢰 승인을 수행하지 않고 별도 단계를 출력한다.
+
+대화형 응답은 스크립트를 받는 표준 입력과 분리한 `/dev/tty`에서 읽는다. 제어 터미널이 없는 CI·컨테이너에서는 입력을 기다리지 않고 사용법을 출력하며 실패한다. `install`처럼 일부 인수만 지정하면 터미널에서 빠진 클라이언트·범위·디렉터리만 묻고, 명시한 값은 다시 묻지 않는다. 응답 중 EOF·Ctrl-C는 설치 파일을 쓰기 전에 중단한다.
 
 `install`, `status`, `update`는 선택적인 `--project <dir>`, `--force`를 받는다. `--force`의 수정 보호 경계와 상태는 [기존 설치와 로컬 수정 보호](#기존-설치와-로컬-수정-보호)를 따른다. 다른 엔진에서 자료를 받으려면 파이프 오른쪽에 `LLMWIKI_URL=https://other.example.com sh -s -- install codex`를 지정한다. 이 변수는 다운로드 주소만 바꾸며 MCP 연결 주소를 저장하지 않는다.
 
@@ -36,6 +46,7 @@ git clone https://github.com/BitbyteCorp/llmwiki-engine.git \
 비공개 저장소는 먼저 GitHub 접근 권한과 Git 인증을 준비한다. 이미 받은 저장소에서는 `git pull --ff-only`로 배포 자료를 갱신한 뒤 루트에서 다음 명령을 사용한다. `install`, `status`, `update`는 모두 `<claude-code|codex|hermes>`, 선택적인 `--project <dir>`, `--force`를 받는다.
 
 ```bash
+sh skills/install.sh
 sh skills/install.sh install codex --project /path/to/project
 sh skills/install.sh status codex --project /path/to/project
 sh skills/install.sh update codex --project /path/to/project
@@ -135,7 +146,7 @@ hermes skills install BitbyteCorp/llmwiki-engine/skills/llmwiki
 
 서버 주소·클라이언트 설정·명령 블록에는 복사 버튼이 있다. 복사 성공과 실패는 전역 알림으로 표시하며, 실패하면 내용을 직접 선택해 복사한다.
 
-Claude Code·Codex·Hermes를 선택하면 같은 기본 URL로 `curl -fsSL <기본 URL>/skills/install.sh | sh -s -- install <클라이언트>` 명령을 제공한다. 클라이언트 값은 각각 `claude-code`, `codex`, `hermes`다. macOS·Linux에서 저장소 복제나 `llmwiki` CLI 설치 없이 Skill을 설치하며, 명령 끝에 `--project /path/to/project`를 붙이면 프로젝트 범위를 선택한다. 설치는 MCP 연결·OAuth 로그인을 수행하지 않으므로 화면의 연결 등록과 로그인 단계를 별도로 완료한다. 저장소·CLI·클라이언트 기본 설치 경로는 이 문서의 다른 절에서 안내한다.
+Claude Code·Codex·Hermes를 선택하면 같은 기본 URL로 `curl -fsSL <기본 URL>/skills/install.sh | sh -s -- install <클라이언트>` 명령을 제공한다. 클라이언트 값은 각각 `claude-code`, `codex`, `hermes`다. 화면의 복사 명령은 선택한 클라이언트로 고정하며, `| sh`까지만 실행하면 대화형으로 선택한다. macOS·Linux에서 저장소 복제나 `llmwiki` CLI 설치 없이 Skill을 설치하며, 명령 끝에 `--project /path/to/project`를 붙이면 프로젝트 범위를 선택한다. 설치는 MCP 연결·OAuth 로그인을 수행하지 않으므로 화면의 연결 등록과 로그인 단계를 별도로 완료한다. 저장소·CLI·클라이언트 기본 설치 경로는 이 문서의 다른 절에서 안내한다.
 
 **연결 확인**은 기본 URL의 origin에서 다음 두 발견 문서만 가져온다.
 
