@@ -27,7 +27,7 @@ import type { User } from '../auth/users.types.js';
 import { HttpExceptionFilter } from '../common/filters/http-exception.filter.js';
 import { configureApp } from '../common/http/configure-app.js';
 import { CONFIG, DB } from '../common/tokens.js';
-import { apiIdToLegacyUuid, newId } from '../common/ids.js';
+import { apiIdToLegacyUuid, newId, toStorageId } from '../common/ids.js';
 import { loadConfig } from '../config.js';
 import { openDb, runMigrations, type Db } from '../db/index.js';
 import { EventsService } from '../events/events.service.js';
@@ -35,8 +35,9 @@ import { NoteWriterService } from '../jobs/note-writer.service.js';
 import { WriteJobsRepository } from '../jobs/write-jobs.repository.js';
 import { WriteJobsService } from '../jobs/write-jobs.service.js';
 import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
-import type { AgentService } from '../agent/agent.service.js';
+import { AgentService } from '../agent/agent.service.js';
 import type { IndexerService } from '../rag/indexer.service.js';
+import { SearchService } from '../rag/search.service.js';
 import { UploadsService } from '../uploads/uploads.service.js';
 import { ImportsRepository } from './imports.repository.js';
 import { IngestService } from './ingest.service.js';
@@ -46,18 +47,23 @@ const git = promisify(execFile);
 const fixtures: Array<{ dir: string; db: Db; jobs: WriteJobsService; ingest: IngestService }> = [];
 const apps: INestApplication[] = [];
 const servers: Server[] = [];
+const providers: Array<{ close(): Promise<void> }> = [];
 afterEach(async () => {
   for (const app of apps.splice(0)) { (app.getHttpServer() as Server).closeAllConnections(); await app.close(); }
   for (const server of servers.splice(0)) { server.closeAllConnections(); await new Promise<void>((resolve) => server.close(() => resolve())); }
   for (const item of fixtures.splice(0)) { await item.jobs.stop(); item.ingest.onModuleDestroy(); item.db.close(); await rm(item.dir, { recursive: true, force: true }); }
+  for (const provider of providers.splice(0)) await provider.close();
   vi.restoreAllMocks();
 });
 function provenanceContext(input: string): Record<string, string> {
   return JSON.parse(input.match(/^Provenance: (.+)$/m)![1]!);
 }
-async function fixture() {
+async function fixture(openaiBaseUrl?: string) {
   const dir = await mkdtemp(join(tmpdir(), 'llmwiki-ingest-'));
-  const config = loadConfig({ NODE_ENV: 'test', DATA_DIR: dir, JOBS_AUTOSTART: 'false', PUBLIC_URL: 'http://localhost:3000' });
+  const config = loadConfig({
+    NODE_ENV: 'test', DATA_DIR: dir, JOBS_AUTOSTART: 'false', PUBLIC_URL: 'http://localhost:3000',
+    ...(openaiBaseUrl ? { OPENAI_API_KEY: 'test-key', OPENAI_BASE_URL: openaiBaseUrl, OPENAI_MAX_RETRIES: '0' } : {}),
+  });
   const db = openDb(':memory:'); runMigrations(db);
   const users = new UsersService(new UsersRepository(db));
   const owner = await users.create({ email: 'editor@example.com', role: 'editor' });
@@ -83,7 +89,7 @@ async function fixture() {
   const ingest = new IngestService(imports, uploads, writer, jobs, repository, repo, events, new AuditService(db));
   ingest.start();
   fixtures.push({ dir, db, jobs, ingest });
-  return { dir, db, repo, owner, other, users, config, log, jobs, uploads, ingest, imports, repository, agent, observed, events, writer };
+  return { dir, db, repo, owner, other, users, config, log, jobs, uploads, ingest, imports, repository, agent, observed, events, writer, acl };
 }
 
 describe('IngestService with real uploads, SQLite and git', () => {
@@ -112,11 +118,12 @@ describe('IngestService with real uploads, SQLite and git', () => {
     expect(queued.input).toContain(item.rawPaths[1]);
     expect(queued.input).toContain('Explain the key idea');
     expect(queued.input).toContain(`Read the provenance/source Markdown at ${item.rawPaths[1]} completely`);
+    expect(queued.input).toContain('The engine verifies that this job (parent or its children) has read the provenance/source Markdown completely before accepting completion.');
     expect(provenanceContext(queued.input)).toEqual({
       importId: result.importId, kind: 'text', source: 'text:knowledge.md',
       sha256: sha, filename: 'knowledge.md', path: item.rawPaths[1],
     });
-    expect(ctx.repository.getRequiredReads(queued.id)).toEqual([]);
+    expect(ctx.repository.getRequiredReads(queued.id)).toEqual([item.rawPaths[1]]);
     expect(ctx.jobs.events(queued.id).find((event) => event.phase === 'queued')!.detail!.sourcePaths).toEqual(item.rawPaths);
     ctx.jobs.start();
     await vi.waitFor(() => expect(ctx.ingest.get(result.importId, ctx.owner.id).status).toBe('succeeded'), { timeout: 10_000 });
@@ -125,6 +132,38 @@ describe('IngestService with real uploads, SQLite and git', () => {
     expect(ctx.agent.runWrite).toHaveBeenCalledTimes(1);
     expect(ctx.jobs.list().filter((job) => job.kind === 'agent')).toHaveLength(1);
   });
+  it('fails a small-document import that reads only five pages of its provenance and makes no changes', async () => {
+    let sourcePath = '';
+    let finalAttempts = 0;
+    // A static import would pull this test-only provider outside the production TypeScript root.
+    const { startFakeOpenAI }: {
+      startFakeOpenAI(script: (_request: unknown, turn: number) => string | { name: string; arguments: Record<string, unknown> }): Promise<{ url: string; close(): Promise<void> }>;
+    } = await import(new URL('../../test/fake-openai.ts', import.meta.url).href);
+    const fake = await startFakeOpenAI((_request, turn) => {
+      if (turn < 5) return { name: 'read_file', arguments: { path: sourcePath, offset: turn * 5, limit: 5 } };
+      return `Finished without changes ${++finalAttempts}`;
+    });
+    providers.push(fake);
+    const ctx = await fixture(fake.url);
+    const agent = new AgentService(ctx.config, ctx.log, ctx.repo, new SearchService(ctx.config, ctx.db, ctx.log, ctx.acl, ctx.repo), ctx.acl);
+    vi.mocked(ctx.agent.runWrite).mockImplementation(agent.runWrite.bind(agent));
+    const text = Array.from({ length: 100 }, (_, index) => `Durable fact ${index}\n`).join('');
+    const result = await ctx.ingest.ingest({ userId: ctx.owner.id, kind: 'text', text });
+    const item = ctx.ingest.get(result.importId, ctx.owner.id);
+    sourcePath = item.rawPaths[1]!;
+    expect(ctx.repository.getRequiredReads(result.jobIds[0]!)).toEqual([sourcePath]);
+    const rawHead = await ctx.repo.headSha();
+    ctx.jobs.start();
+    const error = `unread assigned sources: 1/1 (${sourcePath})`;
+    await vi.waitFor(() => expect(ctx.ingest.get(result.importId, ctx.owner.id)).toMatchObject({
+      status: 'failed', error: `batch 1/1: ${error}`, jobs: [{ files: 0, status: 'failed', error }],
+    }), { timeout: 15_000 });
+    await ctx.jobs.stop();
+    expect(ctx.jobs.get(result.jobIds[0]!)).toMatchObject({ status: 'failed', summary: null, mergeSha: null, error });
+    expect(finalAttempts).toBe(3);
+    expect(await ctx.repo.headSha()).toBe(rawHead);
+    expect(await ctx.repo.readFile('wiki/imported.md')).toBeNull();
+  }, 20_000);
   it.each([40_000, 40_001])('only materializes section files above the document threshold (%i chars)', async (chars) => {
     const ctx = await fixture();
     const heading = '# Threshold\n';
@@ -137,7 +176,7 @@ describe('IngestService with real uploads, SQLite and git', () => {
     const requiredReads = ctx.repository.getRequiredReads(result.jobIds[0]!);
     if (chars === 40_000) {
       expect(item.rawPaths).toHaveLength(2);
-      expect(requiredReads).toEqual([]);
+      expect(requiredReads).toEqual([item.rawPaths[1]]);
       expect(manifest).toContain(text);
       expect(ctx.jobs.get(result.jobIds[0]!)!.input).toContain(`Read the provenance/source Markdown at ${item.rawPaths[1]} completely`);
     } else {
@@ -395,20 +434,30 @@ describe('IngestService with real uploads, SQLite and git', () => {
     expect(ctx.jobs.get(retry.id)!.status).toBe('failed');
     expect(await ctx.repo.readFile('wiki/imported.md')).toContain(original.rawPaths[1]);
   });
-  it.each(['read', 'startup'] as const)('recovers missed integration retry chains on %s', async (recovery) => {
+  it.each([
+    ['read', 'new'], ['startup', 'new'], ['read', 'legacy'], ['startup', 'legacy'],
+  ] as const)('recovers missed integration retry chains on %s while preserving %s required reads', async (recovery, version) => {
     const ctx = await fixture();
     vi.mocked(ctx.agent.runWrite).mockRejectedValueOnce(new Error('Original failed')).mockRejectedValueOnce(new Error('Retry failed'));
     const result = await ctx.ingest.ingest({ userId: ctx.owner.id, kind: 'text', text: 'Recoverable source' });
+    const jobId = result.jobIds[0]!;
+    const requiredReads = version === 'legacy' ? [] : [ctx.ingest.get(result.importId, ctx.owner.id).rawPaths[1]!];
+    if (version === 'legacy') ctx.db.prepare('UPDATE write_jobs SET required_reads = ? WHERE id = ?').run('[]', toStorageId(jobId));
+    ctx.ingest.onModuleDestroy();
+    ctx.ingest.start();
+    expect(ctx.repository.getRequiredReads(jobId)).toEqual(requiredReads);
     ctx.jobs.start();
     await vi.waitFor(() => expect(ctx.ingest.get(result.importId, ctx.owner.id).status).toBe('failed'), { timeout: 10_000 });
     await ctx.jobs.stop();
     ctx.ingest.onModuleDestroy();
 
     const retry = ctx.jobs.retry(result.jobIds[0]!);
+    expect(ctx.repository.getRequiredReads(retry.id)).toEqual(requiredReads);
     ctx.jobs.start();
     await vi.waitFor(() => expect(ctx.jobs.get(retry.id)!.status).toBe('failed'), { timeout: 10_000 });
     await ctx.jobs.stop();
     const nextRetry = ctx.jobs.retry(retry.id);
+    expect(ctx.repository.getRequiredReads(nextRetry.id)).toEqual(requiredReads);
     expect(ctx.imports.get(result.importId)).toMatchObject({ jobs: [{ jobId: result.jobIds[0] }], status: 'failed', error: 'batch 1/1: Original failed' });
 
     if (recovery === 'startup') {

@@ -170,6 +170,7 @@ export class IngestService implements OnApplicationBootstrap, OnModuleDestroy {
             'The final summary must account for EVERY listed file with its target wiki note(s) or deliberate skip reason.',
           ] : [
             `Read the provenance/source Markdown at ${sourcePath} completely; it contains the extracted body. Continue truncated reads with nextOffset/nextCharOffset. Read its linked source and attachments as needed.`,
+            'The engine verifies that this job (parent or its children) has read the provenance/source Markdown completely before accepting completion. An incomplete read causes the job to fail, not succeed.',
             'Integrate durable knowledge into wiki notes or deliberately skip empty, navigation-only, duplicate, transient, or secret/PII content, and explain the outcome in the final summary.',
           ]),
           'Search main and read relevant existing wiki notes. Extend notes created by earlier batches rather than duplicating them.',
@@ -185,7 +186,7 @@ export class IngestService implements OnApplicationBootstrap, OnModuleDestroy {
         const job = this.jobs.submit({
           userId, source: 'import', client: 'ingest', input: integrationInput,
           sourcePaths: [originalPath, sourcePath, ...files],
-          requiredReads: files,
+          requiredReads: files.length ? files : [sourcePath],
         });
         return { jobId: job.id, files };
       });
