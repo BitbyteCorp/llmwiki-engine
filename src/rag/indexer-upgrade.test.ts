@@ -52,13 +52,16 @@ it('pins last-touch metadata to the indexed snapshot when HEAD advances during p
   await indexer.syncToHead();
   const indexed = await save('## Heading\nSnapshotword');
   const [touch] = await repo.log({ path: 'wiki/note.md', limit: 1, ref: indexed });
-  const read = repo.readFile.bind(repo);
-  vi.spyOn(repo, 'readFile').mockImplementationOnce(async (path, ref) => {
-    const markdown = await read(path, ref);
+  const read = repo.readFiles.bind(repo);
+  const lastModified = vi.spyOn(repo, 'lastModified');
+  const readFiles = vi.spyOn(repo, 'readFiles').mockImplementationOnce(async (paths, ref) => {
+    const markdown = await read(paths, ref);
     await save('## Heading\nFutureword', { name: 'Future Author', email: 'future@example.test' });
     return markdown;
   });
   await indexer.syncToHead();
+  expect(readFiles).toHaveBeenCalledWith(['wiki/note.md'], indexed);
+  expect(lastModified).toHaveBeenCalledWith(['wiki/note.md'], indexed);
   expect(await indexer.status()).toMatchObject({ indexedSha: indexed, headSha: await repo.headSha(), syncing: false });
   expect((await indexer.status()).headSha).not.toBe(indexed);
   expect(db.prepare("SELECT author,updated_at,content FROM chunks WHERE path='wiki/note.md'").get()).toEqual({

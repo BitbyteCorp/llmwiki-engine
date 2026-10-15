@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
 import { posix } from 'node:path';
+import GithubSlugger from 'github-slugger';
 import matter from 'gray-matter';
-import Markdown from 'react-markdown';
-import rehypeSlug from 'rehype-slug';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
+import remarkParse from 'remark-parse';
+import remarkRehype from 'remark-rehype';
+import { unified } from 'unified';
 import { NOTE_TYPES, type NoteType } from '../knowledge/note-metadata.js';
 import type { SearchHit } from './types.js';
 import { normalizeLinkTarget } from './link-resolver.js';
@@ -36,37 +38,40 @@ interface MarkdownNode {
   children?: MarkdownNode[];
 }
 
+const headingProcessor = unified().use(remarkParse).use(remarkGfm).use(remarkMath)
+  .use(remarkRehype, { allowDangerousHtml: true }).freeze();
+
 // Match the renderer's heading text and IDs, including entities, inline markup,
 // setext headings, and all duplicate headings (even ones without indexed prose).
 function headingsIn(body: string): Heading[] {
   const headings: Heading[] = [];
-  const text = (node: MarkdownNode): string => node.type === 'text' ? node.value ?? ''
-    : (node.children ?? []).map(text).join('');
+  const slugs = new GithubSlugger();
+  const tree = headingProcessor.runSync(headingProcessor.parse(body));
   // The web's wikilink plugin displays aliases, not [[target|alias]] syntax.
   // Normalize only parsed heading text and leave inline code/ordinary links alone.
-  const visibleWikiText = () => (tree: MarkdownNode) => {
-    const visit = (node: MarkdownNode, inHeading: boolean) => {
-      if (node.tagName === 'code' || node.tagName === 'a') return;
-      const heading = inHeading || Boolean(node.tagName && /^h[1-6]$/.test(node.tagName));
-      if (heading && node.type === 'text' && node.value) {
-        node.value = node.value.replace(/\[\[([^\[\]\n|]+)(?:\|([^\[\]\n]+))?\]\]/g,
-          (raw: string, target: string, alias: string | undefined) => target.trim() ? alias?.trim() || target.trim() : raw);
-      }
-      for (const child of node.children ?? []) visit(child, heading);
-    };
-    visit(tree, false);
+  const text = (node: MarkdownNode, literal = false): string => {
+    if (node.type === 'text') {
+      const value = node.value ?? '';
+      return literal ? value : value.replace(/\[\[([^\[\]\n|]+)(?:\|([^\[\]\n]+))?\]\]/g,
+        (raw: string, target: string, alias: string | undefined) => target.trim() ? alias?.trim() || target.trim() : raw);
+    }
+    const skipWiki = literal || node.tagName === 'code' || node.tagName === 'a';
+    return (node.children ?? []).map((child) => text(child, skipWiki)).join('');
   };
-  const collect = () => (tree: MarkdownNode) => {
-    const visit = (node: MarkdownNode) => {
-      if (node.tagName && /^h[1-6]$/.test(node.tagName) && node.position?.start.offset !== undefined) {
-        headings.push({ level: Number(node.tagName[1]), text: text(node),
-          anchor: String(node.properties?.id ?? ''), start: node.position.start.offset });
+  // rehype-slug and ReactMarkdown's postprocessing both use sibling indexOf
+  // searches while walking the whole tree. Collect and slug headings in one
+  // indexed traversal instead, without constructing discarded React elements.
+  const visit = (node: MarkdownNode) => {
+    if (node.tagName && /^h[1-6]$/.test(node.tagName)) {
+      const value = text(node);
+      const anchor = String(node.properties?.id || slugs.slug(value));
+      if (node.position?.start.offset !== undefined) {
+        headings.push({ level: Number(node.tagName[1]), text: value, anchor, start: node.position.start.offset });
       }
-      for (const child of node.children ?? []) visit(child);
-    };
-    visit(tree);
+    }
+    for (const child of node.children ?? []) visit(child);
   };
-  Markdown({ children: body, remarkPlugins: [remarkGfm, remarkMath], rehypePlugins: [visibleWikiText, rehypeSlug, collect], skipHtml: true });
+  visit(tree);
   return headings;
 }
 

@@ -1,3 +1,4 @@
+import { setImmediate } from 'node:timers/promises';
 import { Inject, Injectable, Optional, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import type Database from 'better-sqlite3';
 import type { Logger } from 'pino';
@@ -45,7 +46,7 @@ export class IndexerService implements OnModuleInit, OnModuleDestroy {
       this.pollTask = (async () => {
         const head = await this.repo.headSha();
         const pending = this.config.openaiApiKey && this.db.prepare('SELECT 1 FROM chunks WHERE vector_pending = 1 LIMIT 1').get();
-        if (!this.syncing && (this.needsRebuild || head !== this.meta('indexed_sha') || pending)) await this.syncToHead();
+        if (!this.syncing && (this.needsRebuild || this.meta('sync_incomplete') === '1' || head !== this.meta('indexed_sha') || pending)) await this.syncToHead();
       })().catch((error: unknown) => {
         this.setMeta('last_error', error instanceof Error ? error.message : String(error));
         this.log.error({ err: error }, 'External knowledge index synchronization failed');
@@ -77,7 +78,7 @@ export class IndexerService implements OnModuleInit, OnModuleDestroy {
       })();
       this.needsRebuild = true;
     }
-    if (this.meta('layout_version') !== LAYOUT_VERSION) this.needsRebuild = true;
+    if (this.meta('layout_version') !== LAYOUT_VERSION || this.meta('sync_incomplete') === '1') this.needsRebuild = true;
     this.vectorSignature = signature;
   }
 
@@ -106,7 +107,8 @@ export class IndexerService implements OnModuleInit, OnModuleDestroy {
     return { indexedSha, headSha, syncing: this.syncing, lastSyncAt: this.meta('last_sync_at'), lastError,
       pendingVectors, embedding: { configured: Boolean(this.config.openaiApiKey), model: this.config.embeddingModel,
         dimensions: this.config.embeddingDimensions,
-        ready: Boolean(this.config.openaiApiKey) && !lastError && !this.syncing && pendingVectors === 0 && indexedSha === headSha } };
+        ready: Boolean(this.config.openaiApiKey) && !lastError && !this.syncing && this.meta('sync_incomplete') !== '1'
+          && pendingVectors === 0 && indexedSha === headSha } };
   }
 
   private serial<T>(operation: () => Promise<T>): Promise<T> {
@@ -154,13 +156,21 @@ export class IndexerService implements OnModuleInit, OnModuleDestroy {
       if (change.status !== 'D' && isIndexedPath(change.path)) updated.add(change.path);
     }
     const notes: PreparedNote[] = [];
-    for (const path of updated) {
-      const markdown = await repo.readFile(path, head);
-      if (markdown !== null) {
-        const [touch] = await repo.log({ path, limit: 1, ref: head });
-        notes.push({ path, chunks: chunkNote(path, markdown), targets: wikilinkTargets(markdown),
-          updatedAt: touch?.committedAt ?? touch?.date ?? null, author: touch ? `${touch.authorName} <${touch.authorEmail}>` : null,
-          normalizedHash: normalizedNoteHash(markdown) });
+    if (updated.size) {
+      const paths = [...updated];
+      const [contents, lastModified] = await Promise.all([
+        repo.readFiles(paths, head),
+        repo.lastModified(paths, head),
+      ]);
+      for (const path of paths) {
+        const markdown = contents.get(path);
+        if (markdown != null) {
+          const touch = lastModified.get(path);
+          notes.push({ path, chunks: chunkNote(path, markdown), targets: wikilinkTargets(markdown),
+            updatedAt: touch?.committedAt ?? touch?.date ?? null, author: touch ? `${touch.authorName} <${touch.authorEmail}>` : null,
+            normalizedHash: normalizedNoteHash(markdown) });
+        }
+        await setImmediate();
       }
     }
     const pending = full ? [] : (db.prepare(
@@ -198,65 +208,111 @@ export class IndexerService implements OnModuleInit, OnModuleDestroy {
       }
     }
     const allPaths = full || relevant.length ? (await repo.listFiles(undefined, head)).filter(isIndexedPath).sort() : null;
+    const aliasesByPath = new Map<string, string[]>();
+    if (allPaths) {
+      for (const note of db.prepare('SELECT path,aliases_json FROM chunks WHERE ordinal = 0').all() as Array<{ path: string; aliases_json: string }>) {
+        if (!removed.has(note.path)) aliasesByPath.set(note.path, JSON.parse(note.aliases_json) as string[]);
+      }
+      for (const note of notes) aliasesByPath.set(note.path, note.chunks[0]?.aliases ?? []);
+    }
+    const resolver = allPaths ? new NoteTargetResolver(allPaths, aliasesByPath) : null;
+    const ids = db.prepare('SELECT id FROM chunks WHERE path = ?');
+    const deleteVector = db.prepare('DELETE FROM chunk_vectors WHERE chunk_id = ?');
+    const deleteChunks = db.prepare('DELETE FROM chunks WHERE path = ?');
+    const deleteLinks = db.prepare('DELETE FROM links WHERE source_path = ?');
+    const insertChunk = db.prepare(`INSERT INTO chunks
+      (path,title,heading,content,embedding_text,content_hash,kind,ordinal,vector_pending,
+       tags,tags_json,anchor,source_start,source_end,updated_at,author,normalized_hash,
+       note_type,description,aliases,aliases_json)
+      VALUES (?,?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    const insertLink = db.prepare('INSERT INTO links(source_path,target_name,target_text,target_path) VALUES (?,?,?,?)');
+    const cache = db.prepare('INSERT OR REPLACE INTO embedding_cache(content_hash,model,dimensions,embedding) VALUES (?,?,?,?)');
+    const insertVector = db.prepare('INSERT INTO chunk_vectors(chunk_id,embedding) VALUES (?,?)');
+    const markReady = db.prepare('UPDATE chunks SET vector_pending = 0 WHERE id = ?');
+    const bumpCatalog = () => {
+      this.setMeta('catalog_revision', String(Number(this.meta('catalog_revision') ?? '0') + 1));
+    };
+    // Each commit is independently readable. A durable marker invalidates the
+    // final checkpoint until all notes, vectors and link resolutions finish.
+    this.setMeta('sync_incomplete', '1');
+    const cacheEntries = [...generated];
+    for (let offset = 0; offset < cacheEntries.length; offset += 64) {
+      db.transaction(() => {
+        for (const [hash, bytes] of cacheEntries.slice(offset, offset + 64)) {
+          cache.run(hash, config.embeddingModel, config.embeddingDimensions, bytes);
+        }
+      })();
+      await setImmediate();
+    }
+    if (full) {
+      for (const row of db.prepare('SELECT path FROM chunks UNION SELECT source_path AS path FROM links').all() as Array<{ path: string }>) {
+        removed.add(row.path);
+      }
+    }
+    const notesByPath = new Map(notes.map((note) => [note.path, note]));
+    for (const path of removed) {
+      db.transaction(() => {
+        for (const { id } of ids.all(path) as Array<{ id: number }>) deleteVector.run(BigInt(id));
+        deleteChunks.run(path);
+        deleteLinks.run(path);
+        const note = notesByPath.get(path);
+        if (note) {
+          for (const chunk of note.chunks) {
+            const { lastInsertRowid } = insertChunk.run(note.path, chunk.title, chunk.heading, chunk.content,
+              chunk.embeddingText, chunk.contentHash, chunk.kind, chunk.ordinal, chunk.tags.join(' '), JSON.stringify(chunk.tags),
+              chunk.anchor, chunk.sourceStart, chunk.sourceEnd, note.updatedAt, note.author, note.normalizedHash,
+              chunk.type, chunk.description, chunk.aliases.join(' '), JSON.stringify(chunk.aliases));
+            const vector = vectors.get(chunk.contentHash);
+            if (vector) {
+              insertVector.run(BigInt(lastInsertRowid), vector);
+              markReady.run(lastInsertRowid);
+            }
+          }
+          for (const target of note.targets) {
+            insertLink.run(note.path, target.name, target.text, resolver?.resolve(target.text || target.name).path ?? null);
+          }
+        }
+        bumpCatalog();
+      })();
+      await setImmediate();
+    }
+    for (let offset = 0; offset < pending.length; offset += 64) {
+      db.transaction(() => {
+        for (const chunk of pending.slice(offset, offset + 64)) {
+          const vector = vectors.get(chunk.content_hash);
+          if (vector) {
+            insertVector.run(BigInt(chunk.id), vector);
+            markReady.run(chunk.id);
+          }
+        }
+        bumpCatalog();
+      })();
+      await setImmediate();
+    }
+    if (resolver) {
+      const targets = db.prepare('SELECT target_name,target_text FROM links GROUP BY target_name').all() as Array<{ target_name: string; target_text: string }>;
+      const updateLink = db.prepare('UPDATE links SET target_path = ? WHERE target_name = ?');
+      for (let offset = 0; offset < targets.length; offset += 64) {
+        db.transaction(() => {
+          for (const target of targets.slice(offset, offset + 64)) {
+            updateLink.run(resolver.resolve(target.target_text || target.target_name).path, target.target_name);
+          }
+          bumpCatalog();
+        })();
+        await setImmediate();
+      }
+    }
     db.transaction(() => {
-      if (full) {
-        db.exec('DELETE FROM chunk_vectors; DELETE FROM chunks; DELETE FROM links');
-      } else {
-        const ids = db.prepare('SELECT id FROM chunks WHERE path = ?');
-        const deleteVector = db.prepare('DELETE FROM chunk_vectors WHERE chunk_id = ?');
-        const deleteChunks = db.prepare('DELETE FROM chunks WHERE path = ?');
-        const deleteLinks = db.prepare('DELETE FROM links WHERE source_path = ?');
-        for (const path of removed) {
-          for (const { id } of ids.all(path) as Array<{ id: number }>) deleteVector.run(BigInt(id));
-          deleteChunks.run(path);
-          deleteLinks.run(path);
-        }
-      }
-      const insertChunk = db.prepare(`INSERT INTO chunks
-        (path,title,heading,content,embedding_text,content_hash,kind,ordinal,vector_pending,
-         tags,tags_json,anchor,source_start,source_end,updated_at,author,normalized_hash,
-         note_type,description,aliases,aliases_json)
-        VALUES (?,?,?,?,?,?,?,?,1,?,?,?,?,?,?,?,?,?,?,?,?)`);
-      const insertLink = db.prepare('INSERT INTO links(source_path,target_name,target_text,target_path) VALUES (?,?,?,NULL)');
-      for (const note of notes) {
-        for (const chunk of note.chunks) insertChunk.run(note.path, chunk.title, chunk.heading, chunk.content,
-          chunk.embeddingText, chunk.contentHash, chunk.kind, chunk.ordinal, chunk.tags.join(' '), JSON.stringify(chunk.tags),
-          chunk.anchor, chunk.sourceStart, chunk.sourceEnd, note.updatedAt, note.author, note.normalizedHash,
-          chunk.type, chunk.description, chunk.aliases.join(' '), JSON.stringify(chunk.aliases));
-        for (const target of note.targets) insertLink.run(note.path, target.name, target.text);
-      }
-      const cache = db.prepare('INSERT OR REPLACE INTO embedding_cache(content_hash,model,dimensions,embedding) VALUES (?,?,?,?)');
-      for (const [hash, bytes] of generated) cache.run(hash, config.embeddingModel, config.embeddingDimensions, bytes);
-      const insertVector = db.prepare('INSERT INTO chunk_vectors(chunk_id,embedding) VALUES (?,?)');
-      const markReady = db.prepare('UPDATE chunks SET vector_pending = 0 WHERE id = ?');
-      for (const chunk of db.prepare('SELECT id,content_hash FROM chunks WHERE vector_pending = 1').all() as PendingChunk[]) {
-        const vector = vectors.get(chunk.content_hash);
-        if (vector) {
-          insertVector.run(BigInt(chunk.id), vector);
-          markReady.run(chunk.id);
-        }
-      }
-      if (allPaths) {
-        const aliasesByPath = new Map<string, string[]>();
-        for (const note of db.prepare('SELECT path,aliases_json FROM chunks WHERE ordinal = 0').all() as Array<{ path: string; aliases_json: string }>) {
-          aliasesByPath.set(note.path, JSON.parse(note.aliases_json) as string[]);
-        }
-        const resolver = new NoteTargetResolver(allPaths, aliasesByPath);
-        const updateLink = db.prepare('UPDATE links SET target_path = ? WHERE target_name = ?');
-        for (const { target_name, target_text } of db.prepare('SELECT target_name,target_text FROM links GROUP BY target_name').all() as Array<{ target_name: string; target_text: string }>) {
-          updateLink.run(resolver.resolve(target_text || target_name).path, target_name);
-        }
-      }
       this.setMeta('embedding_model', config.embeddingModel);
       this.setMeta('embedding_dimensions', String(config.embeddingDimensions));
       this.setMeta('indexed_sha', head);
       this.setMeta('layout_version', LAYOUT_VERSION);
       this.setMeta('last_sync_at', new Date().toISOString());
       this.setMeta('last_error', embeddingError);
+      this.setMeta('sync_incomplete', null);
       const pending = db.prepare('SELECT count(*) AS count FROM chunks WHERE vector_pending = 1').get() as { count: number };
       if (force && config.openaiApiKey && pending.count === 0 && embeddingError === null) this.setMeta('vector_mismatch', '0');
-      // SHA can stay unchanged during a full/layout rebuild or pending-vector retry.
-      this.setMeta('catalog_revision', String(Number(this.meta('catalog_revision') ?? '0') + 1));
+      bumpCatalog();
     })();
     this.needsRebuild = false;
     this.events?.publish({ type: 'index.updated', sha: head,

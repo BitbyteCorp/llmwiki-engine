@@ -184,6 +184,7 @@ export class SearchService {
     let hybrid = false;
     if (!this.config.openaiApiKey) reason = 'no_api_key';
     else if (!this.vectorsMatchConfig()) reason = 'vector_mismatch';
+    else if (this.meta('sync_incomplete') === '1') reason = 'index_stale';
     else if (this.db.prepare(`SELECT 1 FROM chunks c WHERE c.vector_pending=1${filter.sql} LIMIT 1`).get(...filter.params)) reason = 'index_stale';
     if (!reason && this.repo && await this.repo.headSha().catch(() => null) !== this.meta('indexed_sha')) reason = 'index_stale';
     signal?.throwIfAborted();

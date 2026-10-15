@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, win32 } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,6 +21,7 @@ const metadataFormat = '%(trailers:only,unfold)';
 const emptyTree = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 const commitFormat = `%H%x00%P%x00%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI%x00%s%x00%b%x00${metadataFormat}%x00`;
 let mergeTail: Promise<void> = Promise.resolve();
+class MissingBlobError extends Error {}
 
 function missing(error: unknown): boolean { return error !== null && typeof error === 'object' && 'code' in error && error.code === 'ENOENT'; }
 export function repoPath(path: string, allowEmpty = false): string {
@@ -88,6 +89,72 @@ class Git {
       else resolve(stdout);
     });
     return promise;
+  }
+  /** Parse byte-sized frames before decoding: UTF-8 and embedded newlines may cross chunks. */
+  async readBlobs(cwd: string, oids: readonly string[]): Promise<Map<string, string | null>> {
+    const result = new Map<string, string | null>();
+    if (!oids.length) return result;
+    const child = spawn('git', ['cat-file', '--batch'], { cwd, env: this.env, stdio: ['pipe', 'pipe', 'pipe'] });
+    let stderr = '';
+    child.stderr.on('data', (chunk: Buffer) => { if (stderr.length < 65536) stderr += chunk.toString('utf8'); });
+    const exited = new Promise<void>((resolve, reject) => {
+      child.on('error', reject);
+      child.on('close', (code, signal) => {
+        if (code === 0) resolve();
+        else reject(Object.assign(new Error(`git cat-file --batch failed (${code ?? signal})`), { code, stderr }));
+      });
+    });
+    child.stdin.on('error', () => { /* The exit status supplies the useful failure. */ });
+    const parsed = (async () => {
+      let header = Buffer.alloc(0);
+      let content: Buffer | undefined;
+      let copied = 0;
+      let index = 0;
+      for await (const chunk of child.stdout) {
+        const bytes = chunk as Buffer;
+        let offset = 0;
+        while (offset < bytes.length) {
+          if (content !== undefined) {
+            const count = Math.min(content.length - copied, bytes.length - offset);
+            bytes.copy(content, copied, offset, offset + count);
+            copied += count;
+            offset += count;
+            if (copied !== content.length || offset === bytes.length) continue;
+            if (bytes[offset++] !== 10) throw new Error('Invalid git batch blob terminator');
+            result.set(oids[index++]!, content.toString('utf8'));
+            content = undefined;
+            continue;
+          }
+          const newline = bytes.indexOf(10, offset);
+          if (newline === -1) {
+            header = Buffer.concat([header, bytes.subarray(offset)]);
+            break;
+          }
+          const line = header.length
+            ? Buffer.concat([header, bytes.subarray(offset, newline)]).toString('ascii')
+            : bytes.toString('ascii', offset, newline);
+          header = Buffer.alloc(0);
+          offset = newline + 1;
+          const fields = line.split(' ');
+          if (index >= oids.length || fields[0] !== oids[index]) throw new Error('Unexpected git batch object');
+          if (fields.length === 2 && fields[1] === 'missing') {
+            result.set(oids[index++]!, null);
+            continue;
+          }
+          const size = Number(fields[2]);
+          if (fields.length !== 3 || fields[1] !== 'blob' || !Number.isSafeInteger(size) || size < 0) {
+            throw new Error(`Invalid git batch blob header: ${line}`);
+          }
+          content = Buffer.allocUnsafe(size);
+          copied = 0;
+        }
+      }
+      if (header.length || content !== undefined || index !== oids.length) throw new Error('Incomplete git batch blob response');
+    })();
+    child.stdin.end(`${oids.join('\n')}\n`);
+    try { await Promise.all([parsed, exited]); }
+    catch (error) { child.kill(); throw error; }
+    return result;
   }
   async hasRef(cwd: string, ref: string): Promise<boolean> {
     try { await this.run(cwd, ['rev-parse', '--verify', '--quiet', '--end-of-options', ref]); return true; }
@@ -230,7 +297,7 @@ export class KnowledgeRepo {
   private readonly resolving = new Map<string, Promise<string>>();
   private readonly verifiedShas = new Map<string, true>();
   private readonly trees = new ReadCache<SnapshotTree>(16, 16 * 1024 * 1024, (tree) => tree.bytes);
-  private readonly contents = new ReadCache<string>(256, 16 * 1024 * 1024, (value) => value.length * 2);
+  private readonly contents = new ReadCache<string>(Infinity, 16 * 1024 * 1024, (value) => value.length * 2 + 128);
   private readonly histories = new ReadCache<CommitInfo[]>(128, 16 * 1024 * 1024);
   private readonly blames = new ReadCache<BlameRange[]>(128, 8 * 1024 * 1024);
   private readonly changedFiles = new ReadCache<FileChange[]>(1024, 8 * 1024 * 1024);
@@ -347,13 +414,86 @@ export class KnowledgeRepo {
       commits(await this.git.run(this.path, ['show', '-s', `--format=${commitFormat}`, sha]))[0]!);
   }
   async readFile(path: string, ref = 'main'): Promise<string | null> {
-    const safe = repoPath(path);
+    return (await this.readFiles([path], ref)).get(path)!;
+  }
+  /** Read one immutable snapshot with at most one cat-file process for all uncached blobs. */
+  async readFiles(paths: readonly string[], ref = 'main'): Promise<Map<string, string | null>> {
+    const selected = paths.map((path) => ({ path, safe: repoPath(path) }));
+    if (!selected.length) return new Map();
     const sha = await this.resolveRef(ref);
-    const entry = (await this.snapshotTree(sha)).entries.get(safe);
-    if (!entry) return null;
-    if (entry.mode === '120000') throw new Error(`Symlinks are not readable notes: ${path}`);
-    if (entry.mode === '160000') return null;
-    return this.contents.get(entry.oid, () => this.git.run(this.path, ['cat-file', 'blob', entry.oid]));
+    const tree = await this.snapshotTree(sha);
+    for (const { path, safe } of selected) {
+      if (tree.entries.get(safe)?.mode === '120000') throw new Error(`Symlinks are not readable notes: ${path}`);
+    }
+    const loads = new Map<string, PromiseWithResolvers<string>>();
+    const reads = selected.map(async ({ path, safe }): Promise<[string, string | null]> => {
+      const entry = tree.entries.get(safe);
+      if (!entry || entry.mode === '160000') return [path, null];
+      try {
+        const content = await this.contents.get(entry.oid, () => {
+          const load = Promise.withResolvers<string>();
+          loads.set(entry.oid, load);
+          return load.promise;
+        });
+        return [path, content];
+      } catch (error) {
+        if (error instanceof MissingBlobError) return [path, null];
+        throw error;
+      }
+    });
+    if (loads.size) {
+      void this.git.readBlobs(this.path, [...loads.keys()]).then((blobs) => {
+        for (const [oid, load] of loads) {
+          const content = blobs.get(oid);
+          if (content === null || content === undefined) load.reject(new MissingBlobError('Missing git blob'));
+          else load.resolve(content);
+        }
+      }, (error: unknown) => {
+        for (const load of loads.values()) load.reject(error);
+      });
+    }
+    return new Map(await Promise.all(reads));
+  }
+  /** Match per-path latest history; merge simplification remains path-specific. */
+  async lastModified(paths: readonly string[], ref = 'main'): Promise<Map<string, CommitInfo>> {
+    const unresolved = new Map(paths.map((path) => [repoPath(path), path]));
+    const result = new Map<string, CommitInfo>();
+    if (!unresolved.size) return result;
+    const sha = await this.resolveRef(ref);
+    const output = await this.git.run(this.path, [
+      'log', '--first-parent', '--no-renames', '--name-only', '-z', `--format=%x00${commitFormat}`, sha, '--',
+    ]);
+    const fields = output.split('\0');
+    let index = 0;
+    while (index < fields.length && unresolved.size) {
+      while (fields[index] === '') index++;
+      if (index + 10 >= fields.length) break;
+      const commit = commits(`${fields.slice(index, index + 11).join('\0')}\0`)[0]!;
+      index += 11;
+      // A whole-tree walk cannot reproduce Git's per-path TREESAME parent
+      // pruning at merges. Only still-unresolved paths need the exact query;
+      // keep it serial rather than spawning one process per path in a burst.
+      if (commit.parents.length > 1) {
+        for (const [safe, path] of unresolved) {
+          const [touch] = await this.log({ path: safe, limit: 1, ref: commit.sha });
+          if (touch) result.set(path, touch);
+        }
+        break;
+      }
+      if (fields[index] === '') index++;
+      let first = true;
+      while (index < fields.length && fields[index] !== '') {
+        let safe = fields[index++]!;
+        if (first && safe.startsWith('\n')) safe = safe.slice(1);
+        first = false;
+        const path = unresolved.get(safe);
+        if (path !== undefined) {
+          result.set(path, copyCommits([commit])[0]!);
+          unresolved.delete(safe);
+        }
+      }
+    }
+    return result;
   }
   async readFileBytes(path: string, ref = 'main'): Promise<Buffer | null> {
     const safe = repoPath(path);

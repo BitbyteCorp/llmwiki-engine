@@ -1,12 +1,20 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm, symlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import pino from 'pino';
 import { afterEach, expect, it, vi } from 'vitest';
 import { loadConfig } from '../config.js';
 import { KnowledgeRepo } from './repo.js';
+import type { CommitInfo } from './repo.js';
+
+interface RepoInternals {
+  git: {
+    readBlobs(cwd: string, oids: readonly string[]): Promise<Map<string, string | null>>;
+    run(cwd: string, args: string[]): Promise<string>;
+  };
+}
 
 const git = promisify(execFile);
 const dirs: string[] = [];
@@ -30,9 +38,12 @@ async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), 'knowledge-cache-'));
   dirs.push(dir);
   const repo = await KnowledgeRepo.open(loadConfig({ NODE_ENV: 'test', DATA_DIR: dir }), pino({ level: 'silent' }));
-  return { repo, dir, cwd: join(dir, 'knowledge') };
+  // The private Git boundary is the instrumentation seam, not a public API.
+  const internals = repo as unknown as RepoInternals;
+  return { repo, dir, cwd: join(dir, 'knowledge'), backend: internals.git };
 }
 afterEach(async () => {
+  vi.restoreAllMocks();
   await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
   vi.useRealTimers();
 });
@@ -142,4 +153,114 @@ it('does not share mutable cached results between concurrent consumers or retain
   expect(await repo.listFiles('wiki/')).toEqual(['wiki/note.md']);
   await expect(repo.readFile('wiki/link.md')).rejects.toThrow('Symlinks');
   await expect(repo.blame('wiki/link.md')).rejects.toThrow('Symlinks');
+});
+
+it('reads cold blobs in one byte-framed batch and keeps more than 256 small notes warm', async () => {
+  const { repo, cwd, backend } = await fixture();
+  const fixtures = new Map<string, Buffer>([
+    ['wiki/normal.md', Buffer.from('# Normal\nplain markdown\n')],
+    ['wiki/한글 이름.md', Buffer.from('# 한글\n지식과 꿈꾸기\n')],
+    [`wiki/${'한글'.normalize('NFD')}.md`, Buffer.from('# NFD\n분해된 경로\n')],
+    ['wiki/tab\tand\nnewline.md', Buffer.from('# Odd path\n')],
+    ['raw/binary-ish.md', Buffer.concat([Buffer.from([0xff, 0x00, 0xfe]), Buffer.from('한글\nblob 3\n\0'.repeat(20000))])],
+    ['raw/empty.md', Buffer.alloc(0)],
+    ...Array.from({ length: 300 }, (_, index): [string, Buffer] =>
+      [`raw/cache-${index}.md`, Buffer.from(`unique small note ${index}\n`)]),
+  ]);
+  for (const [path, bytes] of fixtures) {
+    await mkdir(dirname(join(cwd, path)), { recursive: true });
+    await writeFile(join(cwd, path), bytes);
+  }
+  await git('git', ['add', '-A'], { cwd });
+  await git('git', ['commit', '-m', 'Batch fixtures'], { cwd });
+  const head = await repo.headSha();
+  await repo.listFiles('', head);
+  const batch = vi.spyOn(backend, 'readBlobs');
+  const run = vi.spyOn(backend, 'run');
+  const paths = [...fixtures.keys(), 'wiki/missing.md', './wiki/normal.md'];
+  const contents = await repo.readFiles(paths, head);
+  expect(batch).toHaveBeenCalledTimes(1);
+  expect(batch.mock.calls[0]![1]).toHaveLength(fixtures.size);
+  expect(run).not.toHaveBeenCalled();
+  expect(contents.get('wiki/missing.md')).toBeNull();
+  expect(contents.get('./wiki/normal.md')).toBe(fixtures.get('wiki/normal.md')!.toString('utf8'));
+  for (const [path, bytes] of fixtures) {
+    expect(contents.get(path)).toBe(bytes.toString('utf8'));
+    expect(await repo.readFile(path, head)).toBe(contents.get(path));
+  }
+  expect(await repo.readFiles(paths, head)).toEqual(contents);
+  expect(batch).toHaveBeenCalledTimes(1);
+  expect(run).not.toHaveBeenCalled();
+  expect(await backend.readBlobs(cwd, ['0'.repeat(40)])).toEqual(new Map([['0'.repeat(40), null]]));
+});
+
+it('validates all batch paths and rejects symlinks without starting a blob batch', async () => {
+  const { repo, cwd, backend } = await fixture();
+  await symlink('index.md', join(cwd, 'link.md'));
+  await git('git', ['add', 'link.md'], { cwd });
+  await git('git', ['commit', '-m', 'Symlink'], { cwd });
+  const batch = vi.spyOn(backend, 'readBlobs');
+  for (const path of ['../outside.md', '/tmp/outside.md', '.git/config', 'wiki/../outside.md', 'bad\0.md', '\ud800.md']) {
+    await expect(repo.readFiles(['index.md', path])).rejects.toThrow();
+  }
+  await expect(repo.readFiles(['index.md', 'link.md'])).rejects.toThrow('Symlinks');
+  expect(await repo.readFiles([])).toEqual(new Map());
+  expect(batch).not.toHaveBeenCalled();
+});
+
+it('batches last-modifying metadata on linear history with exact per-path results at merges', async () => {
+  const { repo, cwd, backend } = await fixture();
+  await mkdir(join(cwd, 'raw'), { recursive: true });
+  await writeFile(join(cwd, 'raw/one.md'), 'one\n');
+  await writeFile(join(cwd, 'raw/한글\n둘.md'), 'two\n');
+  await git('git', ['add', '-A'], { cwd });
+  await git('git', ['commit', '-m', 'Both'], { cwd });
+  await writeFile(join(cwd, 'raw/one.md'), 'changed\n');
+  await git('git', ['commit', '-am', 'One'], { cwd });
+  const paths = ['raw/one.md', 'raw/한글\n둘.md', 'raw/missing.md'];
+  const expected = new Map<string, CommitInfo>();
+  for (const path of paths) {
+    const [touch] = await repo.log({ path, limit: 1 });
+    if (touch) expected.set(path, touch);
+  }
+  const run = vi.spyOn(backend, 'run');
+  const head = await repo.headSha();
+  run.mockClear();
+  expect(await repo.lastModified(paths, head)).toEqual(expected);
+  expect(run.mock.calls.filter(([, args]) => args[0] === 'log')).toHaveLength(1);
+  await git('git', ['checkout', '-b', 'side'], { cwd });
+  await writeFile(join(cwd, 'raw/한글\n둘.md'), 'side edit\n');
+  await git('git', ['commit', '-am', 'Side'], { cwd });
+  await git('git', ['checkout', 'main'], { cwd });
+  await writeFile(join(cwd, 'raw/one.md'), 'main edit\n');
+  await git('git', ['commit', '-am', 'Main'], { cwd });
+  await git('git', ['merge', '--no-ff', 'side', '-m', 'Merge side'], { cwd });
+  const merged = await repo.lastModified(paths);
+  for (const path of paths) {
+    const [touch] = await repo.log({ path, limit: 1 });
+    expect(merged.get(path)).toEqual(touch);
+  }
+});
+
+it('coalesces concurrent blob misses and does not retain missing objects or batch failures', async () => {
+  const { repo, cwd, backend } = await fixture();
+  await mkdir(join(cwd, 'raw'), { recursive: true });
+  await writeFile(join(cwd, 'raw/retry.md'), 'retry content\n');
+  await git('git', ['add', '-A'], { cwd });
+  await git('git', ['commit', '-m', 'Retry'], { cwd });
+  const head = await repo.headSha();
+  const batch = vi.spyOn(backend, 'readBlobs');
+  batch.mockRejectedValueOnce(new Error('batch failed'));
+  await expect(repo.readFiles(['raw/retry.md'], head)).rejects.toThrow('batch failed');
+  batch.mockResolvedValueOnce(new Map());
+  expect(await Promise.all([
+    repo.readFiles(['raw/retry.md'], head),
+    repo.readFiles(['raw/retry.md'], head),
+  ])).toEqual([new Map([['raw/retry.md', null]]), new Map([['raw/retry.md', null]])]);
+  expect(batch).toHaveBeenCalledTimes(2);
+  expect(await Promise.all([
+    repo.readFile('raw/retry.md', head),
+    repo.readFiles(['raw/retry.md'], head),
+  ])).toEqual(['retry content\n', new Map([['raw/retry.md', 'retry content\n']])]);
+  expect(batch).toHaveBeenCalledTimes(3);
 });
