@@ -200,6 +200,8 @@ Dockerfile은 `node:24-bookworm-slim` 기반의 두 단계 빌드를 사용한�
 
 실행 사용자는 root가 아닌 `node`다. tini가 PID 1에서 신호와 자식 프로세스를 처리하며 `node dist/main.js`를 실행한다. `llmwiki` 실행 파일은 `PATH`에 있으므로 컨테이너 안에서도 관리 명령을 직접 호출할 수 있다. 이미지 healthcheck는 초기 인덱스와 저장소 준비를 확인하는 `/readyz`를 사용하며 `/healthz`는 프로세스 생존 확인용으로 유지한다.
 
+Dokploy 운영 배포는 [Dokploy 배포](dokploy.md)의 `compose.dokploy.yaml`을 사용하며, 로컬 이미지 확인용 `compose.yaml`과 구분한다.
+
 다음은 **로컬 이미지 확인용** 예시다. 이미지는 `NODE_ENV=production`에서 빌드된 Next 앱을 제공하므로 개발 모드로 덮어쓰거나 `DEV_LOGIN_EMAIL`을 전달하지 않는다. Google 로그인까지 확인하려면 `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, 등록된 리디렉션 주소에 맞는 `PUBLIC_URL`을 실행 환경으로 추가한다.
 
 ```bash
