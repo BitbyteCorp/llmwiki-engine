@@ -8,6 +8,7 @@ import matter from 'gray-matter';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AclService } from '../acl/acl.service.js';
 import { AgentService } from '../agent/agent.service.js';
+import type { AgentCheckpoint } from '../agent/agent.types.js';
 import { AgentCheckpointsRepository } from '../agent/checkpoints.repository.js';
 import { AuditService } from '../audit/audit.service.js';
 import { UsersRepository } from '../auth/users.repository.js';
@@ -276,9 +277,10 @@ describe('write job continuation with real Dony and git', () => {
 
   it('reports unread assigned sources when the write attempt exhausts its turn budget', async () => {
     const path = 'raw/import/never-read.md';
+    const published = 'wiki/unread-at-limit.md';
     let turns = 0;
     const f = await fixture(() => {
-      turns++;
+      if (turns++ === 0) return { name: 'write_file', arguments: { path: published, content: note('An unreviewed fact must not reach main.\n') } };
       return { name: 'list_files', arguments: { prefix: 'raw/import/' } };
     });
     await seedSources(f.repo, { [path]: 'A fact that must be reviewed.\n' });
@@ -288,7 +290,217 @@ describe('write job continuation with real Dony and git', () => {
     const result = await settled(f.jobs, job.id);
     expect(result).toMatchObject({ status: 'failed', summary: null, mergeSha: null, error: `unread assigned sources: 1/1 (${path})` });
     expect(turns).toBe(96);
+    expect(f.jobs.events(job.id).filter(event => event.detail?.wrapUp)).toEqual([]);
+    expect(await f.repo.readFile(published)).toBeNull();
+    expect(matter((await f.repo.readFile(published, `refs/wiki/failed-wip/${job.id}`))!).content).toBe('An unreviewed fact must not reach main.\n');
     expect(await f.repo.headSha()).toBe(mainBefore);
+  }, 20000);
+
+  it.each(['uncommitted', 'committed'] as const)('finishes %s notes in a fresh bounded wrap-up after reading every assigned source', async (state) => {
+    const source = 'raw/import/fully-read.md';
+    const published = 'wiki/turn-limit-knowledge.md';
+    const content = note('# Integrated knowledge\nThe assigned source fact is retained.\n');
+    const summary = '턴 한도 마무리: 담당 원문의 지식을 노트에 통합했다. 미통합 지식은 없다. 커밋을 완료했다.';
+    const requestText = 'Integrate the assigned source without losing completed work';
+    let parentCommit: string | undefined;
+    let wrapUpCommit: string | null | undefined;
+    let parentInstructions: string;
+    let parentCacheKey: unknown;
+    const f = await fixture(async (request, turn) => {
+      if (turn < 96) {
+        parentInstructions = String(request.body.instructions);
+        parentCacheKey = request.body.prompt_cache_key;
+        if (turn === 0) return { functionCalls: [
+          { name: 'read_file', arguments: { path: source }, call_id: 'completed-parent-source-read' },
+          { name: 'write_file', arguments: { path: published, content }, call_id: 'completed-parent-note' },
+        ], usage: { inputTokens: 10, cachedInputTokens: 4, outputTokens: 4, reasoningTokens: 1 } };
+        if (turn === 1) {
+          expect(output(request, 'completed-parent-source-read')).toMatchObject({ content: 'The assigned source fact.\n', truncated: false });
+          expect(output(request, 'completed-parent-note')).toEqual({ path: published, written: true });
+          if (state === 'committed') return { name: 'commit', arguments: { message: 'Record assigned source knowledge' }, call_id: 'parent-semantic-commit' };
+        }
+        if (turn === 2 && state === 'committed') {
+          parentCommit = output(request, 'parent-semantic-commit').sha;
+          expect(parentCommit).toEqual(expect.any(String));
+        }
+        return { name: 'list_files', arguments: { prefix: 'wiki/' } };
+      }
+      if (turn === 96) {
+        expect(request.body.prompt_cache_key).toBe(parentCacheKey);
+        const instructions = String(request.body.instructions);
+        expect(instructions).toContain(parentInstructions!.split('부모 쓰기 실행은 재개 여부와 관계없이')[0]!.trim());
+        expect(instructions).toContain('## 턴 한도 마무리');
+        expect(instructions).toContain('96');
+        expect(instructions).toContain('8');
+        expect((request.body.tools as Array<{ name: string }>).map(tool => tool.name).sort()).toEqual([
+          'commit', 'delete_file', 'list_files', 'move_file', 'read_file', 'search', 'write_file',
+        ]);
+        const messages = request.body.input as Array<{ role: string; content: string }>;
+        expect(messages).toHaveLength(1);
+        expect(messages[0]!.role).toBe('user');
+        expect(JSON.parse(messages[0]!.content)).toMatchObject({
+          jobId: job.id, request: requestText, changedPaths: [published],
+        });
+        expect(JSON.stringify(messages)).not.toContain('completed-parent-source-read');
+        expect(JSON.stringify(messages)).not.toContain('completed-parent-note');
+        expect(f.checkpoints.get(`job:${job.id}`)?.toolCalls).toBe(97);
+        expect(await f.repo.readFile(published)).toBeNull();
+        return { functionCalls: [{ name: 'read_file', arguments: { path: published }, call_id: 'wrap-up-review' }],
+          usage: { inputTokens: 30, cachedInputTokens: 10, outputTokens: 8, reasoningTokens: 2 } };
+      }
+      if (turn === 97) {
+        expect(output(request, 'wrap-up-review')).toMatchObject({ content: expect.stringContaining('# Integrated knowledge\nThe assigned source fact is retained.\n') });
+        return { name: 'commit', arguments: { message: 'Finish turn-limit knowledge wrap-up' }, call_id: 'wrap-up-commit' };
+      }
+      expect(turn).toBe(98);
+      wrapUpCommit = output(request, 'wrap-up-commit').sha;
+      expect(wrapUpCommit).toEqual(state === 'committed' ? null : expect.any(String));
+      return { text: summary, usage: { inputTokens: 40, cachedInputTokens: 20, outputTokens: 10, reasoningTokens: 3 } };
+    });
+    await seedSources(f.repo, { [source]: 'The assigned source fact.\n' });
+    const mainBefore = await f.repo.headSha();
+    f.jobs.start();
+    const job = f.jobs.submit({ userId: 1, source: 'import', input: requestText, requiredReads: [source] });
+    const result = await settled(f.jobs, job.id);
+    expect(result).toMatchObject({ status: 'succeeded', summary, error: null });
+    expect(result.mergeSha).not.toBe(mainBefore);
+    expect(result.commits).toContain(state === 'committed' ? parentCommit : wrapUpCommit);
+    expect(matter((await f.repo.readFile(published))!).content).toBe('# Integrated knowledge\nThe assigned source fact is retained.\n');
+    expect(await f.repo.readFile(source)).toBe('The assigned source fact.\n');
+    expect(f.checkpoints.get(`job:${job.id}`)).toBeUndefined();
+    expect(f.jobs.events(job.id).filter(event => event.detail?.wrapUp).map(({ phase, detail }) => ({ phase, detail }))).toEqual([
+      { phase: 'editing', detail: { wrapUp: 'started' } },
+      { phase: 'editing', detail: { wrapUp: 'finished' } },
+    ]);
+    expect(f.jobs.events(job.id).at(-1)).toMatchObject({
+      phase: 'done', detail: { usage: { inputTokens: 80, cachedInputTokens: 34, outputTokens: 22, reasoningTokens: 6 } },
+    });
+  }, 20000);
+
+  it.each(['provider', 'turn-cap'] as const)('preserves only the parent checkpoint when wrap-up reaches a %s failure', async (failure) => {
+    const source = 'raw/import/failure-source.md';
+    const published = 'wiki/failed-wrap-up.md';
+    const parentContent = note('# Parent knowledge\nReviewed source fact.\n');
+    const wrapUpContent = note('# Parent knowledge\nReviewed source fact.\nWRAP_UP_ONLY_EDIT\n');
+    let parentCheckpoint: AgentCheckpoint | undefined;
+    let wrapUpTurns = 0;
+    const f = await fixture((request, turn) => {
+      if (turn < 96) {
+        if (turn === 0) return { functionCalls: [
+          { name: 'read_file', arguments: { path: source }, call_id: 'parent-failure-source' },
+          { name: 'write_file', arguments: { path: published, content: parentContent }, call_id: 'parent-failure-note' },
+        ], usage: { inputTokens: 10, cachedInputTokens: 4, outputTokens: 4, reasoningTokens: 1 } };
+        return { name: 'list_files', arguments: { prefix: 'wiki/' } };
+      }
+      wrapUpTurns++;
+      if (turn === 96) {
+        parentCheckpoint = f.checkpoints.get(`job:${job.id}`);
+        expect(parentCheckpoint?.toolCalls).toBe(97);
+        expect(request.body.input).toHaveLength(1);
+        expect(String(request.body.instructions)).toContain('## 턴 한도 마무리');
+        return { functionCalls: [{ name: 'write_file', arguments: { path: published, content: wrapUpContent }, call_id: 'wrap-up-only-write' }],
+          usage: { inputTokens: 30, cachedInputTokens: 10, outputTokens: 8, reasoningTokens: 2 } };
+      }
+      expect(output(request, 'wrap-up-only-write')).toEqual({ path: published, written: true });
+      if (failure === 'provider') throw new Error('wrap-up provider unavailable');
+      return { functionCalls: [{ name: 'read_file', arguments: { path: published }, call_id: `wrap-up-only-read-${turn}` }],
+        usage: { inputTokens: 30, cachedInputTokens: 10, outputTokens: 8, reasoningTokens: 2 } };
+    });
+    await seedSources(f.repo, { [source]: 'Reviewed source fact.\n' });
+    const mainBefore = await f.repo.headSha();
+    f.jobs.start();
+    const job = f.jobs.submit({ userId: 1, source: 'import', input: 'Retain reviewed work if wrap-up fails', requiredReads: [source] });
+    const result = await settled(f.jobs, job.id);
+    expect(result).toMatchObject({ status: 'failed', summary: null, mergeSha: null });
+    expect(result.error).toContain('maxTurns (96)');
+    expect(result.error).toContain('maxTurns (8)');
+    expect(result.error).toContain(failure === 'provider' ? 'wrap-up provider unavailable' : 'Dony exceeded maxTurns (8) before finishing');
+    expect(wrapUpTurns).toBe(failure === 'provider' ? 2 : 8);
+    expect(await f.repo.headSha()).toBe(mainBefore);
+    expect(await f.repo.readFile(published)).toBeNull();
+    expect(matter((await f.repo.readFile(published, `refs/wiki/failed-wip/${job.id}`))!).content).toBe('# Parent knowledge\nReviewed source fact.\nWRAP_UP_ONLY_EDIT\n');
+    const checkpoint = f.checkpoints.get(`job:${job.id}`);
+    expect(checkpoint).toEqual(parentCheckpoint);
+    expect(JSON.stringify(checkpoint)).toContain('parent-failure-note');
+    expect(JSON.stringify(checkpoint)).not.toContain('wrap-up-only');
+    expect(JSON.stringify(checkpoint)).not.toContain('WRAP_UP_ONLY_EDIT');
+    expect(f.jobs.events(job.id).filter(event => event.detail?.wrapUp).map(({ phase, detail }) => ({ phase, detail }))).toEqual([
+      { phase: 'editing', detail: { wrapUp: 'started' } },
+    ]);
+    expect(f.jobs.events(job.id).at(-1)).toMatchObject({
+      phase: 'failed', detail: { error: result.error, usage: failure === 'provider'
+        ? { inputTokens: 40, cachedInputTokens: 14, outputTokens: 12, reasoningTokens: 3 }
+        : { inputTokens: 250, cachedInputTokens: 84, outputTokens: 68, reasoningTokens: 17 } },
+    });
+  }, 20000);
+
+  it('awaits cancellation of an active child before reviewing and committing its notes in wrap-up', async () => {
+    const published = 'wiki/cancelled-child-knowledge.md';
+    const content = note('# Child knowledge\nThe completed child write survives parent exhaustion.\n');
+    let markChildPending!: () => void;
+    const childPending = new Promise<void>(resolve => { markChildPending = resolve; });
+    let releaseChild!: () => void;
+    const childReleased = new Promise<void>(resolve => { releaseChild = resolve; });
+    let parentTurns = 0;
+    let childTurns = 0;
+    let wrapUpTurns = 0;
+    const f = await fixture(async request => {
+      if (String(request.body.prompt_cache_key).includes(':subagent:')) {
+        if (childTurns++ === 0) return { name: 'write_file', arguments: { path: published, content }, call_id: 'child-completed-write' };
+        expect(output(request, 'child-completed-write')).toEqual({ path: published, written: true });
+        markChildPending();
+        await childReleased;
+        return { name: 'write_file', arguments: { path: published, content: 'Cancelled child must never overwrite retained knowledge.\n' } };
+      }
+      if (parentTurns < 96) {
+        const turn = parentTurns++;
+        if (turn === 0) return { name: 'spawn_subagent', arguments: {
+          name: 'Knowledge writer', task: 'Record durable child knowledge', files: [published],
+        }, call_id: 'active-child' };
+        if (turn === 1) {
+          expect(output(request, 'active-child')).toMatchObject({ status: 'running' });
+          // Hold the parent until the child has written and is blocked in its next model request.
+          await childPending;
+        }
+        return { name: 'list_files', arguments: { prefix: 'wiki/' } };
+      }
+      const turn = wrapUpTurns++;
+      if (turn === 0) {
+        const events = f.jobs.events(job.id);
+        const cancelledIndex = events.findIndex(event => {
+          const child = event.detail?.subagent as { status?: string; files?: string[] } | undefined;
+          return child?.status === 'cancelled' && child.files?.includes(published);
+        });
+        const startedIndex = events.findIndex(event => event.detail?.wrapUp === 'started');
+        expect(cancelledIndex).toBeGreaterThan(-1);
+        expect(startedIndex).toBeGreaterThan(cancelledIndex);
+        expect(request.body.input).toHaveLength(1);
+        expect(JSON.parse(lastUserMessage(request))).toMatchObject({ changedPaths: [published] });
+        releaseChild();
+        return { name: 'read_file', arguments: { path: published }, call_id: 'cancelled-child-review' };
+      }
+      if (turn === 1) {
+        expect(output(request, 'cancelled-child-review')).toMatchObject({ content });
+        return { name: 'commit', arguments: { message: 'Retain completed child knowledge after turn limit' }, call_id: 'cancelled-child-commit' };
+      }
+      expect(turn).toBe(2);
+      expect(output(request, 'cancelled-child-commit').sha).toEqual(expect.any(String));
+      return '턴 한도 마무리: 자식이 작성한 지식을 통합하고 커밋했다. 중단된 자식의 나머지 작업은 통합하지 않았다.';
+    });
+    cleanup.push(async () => { releaseChild(); });
+    f.jobs.start();
+    const job = f.jobs.submit({ userId: 1, source: 'mcp', input: 'Keep completed delegated knowledge' });
+    const result = await settled(f.jobs, job.id);
+    expect(result).toMatchObject({ status: 'succeeded', summary: expect.stringContaining('턴 한도 마무리') });
+    expect(parentTurns).toBe(96);
+    expect(childTurns).toBe(2);
+    expect(wrapUpTurns).toBe(3);
+    expect(matter((await f.repo.readFile(published))!).content).toBe('# Child knowledge\nThe completed child write survives parent exhaustion.\n');
+    expect(f.checkpoints.get(`job:${job.id}`)).toBeUndefined();
+    expect(f.jobs.events(job.id).filter(event => event.detail?.wrapUp).map(({ phase, detail }) => ({ phase, detail }))).toEqual([
+      { phase: 'editing', detail: { wrapUp: 'started' } },
+      { phase: 'editing', detail: { wrapUp: 'finished' } },
+    ]);
   }, 20000);
 
   it('warns a read-only parent once with twelve turns left and restarts the count on resume', async () => {
@@ -325,6 +537,7 @@ describe('write job continuation with real Dony and git', () => {
       error: 'Dony exceeded maxTurns (96) before finishing',
     });
     expect(turns).toBe(96);
+    expect(f.jobs.events(retry.id).filter(event => event.detail?.wrapUp)).toEqual([]);
   }, 20000);
 
   it.each(['missing', 'denied'] as const)('does not credit a %s read_file result as assigned-source coverage', async (kind) => {

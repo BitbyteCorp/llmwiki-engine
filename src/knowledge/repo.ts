@@ -715,6 +715,11 @@ export class Worktree {
       patch: await this.git.run(this.path, ['diff', '--cached', '--binary', '--find-renames', 'HEAD', '--']),
     };
   }
+  /** Paths this branch changed since its base, committed or not; stages like diff(). */
+  async changedSinceBase(): Promise<string[]> {
+    await this.git.run(this.path, ['add', '--all']);
+    return (await this.git.run(this.path, ['diff', '--cached', '--name-only', '--no-renames', '-z', this.baseSha, '--'])).split('\0').filter(Boolean);
+  }
   async dispose(): Promise<void> {
     if (this.disposed) return;
     await this.git.run(this.primary, ['worktree', 'remove', '--force', '--force', this.path]);

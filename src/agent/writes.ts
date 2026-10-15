@@ -13,7 +13,13 @@ import { pageContent } from './output.js';
 
 const WRITE_MAX_TURNS = 96;
 const WRITE_WRAP_UP_TURNS = 12;
+const WRITE_TURN_LIMIT_WRAP_UP_MAX_TURNS = 8;
 const writeTurnBudgetInstructions = `부모 쓰기 실행은 재개 여부와 관계없이 실행마다 최대 ${WRITE_MAX_TURNS}회의 모델 턴만 사용할 수 있다. 턴 한도에 도달하기 전에 노트 작성·검토와 모든 서브에이전트의 종료 대기 및 커밋을 마치고 최종 요약을 응답한다.`;
+const writeTurnLimitWrapUpInstructions = `## 턴 한도 마무리
+부모 쓰기 실행이 ${WRITE_MAX_TURNS}턴 한도에 도달했다. 이번 실행은 이미 작성된 결과를 보존하기 위한 단 한 번의 마무리이며 최대 ${WRITE_TURN_LIMIT_WRAP_UP_MAX_TURNS}턴이다. 위의 일반 절차 중 새 탐색·원문 읽기·위임 절차는 수행하지 않는다.
+모든 서브에이전트는 이미 중단되고 종료를 기다린 상태다. 이미 쓴 파일은 워크트리에 남아 있다. 서브에이전트를 새로 실행하거나 기다리지 않는다. 새 자료를 탐색하거나 새 원문을 읽지 않는다.
+입력의 changedPaths에 있는 변경 파일만 read_file로 한 번 검토한다. 페이지가 나뉘면 필요한 나머지 페이지를 이어 읽되 바뀌지 않은 파일을 반복해서 읽지 않는다. 반쯤 작성되었거나 깨진 노트의 frontmatter, 존재하지 않는 위키링크, 잘린 섹션을 이미 작성된 내용에 근거해서 고친다. 확인하지 못한 지식을 지어내거나 통합되었다고 주장하지 않는다. 필요한 수정과 검토를 마친 결과를 commit으로 커밋한다.
+마지막 응답은 한국어 요약이며 이 작업이 턴 한도 마무리로 종료되었음을 명시한다. 실제 통합한 지식과 파일, 통합하지 못한 범위와 미완료·확인 불가 사항을 구분해 나열한다. 아직 main에 머지되었다고 주장하지 않는다.`;
 
 const writeInstructions = `
 지식 쓰기 작업을 작업 워크트리에서 완수한다. 기본 작성 규칙과 다음 절차를 모두 따른다.
@@ -58,6 +64,7 @@ export async function runWrite(
   const instructions = `${await agent.baseInstructions(user, user ? (path) => wt.onPhase?.('editing', { sourcePath: path }) : undefined)}\n\n${writeInstructions}`;
   let resumeNote = options.resume ? `중단된 부모 실행을 이어간다. 이번 작업 ID는 ${job.id}다. 이전 실행의 서브에이전트는 재개되지 않으며 이전 자식 ID는 현재 풀에서 unknown이다. 워크트리에 보존된 실제 파일을 확인하고 필요한 작업만 새 자식에 위임한다. 이번 커밋과 결과는 현재 작업 ID로 기록한다.` : undefined;
   let turns = 0;
+  let hitTurnLimit = false;
   const { requiredReads, ...runOptions } = options;
   const coverage = new ReadCoverage(requiredReads ?? []);
   const runningChildren = new Set<string>();
@@ -101,6 +108,7 @@ export async function runWrite(
       onTurnLimit: () => {
         const unread = coverage.unread();
         if (unread.length) throw unreadError(unread);
+        hitTurnLimit = true;
       },
       // Resume ignores input; append the current job note once to the saved conversation.
       beforeTurn: () => {
@@ -120,6 +128,32 @@ export async function runWrite(
       },
     });
     return { summary: result.text.trim() };
+  } catch (error) {
+    if (!hitTurnLimit || !(error instanceof Error) || error.message !== `Dony exceeded maxTurns (${WRITE_MAX_TURNS}) before finishing`) throw error;
+
+    // Freeze all child mutations before detecting changes or giving tools to a new parent.
+    await pool.close();
+    const changedPaths = await wt.changedSinceBase();
+    if (!changedPaths.length) throw error;
+
+    // No file paths or model text enter these details: ordinary event fields pass through ACL projection.
+    wt.onPhase?.('editing', { wrapUp: 'started' });
+    try {
+      const result = await agent.runAgent({
+        lane: 'write',
+        instructions: `${instructions}\n\n${writeTurnLimitWrapUpInstructions}`,
+        input: JSON.stringify({ jobId: job.id, source: job.source, request: job.input, changedPaths }),
+        tools: agent.worktreeTools(wt, author, user),
+        maxTurns: WRITE_TURN_LIMIT_WRAP_UP_MAX_TURNS,
+        onUsage: options.onUsage,
+        // Never replace the resumable parent checkpoint with the short wrap-up conversation.
+      });
+      wt.onPhase?.('editing', { wrapUp: 'finished' });
+      return { summary: result.text.trim() };
+    } catch (wrapUpError) {
+      const reason = wrapUpError instanceof Error ? wrapUpError.message : String(wrapUpError);
+      throw new Error(`Parent write exceeded maxTurns (${WRITE_MAX_TURNS}); turn-limit wrap-up failed with maxTurns (${WRITE_TURN_LIMIT_WRAP_UP_MAX_TURNS}): ${reason}`, { cause: wrapUpError });
+    }
   } finally {
     // No child may mutate the worktree during the worker's commit/merge/cleanup.
     await pool.close();
