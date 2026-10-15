@@ -31,7 +31,7 @@ POSIX `sh`, 기본 파일 도구, `awk`, `sha256sum` 또는 macOS의 `shasum -a 
 
 `install`, `status`, `update`는 선택적인 `--project <dir>`, `--force`를 받는다. `--force`의 수정 보호 경계와 상태는 [기존 설치와 로컬 수정 보호](#기존-설치와-로컬-수정-보호)를 따른다. 다른 엔진에서 자료를 받으려면 파이프 오른쪽에 `LLMWIKI_URL=https://other.example.com sh -s -- install codex`를 지정한다. 이 변수는 다운로드 주소만 바꾸며 MCP 연결 주소를 저장하지 않는다.
 
-공개 `GET /skills/install.sh`는 하나의 정본 `skills/install.sh`에 서버 설정 `PUBLIC_URL`의 끝 슬래시를 제거한 주소를 셸 인용해 넣는다. 요청의 `Host`·전달 헤더로 주소를 계산하지 않는다. 같은 스크립트가 복제본에서는 로컬 자료를, 표준 입력에서는 엔진 자료를 사용한다. `GET /skills/manifest/<client>`는 버전·설치 파일별 SHA-256을, `GET /skills/files/<sha256>`는 해당 배포 파일의 원본 바이트를 제공하며 `GET /skills/version.json`은 배포 버전 원본을 제공한다. 서버는 공통 `SKILL.md`와 등록된 설치 대상 자료만 시작 시 읽어 보관하므로 요청 경로로 저장소 파일을 탐색하지 않으며 경로 순회를 허용하지 않는다.
+공개 `GET /skills/install.sh`는 하나의 정본 `skills/install.sh`에 서버 설정 `PUBLIC_URL`의 끝 슬래시를 제거한 주소를 셸 인용해 넣는다. 요청의 `Host`·전달 헤더로 주소를 계산하지 않는다. 같은 스크립트가 복제본에서는 로컬 자료를, 표준 입력에서는 엔진 자료를 사용한다. `GET /skills/manifest/<client>`는 버전·설치 파일별 SHA-256을, `GET /skills/files/<sha256>`는 해당 배포 파일의 원본 바이트를 제공하며 `GET /skills/version.json`은 배포 버전 원본을 제공한다. 서버는 정본 `skills/llmwiki/`의 사용 안내만 시작 시 읽어 보관하므로 요청 경로로 저장소 파일을 탐색하지 않으며 경로 순회를 허용하지 않는다.
 
 원격 설치는 모든 파일을 비공개 임시 디렉터리에 내려받고 각 SHA-256을 manifest와 대조한 뒤 기존 설치 보호 검사와 쓰기를 시작한다. 다운로드 실패·체크섬 불일치에서는 대상 파일과 설치 표식을 전혀 바꾸지 않는다. 원본 바이트를 그대로 내려받으므로 마지막 줄바꿈이 없는 파일·바이너리도 셸·CLI 설치와 동일하다. 스크립트와 manifest·파일 응답은 `Cache-Control: public, max-age=60`을 사용한다. 체크섬은 전송 일관성 검사이며 엔진 신뢰나 HTTPS를 대체하지 않는다.
 
@@ -100,13 +100,14 @@ llmwiki skill update codex --project /path/to/project
 Continue는 [공식 문서](https://docs.continue.dev/)에서 네이티브 Skill 디렉터리·형식을 확인하지 못해 설치 대상에서 제외한다. 문서가 없는 것은 기능이 절대 없다는 뜻이 아니라 이 설치기의 지원 근거가 없다는 뜻이다.
 
 
-설치 디렉터리에는 다음 파일을 둔다.
+셸·CLI 설치 디렉터리에는 다음 두 파일만 둔다.
 
 - `SKILL.md`는 [`skills/llmwiki/SKILL.md`](../skills/llmwiki/SKILL.md)의 공통 원본을 복사한 파일이다. 저장소에서는 클라이언트별 프롬프트 복제본을 유지하지 않는다.
-- `client/`에는 선택한 클라이언트의 `skills/<client>/` 자료를 원래 상대 경로대로 복사한다. README와 MCP 병합 예시는 참고 자료이며 활성 클라이언트 설정이 아니다. Claude 플러그인 manifest는 이 디렉터리에 복사하지 않는다.
 - `.llmwiki-install.json`은 설치기 스키마, 클라이언트, 설치 버전, 관리 파일별 SHA-256을 기록한다. 비밀값이나 OAuth 토큰을 기록하지 않는다.
 
-공통 원본과 클라이언트 자료의 배포 버전은 `skills/version.json`에서 관리한다. 프롬프트뿐 아니라 실제 설치하는 README·MCP 예시가 바뀌어도 배포 버전을 올린다. 설치 대상이 아닌 설치기 자체만 바뀌면 배포 버전은 유지한다. Claude 플러그인의 `skills/.claude-plugin/plugin.json`의 `version`과 마켓플레이스의 `.claude-plugin/marketplace.json`의 `metadata.version`도 같은 값으로 갱신한다. 호스팅한 Claude 플러그인은 manifest 버전으로 캐시를 갱신하므로 내용만 바꾸고 버전을 유지하지 않는다.
+Skill은 에이전트가 실행 중 문맥으로 불러오는 MCP 도구 사용 안내다. 설치·연결 문서를 함께 넣으면 매 작업의 문맥을 낭비하고 클라이언트 설정 변경에 따라 오래된 안내가 남는다. 따라서 클라이언트별 설치·MCP 설정·OAuth 절차와 인라인 설정 예시는 이 문서와 llmwiki 설정의 MCP 탭에서만 제공하며, 설치 디렉터리에는 복사하지 않는다.
+
+정본 사용 안내의 배포 버전은 `skills/version.json`에서 관리한다. 사용 안내나 배포 파일 구성이 바뀌면 버전을 올리며, 설치 대상이 아닌 설치기 자체만 바뀌면 배포 버전은 유지한다. Claude 플러그인의 `skills/.claude-plugin/plugin.json`의 `version`과 마켓플레이스의 `.claude-plugin/marketplace.json`의 `metadata.version`도 같은 값으로 갱신한다. 호스팅한 Claude 플러그인은 manifest 버전으로 캐시를 갱신하므로 내용만 바꾸고 버전을 유지하지 않는다.
 
 복제본의 셸 설치기는 스크립트 위치로 원본 `skills/`를 찾는다. 기존 TypeScript 설치기와 공개 배포 서비스는 모듈 위치 기준 `../../skills/`를 읽으므로 개발의 `src/skill`과 빌드의 `dist/skill`에서 모두 저장소 루트의 자료를 사용한다. 현재 작업 디렉터리에 의존하지 않는다. 빌드 배포물은 `dist/`와 함께 루트 `skills/`를 포함해야 하며, Docker 런타임도 이 디렉터리를 복사한다.
 
@@ -125,7 +126,7 @@ Continue는 [공식 문서](https://docs.continue.dev/)에서 네이티브 Skill
 
 파일 쓰기 전에 모든 대상 파일을 확인한다. 관리 파일의 로컬 수정·삭제와 기존 관리 외 파일의 덮어쓰기는 기본적으로 거부한다. 표식 없는 기존 `SKILL.md`도 내용이 원본과 같더라도 사용자 파일로 취급한다. 수정 내용을 검토·백업한 뒤 `--force`를 지정하면 충돌한 Skill 파일과 설치 표식을 교체할 수 있다. 제거된 배포 파일은 이전 표식이 관리하던 파일만 삭제하며, 수정된 파일을 지우는 경우에도 `--force`가 필요하다. 관계없는 추가 파일은 남긴다. 심볼릭 링크와 파일 대신 존재하는 디렉터리는 `--force`로도 교체하지 않는다.
 
-`--force`는 엔진 환경 설정, `~/.codex/config.toml`, `~/.hermes/config.yaml`, 프로젝트의 활성 `.mcp.json`, OAuth 저장소를 덮어쓰는 옵션이 아니다. 예시 파일은 설치 디렉터리의 `client/`에만 둔다.
+`--force`는 엔진 환경 설정, `~/.codex/config.toml`, `~/.hermes/config.yaml`, 프로젝트의 활성 `.mcp.json`, OAuth 저장소를 덮어쓰는 옵션이 아니다. 이전 배포에서 설치한 클라이언트별 안내도 기존 표식이 관리하던 파일만 제거하며, 로컬 수정이 있으면 같은 보호 규칙을 적용한다.
 
 ### 클라이언트 기본 배포 경로
 기본 설치 도구를 선호하면 다음 경로를 사용한다. 이 경로들은 해당 클라이언트가 설치·갱신을 소유하며 `.llmwiki-install.json`을 만들지 않는다. 셸·CLI 설치기와 같은 대상에 겹쳐 설치하지 않는다. 기본 설치 결과를 셸·CLI로 전환할 때는 기존 내용을 검토·백업하고 관리되지 않은 파일 보호 규칙을 따른다. 어느 경로도 MCP 등록이나 OAuth 로그인을 대신하지 않는다.
@@ -151,7 +152,7 @@ Continue는 [공식 문서](https://docs.continue.dev/)에서 네이티브 Skill
 $skill-installer install the skill from https://github.com/BitbyteCorp/llmwiki-engine/tree/main/skills/llmwiki
 ```
 
-정확한 원본은 `skills/codex`가 아니라 `skills/llmwiki`다. [OpenAI 공식 skill-installer 지침](https://github.com/openai/skills/blob/main/skills/.system/skill-installer/SKILL.md)은 `install-skill-from-github.py --repo BitbyteCorp/llmwiki-engine --path skills/llmwiki` 또는 같은 `tree/main/skills/llmwiki` URL을 지원한다. 이 명령은 설치기가 가진 Python 도우미의 인자이며 존재하지 않는 `codex skills install` 명령이 아니다. 도우미 기본 설치 위치는 `$CODEX_HOME/skills`이고 기본값은 `~/.codex/skills`다. 저장소 전용 셸·CLI의 `~/.agents/skills`와 구분하며, 설치 결과를 원하는 범위에 맞출 때는 공식 도우미의 `--dest`를 사용한다. Python 없이 설치하려면 저장소 전용 셸 경로를 사용한다. 새 Skill이 보이지 않으면 Codex를 다시 시작한다.
+정확한 원본은 `skills/llmwiki`다. [OpenAI 공식 skill-installer 지침](https://github.com/openai/skills/blob/main/skills/.system/skill-installer/SKILL.md)은 `install-skill-from-github.py --repo BitbyteCorp/llmwiki-engine --path skills/llmwiki` 또는 같은 `tree/main/skills/llmwiki` URL을 지원한다. 이 명령은 설치기가 가진 Python 도우미의 인자이며 존재하지 않는 `codex skills install` 명령이 아니다. 도우미 기본 설치 위치는 `$CODEX_HOME/skills`이고 기본값은 `~/.codex/skills`다. 저장소 전용 셸·CLI의 `~/.agents/skills`와 구분하며, 설치 결과를 원하는 범위에 맞출 때는 공식 도우미의 `--dest`를 사용한다. Python 없이 설치하려면 저장소 전용 셸 경로를 사용한다. 새 Skill이 보이지 않으면 Codex를 다시 시작한다.
 
 #### Hermes GitHub Skill 설치
 [공식 Hermes Skills의 직접 GitHub 설치](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills#installing-individual-skills-directly-without-adding-a-tap)는 `owner/repo/skills/skill-name`을 지원한다.
@@ -160,7 +161,7 @@ $skill-installer install the skill from https://github.com/BitbyteCorp/llmwiki-e
 hermes skills install BitbyteCorp/llmwiki-engine/skills/llmwiki
 ```
 
-[공식 지원 소스 표](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills#supported-hub-sources)의 `github` 소스를 사용하며, `skills/hermes`가 아니라 정본 디렉터리를 지정한다. 공개 저장소의 개별 경로는 tap 추가 없이 설치할 수 있다. 공식 문서는 비공개 GitHub tap에 `GITHUB_TOKEN`이 필요하다고 설명하지만 비공개 개별 경로의 직접 설치까지 보장하지는 않으므로, 비공개 저장소는 Git 인증으로 복제한 뒤 저장소 전용 셸 설치기를 사용한다. Hermes 설치기의 보안 검사·설치 확인·갱신 정책을 따르며 셸 설치기의 `--force`와 혼동하지 않는다. 새 세션의 `/llmwiki`로 호출한다.
+[공식 지원 소스 표](https://hermes-agent.nousresearch.com/docs/user-guide/features/skills#supported-hub-sources)의 `github` 소스를 사용하며, 정본 디렉터리를 지정한다. 공개 저장소의 개별 경로는 tap 추가 없이 설치할 수 있다. 공식 문서는 비공개 GitHub tap에 `GITHUB_TOKEN`이 필요하다고 설명하지만 비공개 개별 경로의 직접 설치까지 보장하지는 않으므로, 비공개 저장소는 Git 인증으로 복제한 뒤 저장소 전용 셸 설치기를 사용한다. Hermes 설치기의 보안 검사·설치 확인·갱신 정책을 따르며 셸 설치기의 `--force`와 혼동하지 않는다. 새 세션의 `/llmwiki`로 호출한다.
 
 
 ### 공통 지식 활용 프롬프트
@@ -204,10 +205,10 @@ API 토큰 탭의 REST 자동화와 MCP 클라이언트의 브라우저 로그�
 claude mcp add --transport http --scope user llmwiki "<ENGINE_URL>/mcp"
 ```
 
-Claude Code에서 `/mcp`를 열어 브라우저 OAuth 인증을 완료한다. 새 세션에서 셸·CLI 설치는 `/llmwiki`, 마켓플레이스 설치는 `/llmwiki:llmwiki`로 호출한다. 플러그인은 MCP 서버를 자동 등록하지 않으며 임시 플러그인이나 `LLMWIKI_URL` 환경변수 설정도 필요 없다. 클라이언트별 절차는 [Claude Code 자료](../skills/claude-code/README.md)를 따른다.
+Claude Code에서 `/mcp`를 열어 브라우저 OAuth 인증을 완료한다. 새 세션에서 셸·CLI 설치는 `/llmwiki`, 마켓플레이스 설치는 `/llmwiki:llmwiki`로 호출한다. 플러그인은 MCP 서버를 자동 등록하지 않으며 임시 플러그인이나 `LLMWIKI_URL` 환경변수 설정도 필요 없다.
 
 #### Codex
-[공식 MCP 문서](https://developers.openai.com/codex/mcp)에 따라 기존 `~/.codex/config.toml` 또는 신뢰한 프로젝트의 `.codex/config.toml`에 `client/mcp.example.toml`의 테이블을 병합한다.
+[공식 MCP 문서](https://developers.openai.com/codex/mcp)에 따라 기존 `~/.codex/config.toml` 또는 신뢰한 프로젝트의 `.codex/config.toml`에 다음 테이블을 병합한다.
 
 ```toml
 [mcp_servers.llmwiki]
@@ -217,7 +218,7 @@ url = "https://wiki.example.com/mcp"
 `codex mcp login llmwiki`로 브라우저 OAuth 로그인을 완료한다. 새 세션의 `/mcp`로 연결을 확인하고 `/skills` 또는 `$llmwiki`로 Skill을 호출한다.
 
 #### Hermes
-[공식 MCP 문서](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp)에 따라 기존 `~/.hermes/config.yaml`의 `mcp_servers`에 `client/mcp.example.yaml`의 `llmwiki` 항목을 병합한다.
+[공식 MCP 문서](https://hermes-agent.nousresearch.com/docs/user-guide/features/mcp)에 따라 기존 `~/.hermes/config.yaml`의 `mcp_servers`에 다음 `llmwiki` 항목을 병합한다.
 
 ```yaml
 mcp_servers:
@@ -324,7 +325,7 @@ Copilot CLI 안에서 `/mcp auth llmwiki`로 브라우저 OAuth 로그인을 완
 }
 ```
 
-`cline mcp`의 서버 메뉴에서 **Authorize OAuth**를 선택하고 브라우저 인증을 완료한다. Skill은 `install cline`으로 설치하며 새 세션에서 자동 활성화하거나 `/` 메뉴에서 선택한다. 자세한 보호 규칙은 [Cline 자료](../skills/cline/README.md)를 따른다.
+`cline mcp`의 서버 메뉴에서 **Authorize OAuth**를 선택하고 브라우저 인증을 완료한다. Skill은 `install cline`으로 설치하며 새 세션에서 자동 활성화하거나 `/` 메뉴에서 선택한다.
 
 #### Kiro
 [공식 MCP 설정 문서](https://kiro.dev/docs/mcp/configuration.md)에 따라 개인 `~/.kiro/settings/mcp.json` 또는 프로젝트 `.kiro/settings/mcp.json`에 병합한다.
@@ -337,7 +338,7 @@ Copilot CLI 안에서 `/mcp auth llmwiki`로 브라우저 OAuth 로그인을 완
 }
 ```
 
-Streamable HTTP와 OAuth를 지원하며 DCR을 지원하는 서버에 연결하면 브라우저 인증 페이지를 연다. [공식 slash 참조](https://kiro.dev/docs/reference/slash-commands.md#mcp-auth)의 `/mcp auth llmwiki`로 다시 인증한다. Skill은 `install kiro`로 설치하고 자동 선택 또는 `/llmwiki`로 호출한다. [Kiro 자료](../skills/kiro/README.md)를 따른다.
+Streamable HTTP와 OAuth를 지원하며 DCR을 지원하는 서버에 연결하면 브라우저 인증 페이지를 연다. [공식 slash 참조](https://kiro.dev/docs/reference/slash-commands.md#mcp-auth)의 `/mcp auth llmwiki`로 다시 인증한다. Skill은 `install kiro`로 설치하고 자동 선택 또는 `/llmwiki`로 호출한다.
 
 #### Amp
 [공식 MCP 문서](https://ampcode.com/docs/markdown/customize/mcp)는 기본 Streamable HTTP와 SSE 대체 전송, 원격 OAuth를 설명한다. 로컬 설정 위치는 개인 `~/.config/amp/settings.json` 또는 프로젝트 `.amp/settings.json`이며 형식은 다음과 같다.
@@ -383,7 +384,7 @@ amp mcp remote --personal login llmwiki
 }
 ```
 
-`qwen mcp add --transport http llmwiki https://wiki.example.com/mcp`로 등록할 수도 있다. [공식 OAuth 안내](https://qwenlm.github.io/qwen-code-docs/en/developers/tools/mcp-server/#oauth-support-for-remote-mcp-servers)에 따라 인증 요구를 감지하고 발견·DCR·브라우저 로그인을 수행한다. `/mcp` 패널에서 서버와 인증을 관리하며 문서에 없는 `qwen mcp login` 명령을 사용하지 않는다. Skill은 `install qwen-code`로 설치하고 자동 선택 또는 `/llmwiki`로 호출한다. [Qwen Code 자료](../skills/qwen-code/README.md)를 따른다.
+`qwen mcp add --transport http llmwiki https://wiki.example.com/mcp`로 등록할 수도 있다. [공식 OAuth 안내](https://qwenlm.github.io/qwen-code-docs/en/developers/tools/mcp-server/#oauth-support-for-remote-mcp-servers)에 따라 인증 요구를 감지하고 발견·DCR·브라우저 로그인을 수행한다. `/mcp` 패널에서 서버와 인증을 관리하며 문서에 없는 `qwen mcp login` 명령을 사용하지 않는다. Skill은 `install qwen-code`로 설치하고 자동 선택 또는 `/llmwiki`로 호출한다.
 
 #### MCP 안내에서 제외한 대상
 원격 Streamable HTTP와 OAuth 설정·로그인 절차를 공식 문서로 확인한 경우만 단계별 연결을 안내한다. 아래 대상은 확인된 Skill 설치만 제공하거나 전체 대상에서 제외한다. 제외는 기능 부재의 단정이 아니다.

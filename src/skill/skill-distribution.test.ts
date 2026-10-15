@@ -5,6 +5,7 @@ import { ExpressAdapter } from '@nestjs/platform-express';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { execFile, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -25,6 +26,11 @@ let assets: string;
 let url: string;
 let fault: 'corrupt' | 'unavailable' | null;
 const config = { publicUrl: 'https://wiki.example.com/base///' };
+const canonicalFiles = {
+  'SKILL.md': Buffer.from('Skill without a trailing newline'),
+  'binary.dat': Buffer.from([0, 255, 10, 128]),
+  'references/nested/usage.md': Buffer.from('Nested canonical usage without a trailing newline'),
+};
 
 @Global()
 @Module({ providers: [{ provide: CONFIG, useValue: config }], exports: [CONFIG] })
@@ -33,11 +39,14 @@ class DistributionConfigModule {}
 beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), 'llmwiki-distribution-'));
   assets = join(root, 'assets');
-  for (const name of ['llmwiki', ...skillClients]) mkdirSync(join(assets, name), { recursive: true });
+  for (const name of ['llmwiki/references/nested', ...skillClients]) mkdirSync(join(assets, name), { recursive: true });
   copyFileSync(fileURLToPath(new URL('../../skills/install.sh', import.meta.url)), join(assets, 'install.sh'));
   writeFileSync(join(assets, 'version.json'), '{"version":"fixture-1"}');
-  writeFileSync(join(assets, 'llmwiki/SKILL.md'), 'Skill without a trailing newline');
-  writeFileSync(join(assets, 'codex/binary.dat'), Buffer.from([0, 255, 10, 128]));
+  for (const [name, content] of Object.entries(canonicalFiles)) writeFileSync(join(assets, 'llmwiki', name), content);
+  for (const client of skillClients) {
+    writeFileSync(join(assets, client, 'README.md'), `Deprecated ${client} installation instructions`);
+    writeFileSync(join(assets, client, 'mcp.example.json'), `{"deprecated":"${client}"}`);
+  }
   const module = await Test.createTestingModule({ imports: [DistributionConfigModule, SkillModule] })
     .overrideProvider(SKILL_ASSETS).useValue(assets)
     .compile();
@@ -67,6 +76,27 @@ describe('public skill distribution', () => {
   it.each(['/skills/files/../../package.json', '/skills/files/%2e%2e%2fpackage.json', '/skills/files/%252e%252e%252fpackage.json', '/skills/files/install.sh', '/skills/version.json/../package.json', '/skills/manifest/unknown', '/skills/package.json'])('rejects non-distributed paths: %s', async (path) => {
     await request(app.getHttpServer()).get(path).expect(404);
   });
+
+  it.each(skillClients)('publishes only canonical usage files for %s, ignoring deprecated client assets', async (client) => {
+    const response = await request(app.getHttpServer()).get(`/skills/manifest/${client}`).expect(200);
+    expect(response.body).toEqual({
+      schema: 1,
+      client,
+      version: 'fixture-1',
+      files: Object.fromEntries(Object.entries(canonicalFiles).map(([name, content]) => [
+        name, createHash('sha256').update(content).digest('hex'),
+      ])),
+    });
+    for (const [name, content] of Object.entries(canonicalFiles)) {
+      const download = await fetch(`${url}/skills/files/${response.body.files[name]}`);
+      expect(download.status).toBe(200);
+      expect(Buffer.from(await download.arrayBuffer())).toEqual(content);
+    }
+    for (const name of ['README.md', 'mcp.example.json']) {
+      const digest = createHash('sha256').update(readFileSync(join(assets, client, name))).digest('hex');
+      await request(app.getHttpServer()).get(`/skills/files/${digest}`).expect(404);
+    }
+  });
   it.each(skillClients)('publishes a remotely installable manifest for %s', async (client) => {
     const project = join(root, 'client project');
     const home = join(root, 'client home');
@@ -90,9 +120,42 @@ describe('public skill distribution', () => {
     expect(installer.status('codex', { project }).state).toBe('current');
     const installed = join(project, '.agents/skills/llmwiki');
     const expected = installer.install('codex', 'install', { project: join(root, 'cli') });
-    for (const name of ['SKILL.md', 'client/binary.dat', '.llmwiki-install.json']) {
+    for (const name of [...Object.keys(canonicalFiles), '.llmwiki-install.json']) {
       expect(readFileSync(join(installed, name))).toEqual(readFileSync(join(expected.directory, name)));
     }
+  });
+
+  it.each(['install', 'update'] as const)('migrates legacy managed setup files remotely with %s and protects local edits', async (action) => {
+    const project = join(root, 'legacy project');
+    const installer = new SkillInstaller(assets, root);
+    const initial = installer.install('codex', 'install', { project });
+    const markerPath = join(initial.directory, '.llmwiki-install.json');
+    const canonicalMarker = JSON.parse(readFileSync(markerPath, 'utf8'));
+    const name = 'client/README.md';
+    const content = 'Legacy setup instructions';
+    const legacyMarker = { ...canonicalMarker, version: '0.3.0', files: { ...canonicalMarker.files,
+      [name]: createHash('sha256').update(content).digest('hex') } };
+    mkdirSync(join(initial.directory, 'client'));
+    writeFileSync(join(initial.directory, 'client/personal.txt'), 'User supplement');
+    const remote = (force = false) => execute('sh', ['-c', 'curl -fsSL "$SOURCE/skills/install.sh" | LLMWIKI_URL="$SOURCE" sh -s -- "$ACTION" codex --project "$PROJECT" "$@"', 'sh', ...(force ? ['--force'] : [])], {
+      cwd: root, env: { ...process.env, SOURCE: url, PROJECT: project, ACTION: action },
+    });
+    writeFileSync(join(initial.directory, name), content);
+    writeFileSync(markerPath, JSON.stringify(legacyMarker));
+    expect(JSON.parse((await remote()).stdout)).toMatchObject({ state: 'current', changed: true });
+    expect(() => readFileSync(join(initial.directory, name))).toThrow();
+    expect(JSON.parse(readFileSync(markerPath, 'utf8'))).toEqual(canonicalMarker);
+
+    writeFileSync(join(initial.directory, name), 'Locally edited setup');
+    const previousMarker = JSON.stringify(legacyMarker);
+    writeFileSync(markerPath, previousMarker);
+    await expect(remote()).rejects.toThrow(/client\/README\.md.*--force/);
+    expect(readFileSync(markerPath, 'utf8')).toBe(previousMarker);
+    expect(readFileSync(join(initial.directory, name), 'utf8')).toBe('Locally edited setup');
+    await remote(true);
+    expect(() => readFileSync(join(initial.directory, name))).toThrow();
+    expect(readFileSync(join(initial.directory, 'client/personal.txt'), 'utf8')).toBe('User supplement');
+    expect(JSON.parse(readFileSync(markerPath, 'utf8'))).toEqual(canonicalMarker);
   });
 
   it.skipIf(process.platform !== 'linux' || spawnSync('script', ['--version']).status !== 0)('reads interactive curl-pipe answers from the terminal, not script stdin', async () => {

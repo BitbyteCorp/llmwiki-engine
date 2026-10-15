@@ -313,7 +313,6 @@ parse_json() {
     if (kind[schema] != "number" || data[schema] + 0 != 1 || kind[client] != "string" || data[client] != ENVIRON["LLMWIKI_CLIENT"] || kind[files] != "object") bad();
     for (i = 1; i <= counts[files]; i++) {
       name = keys[files, i]; child = members[files, name];
-      if (ENVIRON["LLMWIKI_JSON_MODE"] == "remote" && name != "SKILL.md" && substr(name, 1, 7) != "client/") bad();
       if (!safe_name(name) || kind[child] != "string" || length(data[child]) != 64 || data[child] ~ /[^a-f0-9]/) bad();
     }
     if (ENVIRON["LLMWIKI_JSON_MODE"] == "remote") print "bundle_version_json=" shell_quote(encoded[version]);
@@ -397,7 +396,6 @@ if [ -f "$0" ] && [ -f "$assets/llmwiki/SKILL.md" ]; then
   assignments=$(parse_json version "$assets/version.json") || fail 'Invalid skill bundle version.json.'
   eval "$assignments"
   load_files "$assets/llmwiki" ''
-  load_files "$assets/$client" client
 else
   engine_url=${LLMWIKI_URL:-$engine_url}
   while [ "${engine_url%/}" != "$engine_url" ]; do engine_url=${engine_url%/}; done
@@ -588,15 +586,7 @@ if [ "$action" != status ]; then
 fi
 print_status
 printf '\nSeparate MCP/OAuth step (not performed by this command):\n' >&2
-case $client in
-  claude-code) printf '%s\n' 'Register the engine URL separately: claude mcp add --transport http --scope user llmwiki <ENGINE_URL>/mcp (use --scope project for project scope). Then open /mcp in Claude Code and complete browser OAuth.' >&2 ;;
-  codex) printf '%s\n' 'This target installs shared .agents/skills for Codex, Gemini CLI, OpenCode, Cursor, GitHub Copilot (VS Code/CLI), Windsurf/Devin Desktop, Roo Code, Amp, Goose, Factory Droid, Zed and Crush. Use your agent-specific MCP guide in docs/skills.md. For Codex only: add [mcp_servers.llmwiki] with url = "<ENGINE_URL>/mcp" to ~/.codex/config.toml (or trusted project .codex/config.toml), then run codex mcp login llmwiki.' >&2 ;;
-  hermes) printf '%s\n' 'Merge llmwiki: { url: "<ENGINE_URL>/mcp", auth: oauth } under mcp_servers in your existing ~/.hermes/config.yaml, preserving other settings. Then run in a separate terminal: hermes mcp login llmwiki' >&2 ;;
-  cline) printf '%s\n' 'For Cline CLI, merge client/mcp.example.json into ~/.cline/data/settings/cline_mcp_settings.json. Run cline mcp and choose Authorize OAuth for llmwiki. The IDE extension opens separate MCP settings through MCP Servers > Configure.' >&2 ;;
-  kiro) printf '%s\n' 'Merge client/mcp.example.json into ~/.kiro/settings/mcp.json or project .kiro/settings/mcp.json. Connect to llmwiki and complete browser OAuth; Kiro CLI /mcp auth reauthenticates servers.' >&2 ;;
-  qwen-code) printf '%s\n' 'Merge client/mcp.example.json into ~/.qwen/settings.json or project .qwen/settings.json. Use Qwen Code /mcp to authenticate llmwiki through its discovered OAuth browser flow.' >&2 ;;
-esac
-printf '%s\n' 'Replace <ENGINE_URL> with the engine base URL. No secrets or active MCP configuration are written. Start a new agent session after installing.' >&2
+printf '%s\n' 'For client setup and login, open <ENGINE_URL>/settings?tab=mcp or read docs/skills.md. Start a new agent session after installing.' >&2
 if [ "$client" = hermes ] && [ "$project_set" = true ]; then
   printf '%s\n' 'Hermes project skills require a git project root and separate approval: hermes skills trust <PROJECT_DIR>. This command does not modify project trust.' >&2
 fi

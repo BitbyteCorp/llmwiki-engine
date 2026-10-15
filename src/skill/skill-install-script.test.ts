@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { copyFileSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,14 +20,14 @@ beforeEach(() => {
   assets = join(root, 'fixture assets');
   home = join(root, 'home');
   project = join(root, 'project');
-  for (const client of ['llmwiki', ...skillClients]) mkdirSync(join(assets, client), { recursive: true });
+  mkdirSync(join(assets, 'llmwiki/references'), { recursive: true });
   mkdirSync(home);
   mkdirSync(project);
   script = join(assets, 'install.sh');
   copyFileSync(repositoryScript, script);
   writeFileSync(join(assets, 'version.json'), JSON.stringify({ version: '1.0.0' }));
   writeFileSync(join(assets, 'llmwiki/SKILL.md'), 'Original skill\n\n');
-  writeFileSync(join(assets, 'codex/mcp.example.toml'), 'Original example\n');
+  writeFileSync(join(assets, 'llmwiki/references/usage.txt'), 'Original usage\n');
   installer = new SkillInstaller(assets, home);
 });
 afterEach(() => rmSync(root, { recursive: true, force: true }));
@@ -172,6 +173,7 @@ describe('POSIX skill installer interoperability', () => {
     const status = result('install', client, { source: repositoryScript });
     expect(status).toEqual({ ...new SkillInstaller().status(client, { project }), changed: true });
     expect(status.state).toBe('current');
+    expect(readdirSync(status.directory).sort()).toEqual(['.llmwiki-install.json', 'SKILL.md']);
   });
 
   it.each(skillClients)('uses HOME for %s and requires install before update', (client) => {
@@ -206,22 +208,33 @@ describe('POSIX skill installer interoperability', () => {
     expect(installer.status('codex', { project }).state).toBe('current');
   });
 
-  it.each([false, true])('retires only formerly managed files and protects their local edits: %s', (modified) => {
+  it.each(['install', 'update'] as const)('migrates legacy managed setup files with %s, preserving user files and requiring force for edits', (action) => {
     const initial = installer.install('codex', 'install', { project });
-    writeFileSync(join(initial.directory, 'personal.txt'), 'Unmanaged supplement');
-    if (modified) writeFileSync(join(initial.directory, 'client/mcp.example.toml'), 'My local URL');
-    rmSync(join(assets, 'codex/mcp.example.toml'));
-    writeFileSync(join(assets, 'llmwiki/SKILL.md'), 'Same version correction');
+    const markerPath = join(initial.directory, installMarker);
+    const canonicalMarker = JSON.parse(readFileSync(markerPath, 'utf8'));
+    const name = 'client/mcp.example.toml';
+    const content = 'Previously distributed client setup';
+    const legacyMarker = { ...canonicalMarker, version: '0.3.0', files: { ...canonicalMarker.files,
+      [name]: createHash('sha256').update(content).digest('hex') } };
+    mkdirSync(join(initial.directory, 'client'));
+    writeFileSync(join(initial.directory, name), content);
+    writeFileSync(join(initial.directory, 'client/personal.txt'), 'Unmanaged supplement');
+    writeFileSync(markerPath, JSON.stringify(legacyMarker));
     expect(result('status')).toEqual(installer.status('codex', { project }));
-    expect(result('status').state).toBe(modified ? 'modified' : 'outdated');
-    if (modified) {
-      expect(run('update').stderr).toMatch(/client\/mcp\.example\.toml.*--force/);
-      expect(readFileSync(join(initial.directory, 'SKILL.md'), 'utf8')).toBe('Original skill\n\n');
-    }
-    result('update', 'codex', { force: modified });
-    expect(() => readFileSync(join(initial.directory, 'client/mcp.example.toml'))).toThrow();
-    expect(readFileSync(join(initial.directory, 'personal.txt'), 'utf8')).toBe('Unmanaged supplement');
-    expect(installer.status('codex', { project })).toMatchObject({ state: 'current', installedVersion: '1.0.0' });
+    expect(result(action)).toMatchObject({ state: 'current', changed: true });
+    expect(() => readFileSync(join(initial.directory, name))).toThrow();
+    expect(JSON.parse(readFileSync(markerPath, 'utf8'))).toEqual(canonicalMarker);
+
+    writeFileSync(join(initial.directory, name), 'My local URL');
+    const previousMarker = JSON.stringify(legacyMarker);
+    writeFileSync(markerPath, previousMarker);
+    expect(run(action).stderr).toMatch(/client\/mcp\.example\.toml.*--force/);
+    expect(readFileSync(markerPath, 'utf8')).toBe(previousMarker);
+    expect(readFileSync(join(initial.directory, name), 'utf8')).toBe('My local URL');
+    result(action, 'codex', { force: true });
+    expect(() => readFileSync(join(initial.directory, name))).toThrow();
+    expect(readFileSync(join(initial.directory, 'client/personal.txt'), 'utf8')).toBe('Unmanaged supplement');
+    expect(JSON.parse(readFileSync(markerPath, 'utf8'))).toEqual(canonicalMarker);
   });
 
   it('protects unmanaged collisions and never changes active configuration or unrelated files', () => {
@@ -233,13 +246,13 @@ describe('POSIX skill installer interoperability', () => {
     expect(result('status')).toEqual(installer.status('codex', { project }));
     expect(run('install').stderr).toMatch(/unmanaged.*SKILL\.md/);
     result('install', 'codex', { force: true });
-    writeFileSync(join(directory, 'client/new.txt'), 'My file');
-    writeFileSync(join(assets, 'codex/new.txt'), 'New distribution file');
+    writeFileSync(join(directory, 'references/new.txt'), 'My file');
+    writeFileSync(join(assets, 'llmwiki/references/new.txt'), 'New distribution file');
     writeFileSync(join(assets, 'version.json'), JSON.stringify({ version: '2.0.0' }));
     expect(result('status')).toEqual(installer.status('codex', { project }));
-    expect(run('update').stderr).toMatch(/client\/new\.txt/);
+    expect(run('update').stderr).toMatch(/references\/new\.txt/);
     result('update', 'codex', { force: true });
-    expect(readFileSync(join(directory, 'client/new.txt'), 'utf8')).toBe('New distribution file');
+    expect(readFileSync(join(directory, 'references/new.txt'), 'utf8')).toBe('New distribution file');
     expect(readFileSync(join(project, '.mcp.json'), 'utf8')).toBe('Private active settings');
     expect(readFileSync(join(directory, 'personal.txt'), 'utf8')).toBe('Private supplement');
     expect(installer.status('codex', { project })).toMatchObject({ state: 'current', installedVersion: '2.0.0' });
@@ -286,29 +299,29 @@ describe('POSIX skill installer interoperability', () => {
     expect(installer.status('codex', { project }).state).toBe('current');
   });
 
-  it.each(['SKILL.md', 'client', installMarker])('preflights non-file destinations or parents before any writes: %s', (name) => {
+  it.each(['SKILL.md', 'references', installMarker])('preflights non-file destinations or parents before any writes: %s', (name) => {
     const initial = installer.install('codex', 'install', { project });
     const path = join(initial.directory, name);
     rmSync(path, { recursive: true });
-    if (name === 'client') writeFileSync(path, 'Not a directory');
+    if (name === 'references') writeFileSync(path, 'Not a directory');
     else mkdirSync(path);
     writeFileSync(join(assets, 'llmwiki/SKILL.md'), 'Updated skill');
     const execution = run('update', 'codex', { force: true });
     expect(execution.status).not.toBe(0);
     expect(execution.stderr).toMatch(/non-file|non-directory/);
     if (name !== 'SKILL.md') expect(readFileSync(join(initial.directory, 'SKILL.md'), 'utf8')).toBe('Original skill\n\n');
-    if (name === 'client') expect(readFileSync(path, 'utf8')).toBe('Not a directory');
-    else expect(readFileSync(join(initial.directory, 'client/mcp.example.toml'), 'utf8')).toBe('Original example\n');
+    if (name === 'references') expect(readFileSync(path, 'utf8')).toBe('Not a directory');
+    else expect(readFileSync(join(initial.directory, 'references/usage.txt'), 'utf8')).toBe('Original usage\n');
   });
 
-  it.each(['SKILL.md', 'client', installMarker])('rejects symlink destinations and parents even with force: %s', (name) => {
+  it.each(['SKILL.md', 'references', installMarker])('rejects symlink destinations and parents even with force: %s', (name) => {
     const initial = installer.install('codex', 'install', { project });
     const outside = join(root, 'private');
     mkdirSync(outside);
     writeFileSync(join(outside, 'secret'), 'Private configuration');
     const path = join(initial.directory, name);
     rmSync(path, { recursive: true });
-    symlinkSync(name === 'client' ? outside : join(outside, 'secret'), path);
+    symlinkSync(name === 'references' ? outside : join(outside, 'secret'), path);
     writeFileSync(join(assets, 'llmwiki/SKILL.md'), 'Updated skill');
     const execution = run('update', 'codex', { force: true });
     expect(execution.status).not.toBe(0);

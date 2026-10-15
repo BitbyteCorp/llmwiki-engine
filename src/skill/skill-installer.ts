@@ -78,13 +78,12 @@ export class SkillInstaller {
     private readonly homeDirectory = homedir(),
   ) {}
 
-  private bundle(client: SkillClient): { version: string; files: Map<string, Buffer> } {
+  private bundle(): { version: string; files: Map<string, Buffer> } {
     const { version } = z.object({ version: z.string().min(1) }).parse(
       JSON.parse(readFileSync(join(this.assetsDirectory, 'version.json'), 'utf8')),
     );
     const files = loadFiles(join(this.assetsDirectory, 'llmwiki'));
     if (!files.has('SKILL.md')) throw new Error('Canonical skill asset SKILL.md is missing');
-    for (const [name, content] of loadFiles(join(this.assetsDirectory, client), 'client')) files.set(name, content);
     return { version, files };
   }
 
@@ -102,7 +101,7 @@ export class SkillInstaller {
   }
 
   status(client: SkillClient, options: Pick<SkillInstallOptions, 'project'> = {}): SkillStatus {
-    const bundle = this.bundle(client);
+    const bundle = this.bundle();
     return this.inspect(client, resolve(options.project ?? this.homeDirectory, roots[client], 'skills', 'llmwiki'), bundle);
   }
 
@@ -134,7 +133,7 @@ export class SkillInstaller {
   }
 
   install(client: SkillClient, action: 'install' | 'update', options: SkillInstallOptions = {}): SkillStatus & { changed: boolean } {
-    const bundle = this.bundle(client);
+    const bundle = this.bundle();
     const directory = resolve(options.project ?? this.homeDirectory, roots[client], 'skills', 'llmwiki');
     const status = this.inspect(client, directory, bundle);
     if (action === 'update' && status.state === 'not-installed') {

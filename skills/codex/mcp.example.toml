@@ -1,4 +1,0 @@
-# Merge into existing Codex config; replace the example URL with your engine URL.
-# OAuth credentials are managed by `codex mcp login llmwiki`, not this file.
-[mcp_servers.llmwiki]
-url = "https://wiki.example.com/mcp"

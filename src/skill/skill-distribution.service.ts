@@ -31,20 +31,21 @@ export class SkillDistributionService {
     this.version = read(join(assets, 'version.json'));
     const { version } = JSON.parse(this.version.toString('utf8')) as { version: unknown };
     if (typeof version !== 'string' || !version) throw new Error('Invalid skill bundle version.json.');
-    const skill = remember(read(join(assets, 'llmwiki/SKILL.md')));
+    const files = new Map<string, string>();
+    const visit = (directory: string, prefix = ''): void => {
+      if (!lstatSync(directory).isDirectory()) throw new Error(`Skill assets must be directories: ${directory}`);
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const path = join(directory, entry.name);
+        const name = prefix ? `${prefix}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) visit(path, name);
+        else files.set(name, remember(read(path)));
+      }
+    };
+    visit(join(assets, 'llmwiki'));
+    if (!files.has('SKILL.md')) throw new Error('Canonical skill asset SKILL.md is missing');
+    const manifestFiles = Object.fromEntries(files);
     for (const client of skillClients) {
-      const files: Record<string, string> = { 'SKILL.md': skill };
-      const visit = (directory: string, prefix: string): void => {
-        if (!lstatSync(directory).isDirectory()) throw new Error(`Skill assets must be directories: ${directory}`);
-        for (const entry of readdirSync(directory, { withFileTypes: true })) {
-          const path = join(directory, entry.name);
-          const name = `${prefix}/${entry.name}`;
-          if (entry.isDirectory()) visit(path, name);
-          else files[name] = remember(read(path));
-        }
-      };
-      visit(join(assets, client), 'client');
-      this.manifests.set(client, `${JSON.stringify({ schema: 1, client, version, files }, null, 2)}\n`);
+      this.manifests.set(client, `${JSON.stringify({ schema: 1, client, version, files: manifestFiles }, null, 2)}\n`);
     }
   }
 
