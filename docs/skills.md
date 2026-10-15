@@ -117,6 +117,8 @@ hermes skills install BitbyteCorp/llmwiki-engine/skills/llmwiki
 
 서버 주소·클라이언트 설정·명령 블록에는 복사 버튼이 있다. 복사 성공과 실패는 전역 알림으로 표시하며, 실패하면 내용을 직접 선택해 복사한다.
 
+Claude Code·Codex·Hermes를 선택하면 같은 기본 URL로 `curl -fsSL <기본 URL>/skills/install.sh | sh -s -- install <클라이언트>` 명령을 제공한다. 클라이언트 값은 각각 `claude-code`, `codex`, `hermes`다. macOS·Linux에서 저장소 복제나 `llmwiki` CLI 설치 없이 Skill을 설치하며, 명령 끝에 `--project /path/to/project`를 붙이면 프로젝트 범위를 선택한다. 설치는 MCP 연결·OAuth 로그인을 수행하지 않으므로 화면의 연결 등록과 로그인 단계를 별도로 완료한다. 저장소·CLI·클라이언트 기본 설치 경로는 이 문서의 다른 절에서 안내한다.
+
 **연결 확인**은 기본 URL의 origin에서 다음 두 발견 문서만 가져온다.
 
 | 요청 | 검사 필드 | 화면이 기대하는 값 |
