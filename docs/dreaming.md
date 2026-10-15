@@ -27,7 +27,7 @@ HTTP 진입점인 `main.ts`는 `app.init()` 직후 `recoverInterrupted()`로 중
 
 입력 범위는 직전 성공한 `dream_runs.to_sha`를 제외한 이후 커밋부터 실행 시작에 읽은 main HEAD까지다. 첫 실행의 기준점은 저장소의 첫 커밋이다. 도니가 작업하는 동안 main에 추가된 커밋은 이번 학습 체크포인트를 앞당기지 않으며 다음 실행에서 검토한다.
 
-수집 과정에서 생긴 잔여물을 위한 노트 후보도 입력에 포함한다. `local`·`structural`에서만 위 입력 커밋 구간의 `Wiki-Source: import` 커밋에 변경으로 나타난 `wiki/` 아래 Markdown 노트를 모은다. `wiki/<domain>/AGENTS.md`는 기존 도메인 schema 경로 판별 규칙에 따라 제외한다. 후보 경로는 `run.toSha` 시점의 현재 경로로 해석해 이름 변경은 현재 이름으로 반영하고 삭제된 노트는 버린다. 현재 경로 기준으로 중복을 제거하고 사전순으로 정렬한 뒤 `importedNotes`에는 최대 20개를 넣고, `importedNotesCount`에는 제한 전 전체 후보 수를 넣는다. `sweep`에는 별도 후보를 전달하지 않아 `importedNotes`는 빈 배열, `importedNotesCount`는 0이며, 대신 선택한 `focus`에 직접 들어 있는 노트를 살펴 같은 잔여물을 정리한다.
+수집 과정에서 생긴 잔여물을 위한 노트 후보도 입력에 포함한다. `local`·`structural`에서만 위 입력 커밋 구간의 `Wiki-Source: import` 커밋에 변경으로 나타난 `wiki/` 아래 Markdown 노트를 모은다. 또한 `run.fromSha`와 `run.toSha` 사이의 순변경에 남은 노트만 후보로 삼으므로, 실행 중 수정됐더라도 내용과 경로가 시작 시점과 같게 복원된 노트는 제외한다. `wiki/<domain>/AGENTS.md`는 기존 도메인 schema 경로 판별 규칙에 따라 제외한다. 후보 경로는 `run.toSha` 시점의 현재 경로로 해석해 이름 변경은 현재 이름으로 반영하고 삭제된 노트는 버린다. 현재 경로 기준으로 중복을 제거하고 사전순으로 정렬한 뒤 `importedNotes`에는 최대 20개를 넣고, `importedNotesCount`에는 제한 전 전체 후보 수를 넣는다. `sweep`에는 별도 후보를 전달하지 않아 `importedNotes`는 빈 배열, `importedNotesCount`는 0이며, 대신 선택한 `focus`에 직접 들어 있는 노트를 살펴 같은 잔여물을 정리한다.
 
 대화 입력은 [웹 대화 기록의 하루치 학습 배치](web.md#대화-기록과-학습)를 따른다. 배치 시작 시점까지 생성된 `role='user'`, `learned_at IS NULL` 메시지만 가져온다. 실패한 날짜의 미학습 메시지도 함께 가져오므로 날짜 경계 때문에 누락되지 않는다. assistant 메시지는 입력에 넣지 않는다.
 

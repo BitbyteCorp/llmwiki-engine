@@ -202,9 +202,11 @@ export class DreamingService implements OnApplicationShutdown {
           .map((commit) => commit.sha));
         const importedNotes: string[] = [];
         if (run.mode !== 'sweep' && importCommits.size > 0) {
+          const currentWikiNotes = new Set(structure.folders.flatMap((folder) => folder.files));
+          const candidates = changes.map((change) => change.path).filter((path) => currentWikiNotes.has(path)).sort();
           // The structure inventory already excludes schemas and deleted/non-wiki files.
-          // Follow each current note at the sampled HEAD, not the advancing main ref.
-          for (const path of structure.folders.flatMap((folder) => folder.files).sort()) {
+          // Only changed notes need history reads; follow renames at the sampled HEAD.
+          for (const path of candidates) {
             const noteHistory = await repo.log({ path, ref: run.toSha, sinceSha: run.fromSha, follow: true, limit: null });
             for (const commit of noteHistory) {
               if (!importCommits.has(commit.sha)) continue;
