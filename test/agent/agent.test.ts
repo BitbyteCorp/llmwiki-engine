@@ -9,6 +9,9 @@ import { loadConfig, type Config } from '../../src/config.js';
 import { CONFIG, LOGGER } from '../../src/common/tokens.js';
 import { newId } from '../../src/common/ids.js';
 import { KnowledgeRepo, type Worktree } from '../../src/knowledge/repo.js';
+import { WikiCatalog } from '../../src/knowledge/wiki-catalog.js';
+import { MEMORY_BUDGET_CHARS, MEMORY_SECTIONS } from '../../src/knowledge/memory.js';
+import { STRUCTURE_RULES } from '../../src/knowledge/structure-rules.js';
 import { SearchService } from '../../src/rag/search.service.js';
 import type { WriteJob } from '../../src/jobs/write-job.types.js';
 import { startFakeOpenAI, type FakeResponder, type FakeScript } from '../fake-openai.js';
@@ -45,6 +48,7 @@ async function createAgent(
       { provide: KnowledgeRepo, useValue: repo },
       { provide: SearchService, useValue: search },
       { provide: AclService, useValue: acl },
+      { provide: WikiCatalog, useValue: new WikiCatalog(repo, acl) },
     ],
   }).compile();
   await module.init();
@@ -453,22 +457,25 @@ describe('Dony Responses tool loop', () => {
   it('reloads main writing rules and memory instead of caching context', async () => {
     const notes = { 'AGENTS.md': '작성 규칙이다.', 'MEMORY.md': '첫 메모리다.' };
     const { agent } = await fixture([], notes);
-    expect(await agent.baseInstructions()).toContain('첫 메모리다.');
+    const initial = await agent.baseInstructions();
+    expect(initial).toContain('첫 메모리다.');
+    expect(initial.split(STRUCTURE_RULES)).toHaveLength(2);
+    expect(initial).toContain('항상 로드하는 공용 문맥: MEMORY.md');
+    expect(initial).toContain(`${MEMORY_BUDGET_CHARS}자`);
+    for (const section of MEMORY_SECTIONS) expect(initial).toContain(`## ${section}`);
     notes['MEMORY.md'] = '변경된 메모리다.';
     const updated = await agent.baseInstructions();
     expect(updated).toContain('변경된 메모리다.');
     expect(updated).not.toContain('첫 메모리다.');
   });
 
-  it('derives domain hubs and optional schemas from main paths and refreshes them with the notes', async () => {
+  it('uses the main catalog outline with topics, shared notes and unclassified counts', async () => {
     const notes: Record<string, string> = {
       'wiki/software/index.md': '# Software',
       'wiki/software/AGENTS.md': 'Software writing rules.',
-      'wiki/software/cache.md': '# Cache',
+      'wiki/software/caching/cache.md': '# Cache',
       'wiki/travel/packing.md': '# Packing',
-      'wiki/concepts/index.md': '# Concepts',
-      'wiki/concepts/cache.md': '# Shared cache',
-      'wiki/entities/index.md': '# Entities',
+      'wiki/concepts/cache.md': '---\ndescription: Shared cache semantics\n---\n# Shared cache',
       'wiki/entities/company.md': '# Company',
       'wiki/unclassified.md': '# Legacy note',
       'raw/not-a-domain/source.md': '# Source',
@@ -476,33 +483,30 @@ describe('Dony Responses tool loop', () => {
     const { agent, repo } = await fixture([], notes);
     const listFiles = vi.spyOn(repo, 'listFiles');
     const instructions = await agent.baseInstructions();
-    const domainLines = instructions.split('\n').filter((line) => line.startsWith('- '));
-    expect(listFiles).toHaveBeenCalledWith('wiki/', 'main');
-    expect(domainLines).toHaveLength(2);
-    expect(domainLines[0]).toContain('software: wiki/software/index.md');
-    expect(domainLines[0]).toContain('wiki/software/AGENTS.md');
-    expect(domainLines[1]).toMatch(/^- travel: .+\(wiki\/travel\/index\.md\)$/);
-    expect(instructions).not.toContain('wiki/travel/AGENTS.md');
-    expect(domainLines.join('\n')).not.toMatch(/concepts:|entities:|unclassified|not-a-domain/);
+    expect(listFiles).toHaveBeenCalledWith('wiki/', 'test-sha');
+    expect(instructions).toContain('domain: "software"; hub: "wiki/software/index.md"');
+    expect(instructions).toContain('topic: "caching"; folder: "wiki/software/caching/"; notes: 1');
+    expect(instructions).toContain('domain: "travel"; hub: none');
+    expect(instructions).toContain('"Shared cache" — "Shared cache semantics"');
+    expect(instructions).toContain('unclassified: 1');
+    expect(instructions).not.toContain('not-a-domain');
 
     delete notes['wiki/software/index.md'];
     delete notes['wiki/software/AGENTS.md'];
-    delete notes['wiki/software/cache.md'];
+    delete notes['wiki/software/caching/cache.md'];
     notes['wiki/travel/index.md'] = '# Travel';
     notes['wiki/research/index.md'] = '# Research';
     notes['wiki/research/AGENTS.md'] = 'Research writing rules.';
+    vi.spyOn(repo, 'headSha').mockResolvedValue('test-sha-2');
     const updated = await agent.baseInstructions();
-    const updatedDomainLines = updated.split('\n').filter((line) => line.startsWith('- '));
     expect(listFiles).toHaveBeenCalledTimes(2);
-    expect(listFiles).toHaveBeenLastCalledWith('wiki/', 'main');
-    expect(updatedDomainLines).toHaveLength(2);
-    expect(updatedDomainLines[0]).toContain('research: wiki/research/index.md');
-    expect(updatedDomainLines[0]).toContain('wiki/research/AGENTS.md');
-    expect(updatedDomainLines[1]).toBe('- travel: wiki/travel/index.md');
+    expect(listFiles).toHaveBeenLastCalledWith('wiki/', 'test-sha-2');
+    expect(updated).toContain('domain: "research"; hub: "wiki/research/index.md"');
+    expect(updated).toContain('domain: "travel"; hub: "wiki/travel/index.md"');
     expect(updated).not.toContain('wiki/software/');
   });
 
-  it('lists only ACL-readable domains, hubs, and optional schemas', async () => {
+  it('includes only ACL-readable catalog metadata and never reveals a hidden hub path', async () => {
     const { agent, acl, admin, viewer } = await aclFixture({
       'wiki/public/index.md': '# Public',
       'wiki/public/AGENTS.md': 'Public rules.',
@@ -517,19 +521,15 @@ describe('Dony Responses tool loop', () => {
     acl.create({ prefix: 'wiki/partial/AGENTS.md', subjectType: 'everyone', access: 'none' }, admin);
 
     const instructions = await agent.baseInstructions(viewer);
-    const domainLines = instructions.split('\n').filter((line) => line.startsWith('- '));
-    expect(domainLines).toHaveLength(2);
-    expect(domainLines[0]).toMatch(/^- partial: .+\(wiki\/partial\/index\.md\)$/);
+    expect(instructions).toContain('domain: "partial"; hub: none');
+    expect(instructions).not.toContain('wiki/partial/index.md');
     expect(instructions).not.toContain('wiki/partial/AGENTS.md');
-    expect(domainLines[1]).toContain('public: wiki/public/index.md');
-    expect(domainLines[1]).toContain('wiki/public/AGENTS.md');
+    expect(instructions).toContain('domain: "public"; hub: "wiki/public/index.md"');
     expect(instructions).not.toContain('wiki/private/');
 
     const trustedInstructions = await agent.baseInstructions();
-    expect(trustedInstructions).toContain('private: wiki/private/index.md');
-    expect(trustedInstructions).toContain('wiki/private/AGENTS.md');
-    expect(trustedInstructions).toContain('partial: wiki/partial/index.md');
-    expect(trustedInstructions).toContain('wiki/partial/AGENTS.md');
+    expect(trustedInstructions).toContain('domain: "private"; hub: "wiki/private/index.md"');
+    expect(trustedInstructions).toContain('domain: "partial"; hub: "wiki/partial/index.md"');
   });
 });
 

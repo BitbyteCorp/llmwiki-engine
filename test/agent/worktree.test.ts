@@ -13,6 +13,7 @@ import { makeWorktreeTools } from '../../src/agent/worktree.js';
 import { resolveConflicts } from '../../src/agent/writes.js';
 import { loadConfig } from '../../src/config.js';
 import { KnowledgeRepo } from '../../src/knowledge/repo.js';
+import { WikiCatalog } from '../../src/knowledge/wiki-catalog.js';
 import type { SearchService } from '../../src/rag/search.service.js';
 import { AuditService } from '../../src/audit/audit.service.js';
 import { UsersService } from '../../src/auth/users.service.js';
@@ -34,7 +35,7 @@ async function fixture() {
   const wt = await repo.createWorktree('paging');
   cleanup.push(() => wt.dispose());
   const search = { search: async () => [] } as unknown as SearchService;
-  const tools = makeWorktreeTools(search, wt, author, acl);
+  const tools = makeWorktreeTools(search, wt, author, acl, new WikiCatalog(repo, acl));
   return { repo, wt, tools, search };
 }
 
@@ -43,6 +44,21 @@ async function invoke<T>(tools: AgentTool[], name: string, args: Record<string, 
 }
 
 describe('paged worktree tools', () => {
+  it('browses complete current-main metadata rather than unmerged worktree notes', async () => {
+    const { repo, wt, tools } = await fixture();
+    const main = await repo.createWorktree('catalog-main');
+    cleanup.push(() => main.dispose());
+    await main.write('wiki/software/caching/orphan.md', '---\ntype: note\ndescription: Main-only description\n---\n# Unlinked note\n');
+    await main.commit('Add catalog knowledge', author);
+    await main.fastForwardMain();
+    await wt.write('wiki/software/caching/unmerged.md', '# Unmerged note\n');
+    const result = await invoke<{ folder: string; listing: string }>(tools, 'browse_catalog', { folder: 'wiki/software/' });
+    expect(result.folder).toBe('wiki/software/');
+    expect(result.listing).toContain('[Unlinked note](wiki/software/caching/orphan.md) (note): Main-only description');
+    expect(result.listing).not.toContain('Unmerged');
+    expect(tools.find(tool => tool.name === 'browse_catalog')!.description).toContain('Does not include unmerged worktree edits');
+  });
+
   it('reads long lines and all following pages, then preserves the entire file on replacement', async () => {
     const { wt, tools } = await fixture();
     const path = 'wiki/long.md';
@@ -142,7 +158,7 @@ describe('paged worktree tools', () => {
     const resolved = prefix + 'work intent\nwork tail knowledge\nmain intent\nmain tail knowledge\n';
     const agent = {
       baseInstructions: async () => '',
-      worktreeTools: () => makeWorktreeTools(search, wt, author, acl),
+      worktreeTools: () => makeWorktreeTools(search, wt, author, acl, new WikiCatalog(repo, acl)),
       runAgent: async (options: RunAgentOptions) => {
         const input = JSON.parse(options.input as string) as { files: Array<Record<string, ContentPage>> };
         const file = input.files[0];
@@ -188,7 +204,7 @@ describe('paged worktree tools', () => {
     await wt.write(path, '<<<<<<< HEAD\n=======\nfact\n>>>>>>> main\n');
     const agent = {
       baseInstructions: async () => '',
-      worktreeTools: () => makeWorktreeTools(search, wt, author, acl),
+      worktreeTools: () => makeWorktreeTools(search, wt, author, acl, new WikiCatalog(repo, acl)),
       runAgent: async (options: RunAgentOptions) => {
         const file = JSON.parse(options.input as string).files[0];
         expect(file.base).toBeNull();
@@ -228,7 +244,7 @@ describe('paged worktree tools', () => {
     const original = await wt.read(path);
     const agent = {
       baseInstructions: async () => '',
-      worktreeTools: () => makeWorktreeTools(search, wt, author, acl, editor),
+      worktreeTools: () => makeWorktreeTools(search, wt, author, acl, new WikiCatalog(repo, acl), editor),
       runAgent: async (options: RunAgentOptions) => {
         const tools = options.tools as AgentTool[];
         acl.create({ prefix: path, subjectType: 'everyone', subject: '', access: 'none' }, admin);

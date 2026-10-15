@@ -7,7 +7,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import pino from 'pino';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { AclModule } from '../acl/acl.module.js';
 import { AclService } from '../acl/acl.service.js';
 import { UsersService } from '../auth/users.service.js';
@@ -17,6 +17,7 @@ import { CONFIG, LOGGER } from '../common/tokens.js';
 import { loadConfig } from '../config.js';
 import { EventsModule } from '../events/events.module.js';
 import { KnowledgeRepo } from '../knowledge/repo.js';
+import { MEMORY_PATH } from '../knowledge/memory.js';
 import { NoteWriterService } from '../jobs/note-writer.service.js';
 import { WriteJobsService } from '../jobs/write-jobs.service.js';
 import { OpsModule } from '../ops/ops.module.js';
@@ -84,6 +85,10 @@ it('protects all read tools, resources and path prompts and redacts mixed Git me
   expect(listed.structuredContent).toMatchObject({ index: null });
   expect(listed.structuredContent?.files).toContain('wiki/public.md');
   expect(JSON.stringify(listed)).not.toContain('wiki/private/secret.md');
+  const browsed = await call(client, 'browse', { folder: 'wiki/' });
+  expect(browsed.structuredContent).toMatchObject({ folder: 'wiki/', listing: expect.stringContaining('wiki/public.md') });
+  expect(JSON.stringify(browsed)).not.toContain('wiki/private/secret.md');
+  expect(JSON.stringify(await call(client, 'browse', { folder: 'wiki/private/' }))).not.toContain('wiki/private/secret.md');
   const search = await call(client, 'search', { query: 'Durable', limit: 1 });
   expect((search.structuredContent?.hits as Array<{ path: string }>).map(hit => hit.path)).toHaveLength(1);
   expect(JSON.stringify(search)).not.toContain('wiki/private/secret.md');
@@ -163,4 +168,76 @@ it('initializes each caller with only readable domain hubs and summaries', async
   f.acl.create({ prefix: 'wiki/public/index.md', subjectType: 'everyone', subject: '', access: 'none' }, f.admin);
   const reconnected = await f.connect(f.viewer);
   expect(reconnected.getInstructions()).not.toContain('wiki/public/index.md');
+});
+
+it.each(['memory', 'catalog'])('projects the initialization map after ACL changes during %s reads', async (stage) => {
+  const f = await fixture();
+  await f.writer.apply({ userId: f.admin.id, source: 'web', baseSha: await f.repo.headSha(), message: 'Add map race data', ops: [
+    { op: 'put', path: MEMORY_PATH, content: '# Shared memory\n' },
+    { op: 'put', path: 'wiki/revoked/index.md', content: '---\ndescription: HIDDEN_REVOKED_DESCRIPTION\n---\n# Revoked domain\n' },
+  ] });
+  const read = f.repo.readFile.bind(f.repo);
+  let revoked = false;
+  vi.spyOn(f.repo, 'readFile').mockImplementation(async (path, ref) => {
+    const content = await read(path, ref);
+    if (!revoked && path === (stage === 'memory' ? MEMORY_PATH : 'wiki/revoked/index.md')) {
+      revoked = true;
+      f.acl.create({ prefix: 'wiki/revoked/', subjectType: 'everyone', subject: '', access: 'none' }, f.admin);
+    }
+    return content;
+  });
+  const viewer = await f.connect(f.viewer);
+  expect(revoked).toBe(true);
+  expect(viewer.getInstructions()).not.toContain('wiki/revoked/');
+  expect(viewer.getInstructions()).not.toContain('HIDDEN_REVOKED_DESCRIPTION');
+});
+
+it('refreshes catalog resource and browse ACL projection without rebuilding source metadata', async () => {
+  const f = await fixture();
+  const viewer = await f.connect(f.viewer);
+  const before = await viewer.readResource({ uri: 'llmwiki://index' });
+  expect(JSON.stringify(before)).toContain('wiki/public.md');
+  f.acl.create({ prefix: 'wiki/public.md', subjectType: 'everyone', subject: '', access: 'none' }, f.admin);
+  expect(JSON.stringify(await viewer.readResource({ uri: 'llmwiki://index' }))).not.toContain('wiki/public.md');
+  expect(JSON.stringify(await call(viewer, 'browse', { folder: 'wiki/' }))).not.toContain('wiki/public.md');
+});
+
+it('keeps real-catalog map counts, index metadata and browse listings inside readable folders', async () => {
+  const f = await fixture();
+  await f.writer.apply({ userId: f.admin.id, source: 'web', baseSha: await f.repo.headSha(), message: 'Add catalog privacy data', ops: [
+    { op: 'put', path: 'wiki/catalog/index.md', content: '---\ndescription: Readable catalog domain\n---\n# Catalog domain\n' },
+    { op: 'put', path: 'wiki/catalog/topic/visible.md', content: '---\ndescription: VISIBLE_CATALOG_DESCRIPTION\ntype: guide\n---\n# VISIBLE_CATALOG_TITLE\n' },
+    { op: 'put', path: 'wiki/catalog/restricted/hidden.md', content: '---\ndescription: HIDDEN_TOPIC_DESCRIPTION\ntype: guide\n---\n# HIDDEN_TOPIC_TITLE\n' },
+    { op: 'put', path: 'wiki/private/index.md', content: '---\ndescription: HIDDEN_DOMAIN_DESCRIPTION\n---\n# HIDDEN_DOMAIN_TITLE\n' },
+    { op: 'put', path: 'wiki/concepts/visible.md', content: '---\ndescription: VISIBLE_SHARED_DESCRIPTION\n---\n# VISIBLE_SHARED_TITLE\n' },
+    { op: 'put', path: 'wiki/concepts/hidden.md', content: '---\ndescription: HIDDEN_SHARED_DESCRIPTION\n---\n# HIDDEN_SHARED_TITLE\n' },
+  ] });
+  f.acl.create({ prefix: 'wiki/catalog/restricted/', subjectType: 'everyone', subject: '', access: 'none' }, f.admin);
+  f.acl.create({ prefix: 'wiki/concepts/hidden.md', subjectType: 'everyone', subject: '', access: 'none' }, f.admin);
+  const admin = await f.connect(f.admin);
+  expect(admin.getInstructions()).toContain('description: "Readable catalog domain"; notes: 2; without-topic: 0');
+  expect(admin.getInstructions()).toContain('shared: "concepts"; folder: "wiki/concepts/"; notes: 2');
+  const viewer = await f.connect(f.viewer);
+  const instructions = viewer.getInstructions()!;
+  expect(instructions).toContain('description: "Readable catalog domain"; notes: 1; without-topic: 0');
+  expect(instructions).toContain('topic: "topic"; folder: "wiki/catalog/topic/"; notes: 1');
+  expect(instructions).toContain('shared: "concepts"; folder: "wiki/concepts/"; notes: 1');
+  expect(instructions).toContain('VISIBLE_SHARED_TITLE');
+  expect(instructions).toContain('VISIBLE_SHARED_DESCRIPTION');
+  const resource = await viewer.readResource({ uri: 'llmwiki://index' });
+  const content = resource.contents[0]!;
+  if (!('text' in content)) throw new Error('Expected text catalog resource.');
+  expect(JSON.parse(content.text)).toMatchObject({ notes: expect.arrayContaining([
+    { path: 'wiki/catalog/topic/visible.md', title: 'VISIBLE_CATALOG_TITLE', description: 'VISIBLE_CATALOG_DESCRIPTION', type: 'guide' },
+  ]) });
+  const listing = await call(viewer, 'browse', { folder: 'wiki/catalog/' });
+  expect(listing.structuredContent?.listing).toContain('VISIBLE_CATALOG_TITLE');
+  expect(listing.structuredContent?.listing).toContain('VISIBLE_CATALOG_DESCRIPTION');
+  const fullListing = await call(viewer, 'browse', { folder: 'wiki/' });
+  for (const response of [instructions, JSON.stringify(resource), JSON.stringify(listing), JSON.stringify(fullListing)]) {
+    for (const hidden of ['wiki/private/', 'restricted', 'HIDDEN_TOPIC_TITLE', 'HIDDEN_TOPIC_DESCRIPTION',
+      'HIDDEN_DOMAIN_TITLE', 'HIDDEN_DOMAIN_DESCRIPTION', 'wiki/concepts/hidden.md', 'HIDDEN_SHARED_TITLE', 'HIDDEN_SHARED_DESCRIPTION']) {
+      expect(response).not.toContain(hidden);
+    }
+  }
 });

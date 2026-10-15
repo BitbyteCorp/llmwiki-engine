@@ -10,6 +10,7 @@ import type { ResponseInputContent } from 'openai/resources/responses/responses'
 import type { AnswerCheckpoint } from '../src/agent/agent.types.js';
 import { PAGE_MAX_CHARS } from '../src/agent/output.js';
 import { KnowledgeRepo } from '../src/knowledge/repo.js';
+import { WikiCatalog } from '../src/knowledge/wiki-catalog.js';
 import { AgentService } from '../src/agent/agent.service.js';
 import { SearchService } from '../src/rag/search.service.js';
 import { startFakeOpenAI, type FakeScript } from './fake-openai.js';
@@ -46,7 +47,7 @@ async function fixture(script: FakeScript, notes: Record<string, string> = {}, m
   runMigrations(db);
   disposals.push(async () => db.close());
   const acl = new AclService(db, new UsersService(new UsersRepository(db)), new AuditService(db));
-  return { agent: new AgentService(config, log, repo, search, acl), fake, config, repo, acl, db };
+  return { agent: new AgentService(config, log, repo, search, acl, new WikiCatalog(repo, acl)), fake, config, repo, acl, db };
 }
 
 describe('grounded chat citations', () => {
@@ -493,16 +494,88 @@ describe('read-only conversation transformations', () => {
     expect(await repo.headSha()).toBe(baseSha);
   });
 
-  it('routes a domain proposal through its existing hub and reads its scoped schema', async () => {
-    const { agent, repo, fake } = await fixture(['wiki/engineering/cache.md', '# Cache\nA grounded engineering fact.'], {
+  it('routes a domain proposal into an existing topic and reads its scoped schema without saving', async () => {
+    const { agent, repo, fake } = await fixture(['wiki/engineering/performance/cache.md', '# Cache\nA grounded engineering fact.'], {
       'wiki/engineering/index.md': '# Engineering\nDomain entry points.',
       'wiki/engineering/AGENTS.md': 'Use engineering-specific terminology.',
+      'wiki/engineering/performance/latency.md': '# Latency\nRelated performance facts.',
     });
+    const beforeFiles = await repo.listFiles();
     const proposal = await agent.proposal('# Cache\nA grounded engineering fact.', 'new');
-    expect(proposal.path).toBe('wiki/engineering/cache.md');
+    expect(proposal.path).toBe('wiki/engineering/performance/cache.md');
+    const placementInput = JSON.stringify(fake.requests[0]!.body.input);
+    expect(placementInput).toContain('wiki/engineering/performance/cache.md');
+    expect(placementInput).not.toContain('wiki/engineering/cache.md');
     expect(fake.requests[1]!.body.instructions).toContain('Use engineering-specific terminology.');
     expect(await repo.readFile(proposal.path)).toBeNull();
+    expect(await repo.listFiles()).toEqual(beforeFiles);
     expect(await repo.headSha()).toBe(proposal.baseSha);
+  });
+
+  it('selects a named topic when an existing domain has no suitable topic yet', async () => {
+    const { agent, repo } = await fixture(['wiki/engineering/performance/cache.md', '# Cache\nA grounded engineering fact.'], {
+      'wiki/engineering/index.md': '# Engineering\nDomain entry points.',
+    });
+    const proposal = await agent.proposal('# Cache\nA grounded engineering fact.', 'new');
+    expect(proposal.path).toBe('wiki/engineering/performance/cache.md');
+    expect(await repo.readFile(proposal.path)).toBeNull();
+    expect(await repo.headSha()).toBe(proposal.baseSha);
+  });
+
+  it.each([
+    'wiki/engineering/performance/cache.md',
+    'wiki/engineering/performance/latency/cache.md',
+    'wiki/concepts/cache.md',
+    'wiki/concepts/performance/cache.md',
+    'wiki/entities/tools/cache.md',
+  ])('accepts valid explicit new placement %s without changing the repository', async (path) => {
+    const proposed = '# Cache\nA grounded fact.';
+    const { agent, repo, fake } = await fixture([proposed], {
+      'wiki/engineering/index.md': '# Engineering\nDomain entry points.',
+    });
+    const baseSha = await repo.headSha();
+    expect(await agent.proposal(proposed, 'new', path)).toEqual({ path, baseSha, original: null, proposed });
+    expect(fake.requests).toHaveLength(1);
+    expect(await repo.readFile(path)).toBeNull();
+    expect(await repo.headSha()).toBe(baseSha);
+  });
+
+  it.each([
+    'wiki/engineering/cache.md',
+    'wiki/engineering/performance/latency/details/cache.md',
+    'wiki/concepts/performance/latency/cache.md',
+    'wiki/entities/tools/editors/cache.md',
+    'wiki/engineering/Performance/cache.md',
+    'wiki/engineering/p/cache.md',
+    'wiki/engineering/batch-01/cache.md',
+    'wiki/engineering/2026-10/cache.md',
+    'wiki/engineering/performance/sub_topic/cache.md',
+    'wiki/concepts/Bad-Topic/cache.md',
+  ])('rejects invalid explicit depth or folder names before model generation: %s', async (path) => {
+    const { agent, repo, fake } = await fixture([], {
+      'wiki/engineering/index.md': '# Engineering\nDomain entry points.',
+    });
+    const baseSha = await repo.headSha();
+    await expect(agent.proposal('# Cache\nA grounded fact.', 'new', path)).rejects.toThrow();
+    expect(fake.requests).toEqual([]);
+    expect(await repo.readFile(path)).toBeNull();
+    expect(await repo.headSha()).toBe(baseSha);
+  });
+
+  it.each([
+    'wiki/engineering/cache.md',
+    'wiki/engineering/performance/latency/details/cache.md',
+    'wiki/engineering/Bad-Topic/cache.md',
+    'wiki/engineering/batch-01/cache.md',
+    'wiki/engineering/performance/other-title.md',
+  ])('rejects invalid generated topic placement %s without drafting or saving', async (selected) => {
+    const { agent, repo, fake } = await fixture([selected], {
+      'wiki/engineering/index.md': '# Engineering\nDomain entry points.',
+    });
+    const baseSha = await repo.headSha();
+    await expect(agent.proposal('# Cache\nA grounded fact.', 'new')).rejects.toThrow();
+    expect(fake.requests).toHaveLength(1);
+    expect(await repo.headSha()).toBe(baseSha);
   });
 
   it.each(['wiki/new-fact.md', 'wiki/new-domain/new-fact.md', 'wiki/Engineering/new-fact.md'])('rejects unclassified or uninitialized new placement %s', async (path) => {

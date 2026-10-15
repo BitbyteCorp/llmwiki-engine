@@ -17,6 +17,7 @@ import { openDb, runMigrations } from '../db/index.js';
 import { EventsService } from '../events/events.service.js';
 import type { WikiEvent } from '../events/events.types.js';
 import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
+import { WikiCatalog } from '../knowledge/wiki-catalog.js';
 import type { AgentService } from '../agent/agent.service.js';
 import { resolveConflicts } from '../agent/writes.js';
 import type { AgentTool } from '../agent/agent.types.js';
@@ -51,7 +52,7 @@ async function fixture(jobsAutostart = true) {
     runWrite: vi.fn(async () => ({ summary: 'No changes' })),
     resolveConflicts: vi.fn(async () => {}),
     baseInstructions: vi.fn(async () => 'Write durable knowledge.'),
-    worktreeTools: vi.fn((...args: Parameters<AgentService['worktreeTools']>) => makeWorktreeTools({} as SearchService, args[0], args[1], acl, args[2])),
+    worktreeTools: vi.fn((...args: Parameters<AgentService['worktreeTools']>) => makeWorktreeTools({} as SearchService, args[0], args[1], acl, new WikiCatalog(repo, acl), args[2])),
     runAgent: vi.fn(async (_options: RunAgentOptions) => ({ text: 'Metadata unchanged', finalText: 'Metadata unchanged', toolCalls: 0 })),
   } as unknown as AgentService;
   const writer = new NoteWriterService(repository, repo, users, indexer, events, log, acl);

@@ -100,9 +100,10 @@ describe('MCP knowledge parity', () => {
     const client = await connect();
     const { tools } = await client.listTools();
     expect(tools.map(tool => tool.name).sort()).toEqual([
-      'blame', 'compare', 'get_commit', 'get_write_status', 'ingest_source', 'list_notes',
+      'blame', 'browse', 'compare', 'get_commit', 'get_write_status', 'ingest_source', 'list_notes',
       'note_history', 'note_links', 'read_note', 'search', 'similar_notes', 'write',
     ]);
+    expect(tools.find(tool => tool.name === 'browse')?.annotations).toMatchObject({ readOnlyHint: true, openWorldHint: false });
     const { resources } = await client.listResources();
     expect(resources).toEqual(expect.arrayContaining([
       expect.objectContaining({ uri: 'llmwiki://index', mimeType: 'application/json' }),
@@ -118,7 +119,17 @@ describe('MCP knowledge parity', () => {
     const tree = await client.readResource({ uri: 'llmwiki://index' });
     const treeContent = tree.contents[0]!;
     if (!('text' in treeContent)) throw new Error('Expected text tree resource.');
-    expect(JSON.parse(treeContent.text).files).toContain('wiki/engine.md');
+    expect(JSON.parse(treeContent.text)).toMatchObject({ notes: expect.arrayContaining([
+      { path: 'wiki/engine.md', title: 'Engine', description: 'Durable summary for versioned memory.', type: 'concept' },
+    ]) });
+    expect(JSON.parse(treeContent.text)).not.toHaveProperty('files');
+    const browsed = await call(client, 'browse', { folder: 'wiki/' });
+    expect(browsed.structuredContent).toMatchObject({ folder: 'wiki/', listing: expect.any(String) });
+    expect(browsed.structuredContent?.listing).toContain('wiki/engine.md');
+    expect(browsed.structuredContent?.listing).toContain('Durable summary for versioned memory.');
+    expect(browsed.structuredContent?.listing).not.toContain('journal/other.md');
+    expect((await call(client, 'browse')).isError).toBe(true);
+    expect((await call(client, 'browse', { folder: 42 })).isError).toBe(true);
     expect((await client.listResourceTemplates()).resourceTemplates).toEqual([
       expect.objectContaining({ uriTemplate: 'llmwiki://notes/{+path}' }),
     ]);

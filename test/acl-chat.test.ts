@@ -31,6 +31,7 @@ import { NoteWriterService } from '../src/jobs/note-writer.service.js';
 import { WriteJobsRepository } from '../src/jobs/write-jobs.repository.js';
 import { WriteJobsService } from '../src/jobs/write-jobs.service.js';
 import { KnowledgeRepo } from '../src/knowledge/repo.js';
+import { WikiCatalog } from '../src/knowledge/wiki-catalog.js';
 import { AgentService } from '../src/agent/agent.service.js';
 import { AgentCheckpointsRepository } from '../src/agent/checkpoints.repository.js';
 import { IndexerService } from '../src/rag/indexer.service.js';
@@ -104,7 +105,7 @@ async function fixture(script: FakeScript = [], gate?: { received: () => void; r
   indexer.init();
   await indexer.syncToHead();
   const search = new SearchService(config, db, log, acl, repo);
-  const agent = new AgentService(config, log, repo, search, acl);
+  const agent = new AgentService(config, log, repo, search, acl, new WikiCatalog(repo, acl));
   const jobs = new WriteJobsRepository(db);
   const writer = new NoteWriterService(jobs, repo, users, indexer, events, log, acl, audit);
   const writeJobs = new WriteJobsService(jobs, agent, indexer, repo, users, log, events, acl, writer);

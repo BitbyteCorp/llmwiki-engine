@@ -24,7 +24,7 @@ At task start, orient with the wiki map and look up the relevant context:
 
 - **Depth:** a trivial task can start with a quick 1–2-call check; consequential decisions, unfamiliar behavior, and cross-note topics need deeper reading and relevant neighbors.
 - **Mid-task:** revisit when a new proper noun/topic appears, before committing to an assumption or important decision, and before asking the user something the team may have documented.
-- **Absence:** try 2–3 distinct queries using Korean, English, aliases, and synonyms; narrow to the domain and navigate root index → hub → notes. Even if a map oriented you, use `list_notes()` for this check. Say “not found in the accessible wiki,” naming terms and paths searched. An earlier stop is a limited check, not proof of absence.
+- **Absence:** try 2–3 distinct queries using Korean, English, aliases, and synonyms; narrow to the domain and `browse` its folder (complete titles + descriptions, including notes no hub links). Say “not found in the accessible wiki,” naming terms and paths searched. An earlier stop is a limited check, not proof of absence.
 - **Freshness:** when timing matters, inspect modification metadata and statement history; cross-check current code/live state. Notes can describe past states. Capture evidenced corrections to stale knowledge.
 - **Unavailable access:** state the limitation, continue with available evidence, and mark wiki-unverified assumptions; denied access is not absence.
 
@@ -36,6 +36,7 @@ Arguments are objects; below, `?` marks optional arguments. Paths are repository
 | --- | --- | --- |
 | `search` | Locate relevant knowledge with hybrid keyword/semantic search | `query`; `folder?` (e.g. `wiki/<domain>/`), `tags?` (array; all must match), `kinds?` (array), `type?` (note metadata type), `from?`, `to?`, `author?`, `limit?` (default 20). Prefer `kinds: ["wiki"]` for synthesized knowledge; use `raw` for sources, `journal` for chronology, `other` for other areas. This is intent, not a server-side wiki-only default. Dates are ISO dates or datetimes with timezone; bounds include endpoints, date-only `to` includes that UTC day. Dates/author use the last Git modification, not frontmatter. Excerpts only locate evidence. |
 | `read_note` | Read full Markdown plus frontmatter; inspect a past version | `path`, `ref?` (Git revision; omitted = current `main`). Use the path as it existed at that revision. |
+| `browse` | Pick notes in a domain/topic without guessing | `folder` under `wiki/` (`"wiki/"` = everything); returns the complete catalog listing `- [title](path) (type): description` for that subtree, including notes the map omitted or hubs don't link. |
 | `list_notes` | Orient or browse a folder | `prefix?`; omitted/empty returns `files` and root `index.md` content as `index` (possibly null). `prefix: "wiki/<domain>/"` lists that folder's paths without root index content. |
 | `note_links` | Follow explicit context and discover broken links | `path`; returns outgoing links, backlinks, and unresolved targets. |
 | `similar_notes` | Find embedding neighbors beyond explicit links | `path`, `limit?`; missing/incompatible embeddings can yield no neighbors. |
@@ -47,13 +48,13 @@ Arguments are objects; below, `?` marks optional arguments. Paths are repository
 | `get_write_status` | Confirm a submitted job's outcome | `jobId`; own jobs only unless admin. Only `succeeded` means saved; `queued`, `running`, `merging` are pending, `failed` means inspect the error and report failure. |
 | `ingest_source` | Preserve a user-provided URL, PDF, or document as a source, rather than just a summarized lesson | Editor/admin only. `kind`: `url`, `pdf`, `text`, `obsidian`, `notion`, or `file`; one of `url?`, `uploadId?`, `text?`; also `filename?`, `instructions?`. URL uses `url`, text uses `text`, PDF uses URL or existing upload ID, file/vault exports use existing upload ID. Returns `importId` and asynchronous `jobIds`. |
 
-If exposed by the client, resources offer read-only current data: `llmwiki://index` lists paths (not root index content); `llmwiki://notes/{+path}` reads full Markdown. Prefer listed URIs, which encode path segments safely; use `read_note` for history. MCP prompts provide guided workflows: `research_topic(topic)`, `capture_knowledge(content)`, and `review_note_history(path)`; they do not execute tools or grant permissions.
+If exposed by the client, resources offer read-only current data: `llmwiki://index` returns the full catalog `{ notes: [{ path, title, description, type }] }` (not root index content); `llmwiki://notes/{+path}` reads full Markdown. Prefer listed URIs, which encode path segments safely; use `read_note` for history. MCP prompts provide guided workflows: `research_topic(topic)`, `capture_knowledge(content)`, and `review_note_history(path)`; they do not execute tools or grant permissions.
 
 ## Recipes
 
 Each arrow is the next step; use the exact argument names above.
 
-1. **Orient:** wiki map in server instructions, or `list_notes()` → `read_note` on the relevant hub → relevant notes. If `index` is null or the map says `hub: none`, discover actual paths with `list_notes`/`search` rather than inventing a hub. Hubs are normally `wiki/<domain>/index.md`; include shared `wiki/concepts/` and `wiki/entities/` when relevant.
+1. **Orient:** wiki map in server instructions (domains, hubs, topic counts, shared notes, shared memory) → `browse` the relevant domain/topic folder → `read_note` on the relevant hub and notes. Without a map, `browse({ folder: "wiki/" })` or `list_notes()`. If the map says `hub: none`, use `browse`/`search` rather than inventing a hub. Include shared `wiki/concepts/` and `wiki/entities/` when relevant.
 2. **Answer a question:** `search` with project/topic and useful filters → `read_note` on top relevant hits → follow relevant neighbors or refine queries → answer with cited evidence.
 3. **Verify a fact is current:** `read_note` → `note_history` and/or `blame` for the statement's age/provenance → cross-check current code/live state → distinguish current facts from historical claims.
 4. **Investigate why something changed:** `note_history` → `get_commit` for relevant SHAs/parents → `compare` across versions → `read_note` with `ref` for full historical context; add `blame` for line/job provenance. Separate documented rationale from inference.

@@ -30,6 +30,7 @@ import { openDb, runMigrations } from '../src/db/index.js';
 import { EventsService } from '../src/events/events.service.js';
 import type { EventAudience, WikiEvent } from '../src/events/events.types.js';
 import { KnowledgeRepo } from '../src/knowledge/repo.js';
+import { WikiCatalog } from '../src/knowledge/wiki-catalog.js';
 import { AgentService } from '../src/agent/agent.service.js';
 import { AgentCheckpointsRepository } from '../src/agent/checkpoints.repository.js';
 import { SearchService } from '../src/rag/search.service.js';
@@ -83,7 +84,7 @@ async function fixture(script: FakeScript | FakeResponder, authorRole: 'viewer' 
   const userService = new UsersService(new UsersRepository(db));
   const audit = new AuditService(db);
   const acl = new AclService(db, userService, audit);
-  const agent = new AgentService(config, log, repo, { search: async () => [] } as unknown as SearchService, acl);
+  const agent = new AgentService(config, log, repo, { search: async () => [] } as unknown as SearchService, acl, new WikiCatalog(repo, acl));
   const users = new Map<number, User>([1, 2, 3, 4].map(id => [id, {
     id, email: `user${id}@example.test`, name: `User ${id}`, role: id === 4 ? 'admin' : id === 1 ? authorRole : 'viewer',
     createdAt: '2026-10-07T00:00:00.000Z', lastLoginAt: null,

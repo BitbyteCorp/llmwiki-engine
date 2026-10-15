@@ -10,6 +10,7 @@ import { UsersService } from '../../src/auth/users.service.js';
 import { loadConfig } from '../../src/config.js';
 import { openDb, runMigrations } from '../../src/db/index.js';
 import type { KnowledgeRepo } from '../../src/knowledge/repo.js';
+import { WikiCatalog } from '../../src/knowledge/wiki-catalog.js';
 import type { SearchService } from '../../src/rag/search.service.js';
 import { UsageRepository } from '../../src/usage/usage.repository.js';
 import { UsageService } from '../../src/usage/usage.service.js';
@@ -30,7 +31,7 @@ async function fixture(script: FakeScript) {
   const acl = new AclService(db, new UsersService(new UsersRepository(db)), new AuditService(db));
   const config = loadConfig({ NODE_ENV: 'test', OPENAI_API_KEY: 'local-test-key', OPENAI_BASE_URL: fake.url,
     OPENAI_MAX_RETRIES: '0', LLM_MODELS: 'usage-model' });
-  const agent = new AgentService(config, pino({ level: 'silent' }), {} as KnowledgeRepo, {} as SearchService, acl, usage);
+  const agent = new AgentService(config, pino({ level: 'silent' }), {} as KnowledgeRepo, {} as SearchService, acl, new WikiCatalog({} as KnowledgeRepo, acl), usage);
   return { agent, usage };
 }
 

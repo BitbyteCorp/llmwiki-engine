@@ -20,6 +20,7 @@ import { loadConfig } from '../../src/config.js';
 import { openDb, runMigrations } from '../../src/db/index.js';
 import type { WriteJob } from '../../src/jobs/write-job.types.js';
 import { KnowledgeRepo } from '../../src/knowledge/repo.js';
+import { WikiCatalog } from '../../src/knowledge/wiki-catalog.js';
 import { SearchService } from '../../src/rag/search.service.js';
 import { startFakeOpenAI, type FakeTurn } from '../fake-openai.js';
 
@@ -98,6 +99,7 @@ async function fixture(route: Route, embeddingUrl?: string) {
       { provide: CONFIG, useValue: config }, { provide: LOGGER, useValue: log },
       { provide: KnowledgeRepo, useValue: repo }, { provide: SearchService, useValue: search },
       { provide: AclService, useValue: acl },
+      { provide: WikiCatalog, useValue: new WikiCatalog(repo, acl) },
     ],
   }).compile();
   await module.init();

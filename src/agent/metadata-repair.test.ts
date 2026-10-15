@@ -10,6 +10,7 @@ import { UsersService } from '../auth/users.service.js';
 import { loadConfig } from '../config.js';
 import { openDb, runMigrations } from '../db/index.js';
 import { KnowledgeRepo } from '../knowledge/repo.js';
+import { WikiCatalog } from '../knowledge/wiki-catalog.js';
 import type { SearchService } from '../rag/search.service.js';
 import type { AgentService } from './agent.service.js';
 import type { RunAgentOptions } from './agent.types.js';
@@ -38,7 +39,7 @@ it('restricts its one bounded run to reading and writing reported notes, even wh
   const issues = [{ path: 'wiki/invalid.md', issues: [{ field: 'type', message: 'Required metadata is missing' }] }];
   const onUsage = vi.fn();
   const baseInstructions = vi.fn(async () => 'Base writing rules');
-  const worktreeTools = vi.fn((...args: Parameters<AgentService['worktreeTools']>) => makeWorktreeTools({} as SearchService, args[0], args[1], acl, args[2]));
+  const worktreeTools = vi.fn((...args: Parameters<AgentService['worktreeTools']>) => makeWorktreeTools({} as SearchService, args[0], args[1], acl, new WikiCatalog(repo, acl), args[2]));
   const runAgent = vi.fn(async (options: RunAgentOptions) => {
     expect(options).toMatchObject({ lane: 'write', maxTurns: 8, input: JSON.stringify({ notes: issues }) });
     expect(options.tools.map(tool => tool.name)).toEqual(['read_file', 'write_file']);

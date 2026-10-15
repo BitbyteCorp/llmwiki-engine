@@ -13,6 +13,7 @@ import type { CodexCredentialSource } from '../codex/codex.types.js';
 import { CodexNotLoggedInError } from '../codex/codex.types.js';
 import { openDb, runMigrations } from '../db/index.js';
 import { KnowledgeRepo } from '../knowledge/repo.js';
+import { WikiCatalog } from '../knowledge/wiki-catalog.js';
 import { SearchService } from '../rag/search.service.js';
 import { AgentService } from './agent.service.js';
 
@@ -57,7 +58,7 @@ async function fixture(provider: Config['llmProvider'], unauthorizedOnce = false
   const acl = new AclService(db, new UsersService(new UsersRepository(db)), new AuditService(db));
   const repo = await KnowledgeRepo.open(config, log);
   const search = new SearchService(config, db, log, acl, repo);
-  return { config, fake, codex, repo, agent: new AgentService(config, log, repo, search, acl, undefined, codex) };
+  return { config, fake, codex, repo, agent: new AgentService(config, log, repo, search, acl, new WikiCatalog(repo, acl), undefined, codex) };
 }
 
 describe('agent provider requests', () => {

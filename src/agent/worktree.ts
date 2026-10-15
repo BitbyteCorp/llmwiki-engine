@@ -4,6 +4,7 @@ import type { SearchService } from '../rag/search.service.js';
 import type { AgentTool } from './agent.types.js';
 import type { AclService, AclUser } from '../acl/acl.service.js';
 import { pageContent, PAGE_MAX_CHARS, PAGE_MAX_LINES, type ContentPage } from './output.js';
+import type { WikiCatalog } from '../knowledge/wiki-catalog.js';
 
 export const LIST_MAX_FILES = 500;
 export const SEARCH_MAX_RESULTS = 30;
@@ -22,6 +23,7 @@ const pathArgs = z.object({ path: z.string().min(1) }).strict();
 const readArgs = z.object({ path: z.string().min(1), ...readPageArgs }).strict();
 const searchArgs = z.object({ query: z.string().trim().min(1), limit: z.number().int().min(1).max(SEARCH_MAX_RESULTS).optional() }).strict();
 const listArgs = z.object({ prefix: z.string().optional(), offset: z.number().int().min(0).default(0) }).strict();
+const browseArgs = z.object({ folder: z.string().min(1) }).strict();
 const writeArgs = z.object({ path: z.string().min(1), content: z.string() }).strict();
 const moveArgs = z.object({ from: z.string().min(1), to: z.string().min(1) }).strict();
 const commitArgs = z.object({ message: z.string().trim().min(1) }).strict();
@@ -33,6 +35,7 @@ export function makeWorktreeTools(
   wt: Worktree,
   author: { name: string; email: string },
   acl: AclService,
+  wikiCatalog: WikiCatalog,
   user?: AclUser,
   onRead?: WorktreeReadObserver,
 ): AgentTool[] {
@@ -49,6 +52,19 @@ export function makeWorktreeTools(
         const hits = await search.search(query, { limit: limit ?? SEARCH_MAX_RESULTS, user }, signal);
         if (user) wt.onPhase?.('editing', { sourcePaths: hits.map(hit => hit.path) });
         return JSON.stringify(hits);
+      },
+    },
+    {
+      name: 'browse_catalog',
+      description: 'Browse the complete note catalog for a wiki folder on main, including unlinked notes and their descriptions. Does not include unmerged worktree edits; use read_file to read the worktree version.',
+      parameters: { type: 'object', properties: { folder: { type: 'string', minLength: 1, description: 'Wiki folder, for example wiki/software/caching/.' } }, required: ['folder'], additionalProperties: false },
+      async run(args: unknown) {
+        const { folder } = browseArgs.parse(args);
+        if (user) {
+          const notes = await wikiCatalog.notes(user, folder);
+          wt.onPhase?.('editing', { sourcePaths: notes.map(note => note.path) });
+        }
+        return JSON.stringify({ folder, listing: await wikiCatalog.listing(folder, user) });
       },
     },
     {
