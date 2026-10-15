@@ -15,6 +15,7 @@ import { extractDocument, extractVault, markdownHref, safeFilename, VAULT_BYTES,
 import { ImportsRepository } from './imports.repository.js';
 import { ingestSchema, type ImportRecord, type IngestInput } from './ingest.types.js';
 import { fetchSource, SOURCE_BYTES } from './safe-fetch.js';
+import { DOCUMENT_SECTION_CHARS, splitMarkdownSections } from './sections.js';
 
 @Injectable()
 export class IngestService implements OnApplicationBootstrap, OnModuleDestroy {
@@ -111,6 +112,15 @@ export class IngestService implements OnApplicationBootstrap, OnModuleDestroy {
       if (input.kind === 'pdf' && buffer.subarray(0, 5).toString() !== '%PDF-') throw new ApiError(400, 'invalid_source', 'PDF source must contain a PDF document');
       const extraction: Extraction = input.kind === 'obsidian' || input.kind === 'notion'
         ? extractVault(buffer, input.kind) : await extractDocument(buffer, mediaType, filename, finalUrl);
+      if (!extraction.files.length && extraction.markdown.length > DOCUMENT_SECTION_CHARS) {
+        const sections = splitMarkdownSections(extraction.markdown);
+        const width = Math.max(3, String(sections.length).length);
+        extraction.files = sections.map((section, index) => ({
+          path: `${String(index + 1).padStart(width, '0')} ${safeFilename(section.title)}.md`,
+          buffer: Buffer.from(section.markdown, 'utf8'),
+          markdown: true,
+        }));
+      }
       const sha = createHash('sha256').update(buffer).digest('hex');
       const root = `raw/${sha}`;
       const originalPath = `${root}/original/${filename}`;

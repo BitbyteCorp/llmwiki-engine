@@ -111,6 +111,7 @@ describe('IngestService with real uploads, SQLite and git', () => {
     expect(queued.source).toBe('import');
     expect(queued.input).toContain(item.rawPaths[1]);
     expect(queued.input).toContain('Explain the key idea');
+    expect(queued.input).toContain(`Read the provenance/source Markdown at ${item.rawPaths[1]} completely`);
     expect(provenanceContext(queued.input)).toEqual({
       importId: result.importId, kind: 'text', source: 'text:knowledge.md',
       sha256: sha, filename: 'knowledge.md', path: item.rawPaths[1],
@@ -123,6 +124,81 @@ describe('IngestService with real uploads, SQLite and git', () => {
     expect(await ctx.repo.readFile('wiki/imported.md')).toContain(item.rawPaths[1]);
     expect(ctx.agent.runWrite).toHaveBeenCalledTimes(1);
     expect(ctx.jobs.list().filter((job) => job.kind === 'agent')).toHaveLength(1);
+  });
+  it.each([40_000, 40_001])('only materializes section files above the document threshold (%i chars)', async (chars) => {
+    const ctx = await fixture();
+    const heading = '# Threshold\n';
+    const firstLine = `${'x'.repeat(19_990)}\n`;
+    const text = `${heading}${firstLine}${'y'.repeat(chars - heading.length - firstLine.length)}`;
+    const result = await ctx.ingest.ingest({ userId: ctx.owner.id, kind: 'text', text });
+    expect(result.jobIds).toHaveLength(1);
+    const item = ctx.ingest.get(result.importId, ctx.owner.id);
+    const manifest = (await ctx.repo.readFile(item.rawPaths[1]!))!;
+    const requiredReads = ctx.repository.getRequiredReads(result.jobIds[0]!);
+    if (chars === 40_000) {
+      expect(item.rawPaths).toHaveLength(2);
+      expect(requiredReads).toEqual([]);
+      expect(manifest).toContain(text);
+      expect(ctx.jobs.get(result.jobIds[0]!)!.input).toContain(`Read the provenance/source Markdown at ${item.rawPaths[1]} completely`);
+    } else {
+      expect(item.rawPaths).toHaveLength(4);
+      expect(requiredReads).toEqual(item.rawPaths.slice(2));
+      expect(manifest).not.toContain(firstLine);
+      expect((await Promise.all(requiredReads.map((path) => ctx.repo.readFile(path)))).join('')).toBe(text);
+    }
+  });
+  it('batches a large document into immutable ordered sections and retries only a failed batch', async () => {
+    const ctx = await fixture();
+    const text = Array.from({ length: 10 }, (_, index) =>
+      `# Topic ${index + 1}\n\n${`Durable fact from topic ${index + 1}. `.repeat(1_100)}\n\n`).join('');
+    const result = await ctx.ingest.ingest({ userId: ctx.owner.id, kind: 'text', text, filename: 'large.md' });
+    const original = ctx.ingest.get(result.importId, ctx.owner.id);
+    const sections = original.rawPaths.slice(2);
+    expect(result.jobIds.length).toBeGreaterThan(1);
+    expect(sections).toHaveLength(10);
+    expect(sections.map((path) => path.split('/files/')[1])).toEqual(
+      Array.from({ length: 10 }, (_, index) => `${String(index + 1).padStart(3, '0')} Topic ${index + 1}.md`),
+    );
+    expect((await Promise.all(sections.map((path) => ctx.repo.readFile(path)))).join('')).toBe(text);
+    const manifest = (await ctx.repo.readFile(original.rawPaths[1]!))!;
+    expect(manifest).not.toContain('Durable fact from topic');
+    for (const path of sections) expect(manifest).toContain(encodeURIComponent(path.split('/files/')[1]!));
+    const assigned = result.jobIds.map((jobId, batch) => {
+      const paths = ctx.repository.getRequiredReads(jobId);
+      expect(paths.length).toBeGreaterThan(0);
+      expect(original.jobs[batch]!.files).toBe(paths.length);
+      const queued = ctx.jobs.get(jobId)!;
+      expect(queued.input).toContain(`Batch ${batch + 1} of ${result.jobIds.length}.`);
+      expect(queued.input).toMatch(/cit[ae].*without reading/i);
+      expect(queued.input).not.toMatch(/Read .*provenance\/source Markdown/);
+      const listed = queued.input.split('\n').filter((line) => line.startsWith('- "raw/')).map((line) => JSON.parse(line.slice(2)));
+      expect(listed).toEqual(paths);
+      expect(ctx.jobs.events(jobId).find((event) => event.phase === 'queued')!.detail!.sourcePaths).toEqual([
+        ...original.rawPaths.slice(0, 2), ...paths,
+      ]);
+      return paths;
+    });
+    expect(assigned.flat()).toEqual(sections);
+    const repeated = await ctx.ingest.ingest({ userId: ctx.owner.id, kind: 'text', text, filename: 'large.md' });
+    const repeatedItem = ctx.ingest.get(repeated.importId, ctx.owner.id);
+    expect(repeatedItem.rawPaths.slice(2)).toEqual(sections);
+    const commit = (await ctx.repo.log(undefined, { limit: 1 }))[0]!;
+    expect((await ctx.repo.show(commit.sha)).files.map((file) => file.path)).toEqual([repeatedItem.rawPaths[1]]);
+
+    const failedBatch = result.jobIds.length - 1;
+    for (const jobId of result.jobIds.slice(0, failedBatch)) ctx.repository.markSucceeded(jobId, new Date().toISOString());
+    const failedJobId = result.jobIds[failedBatch]!;
+    ctx.repository.markFailed(failedJobId, 'Section integration failed', new Date().toISOString());
+    expect(ctx.ingest.get(result.importId, ctx.owner.id)).toMatchObject({
+      status: 'failed', error: `batch ${failedBatch + 1}/${result.jobIds.length}: Section integration failed`, retryable: false,
+    });
+    const retry = ctx.jobs.retry(failedJobId);
+    expect(ctx.repository.getRequiredReads(retry.id)).toEqual(assigned[failedBatch]);
+    const retried = ctx.ingest.get(result.importId, ctx.owner.id);
+    expect(retried).toMatchObject({ status: 'queued', error: null, finishedAt: null, rawPaths: original.rawPaths, sha: original.sha });
+    expect(retried.jobs.map((job) => job.jobId)).toEqual([...result.jobIds.slice(0, failedBatch), retry.id]);
+    ctx.repository.markSucceeded(retry.id, new Date().toISOString());
+    expect(ctx.ingest.get(result.importId, ctx.owner.id).status).toBe('succeeded');
   });
   it('retries retained text after a raw-write failure with the same identity and original instructions', async () => {
     const ctx = await fixture();
