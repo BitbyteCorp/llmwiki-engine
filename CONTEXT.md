@@ -37,7 +37,7 @@ Node.js 기반으로 LLM Wiki를 관리하는 도구다.
 - [지식 저장소](docs/knowledge-repository.md) — `main`이 진실 원천이고 GitHub는 하루 한 번 push되는 백업이며, LLM Wiki 표준을 따른 레이아웃을 쓴다.
 - [지식 도메인 구조](docs/knowledge-domains.md) — 하나의 지식 저장소 안에서 분야별 노트와 공유 개념·엔티티를 구분하고, 전체 허브와 도메인 허브로 탐색한다. 도메인별 schema의 적용 범위, 설계 선택의 이유와 기존 저장소의 수동 전환 절차를 설명한다.
 - [개발 환경](docs/development.md) — 기술 스택·모듈 소유·스크립트·환경변수와 로컬·Docker 실행, SQL 테이블 재구축의 인덱스·트리거 보존 및 외래 키 검증을 설명한다. 터미널 출력 정지·개발 잠금 파일·개발 서버 메모리 누적의 함정과 병렬 서버의 격리·종료 방법도 기록한다.
-- [Dokploy 배포](docs/dokploy.md) — Docker Compose 서비스로 단일 인스턴스를 배포하는 절차와 도메인·환경변수·SSH 키·영속 볼륨을 설명한다. Application의 중첩 업데이트를 피하는 이유와 생존 healthcheck·백업·재배포의 운영 경계를 기록한다.
+- [Dokploy 배포](docs/dokploy.md) — Application의 Dockerfile 빌드로 단일 인스턴스를 배포하고 Update Config와 Rollback Config의 Order를 모두 `stop-first`로 설정하는 절차와 도메인·환경변수·SSH 키·영속 볼륨을 설명한다. 이미지의 `/healthz` 생존 healthcheck와 외부 `/readyz` 준비 상태 모니터링, 백업·재배포의 운영 경계를 기록한다.
 - [식별자](docs/identifiers.md) — 엔진 UUID의 API base62 표현과 SQLite base64url 저장 표현, SQL 변환 경계를 설명한다. 이전 입력·git 트레일러·업로드 파일과 JSON 문서의 호환 및 마이그레이션 규칙을 기록한다.
 - [백업과 복원](docs/backup.md) — 일관된 SQLite 스냅샷과 지식 git bundle의 체크섬 검증, 오프라인 복원과 main 내보내기를 설명한다.
 - [운영](docs/operations.md) — 준비 상태·요청 식별자·인증 지표와 관리자 운영 API를 설명한다. 작업 종류·모델별 LLM 사용량 원장과 `JOBS_AUTOSTART`로 백그라운드 실행을 멈추는 방법, 운영 사이드바·설정·팔레트의 즉시 실행과 확인·중복 방지·결과 알림을 함께 기록한다.
