@@ -25,6 +25,7 @@ import { DreamRunsRepository } from './dream-runs.repository.js';
 // Manual callers and the scheduler may use different service instances.
 const activeRuns = new WeakMap<KnowledgeRepo, Promise<DreamRun>>();
 export const SIMILAR_NOTE_EXCERPT_CHARS = 1_500;
+const IMPORTED_NOTES_LIMIT = 20;
 const dateFormat = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit',
 });
@@ -197,6 +198,24 @@ export class DreamingService implements OnApplicationShutdown {
             ? restrictStructureSignals(structure.signals, focusedFolder?.files ?? [], run.focus ? [run.focus] : [])
             : structure.signals;
         const beforePaths = (await repo.diffNames(null, run.toSha)).map(({ path }) => path);
+        const importCommits = new Set(commits.filter((commit) => commit.trailers['Wiki-Source'] === 'import')
+          .map((commit) => commit.sha));
+        const importedNotes: string[] = [];
+        if (run.mode !== 'sweep' && importCommits.size > 0) {
+          // The structure inventory already excludes schemas and deleted/non-wiki files.
+          // Follow each current note at the sampled HEAD, not the advancing main ref.
+          for (const path of structure.folders.flatMap((folder) => folder.files).sort()) {
+            const noteHistory = await repo.log({ path, ref: run.toSha, sinceSha: run.fromSha, follow: true, limit: null });
+            for (const commit of noteHistory) {
+              if (!importCommits.has(commit.sha)) continue;
+              const importedChanges = await repo.diffNames(commit.parents[0] ?? null, commit.sha);
+              if (importedChanges.some((change) => change.path === commit.path && change.status !== 'D')) {
+                importedNotes.push(path);
+                break;
+              }
+            }
+          }
+        }
         const beforeNotes = await Promise.all(beforePaths.filter((path) => /\.md$/i.test(path)).map(async (path) =>
           ({ path, content: (await repo.readFile(path, run.toSha!)) ?? '' })));
         const beforeLinks = new Set([...unresolvedLinkTargets(beforePaths, beforeNotes)].map(normalizeLinkTarget));
@@ -230,6 +249,7 @@ export class DreamingService implements OnApplicationShutdown {
             instructions: `${await agent.baseInstructions()}\n\n${dreamInstructions()}`,
             input: JSON.stringify({
               date, journalPath, fromSha: run.fromSha, toSha: run.toSha, commits, changedNotes, userMessages: messages,
+              importedNotes: importedNotes.slice(0, IMPORTED_NOTES_LIMIT), importedNotesCount: importedNotes.length,
               mode: run.mode, focus: run.focus, structure: { signals, focus: run.focus, files: focusedFolder?.files ?? [] },
             }),
             tools: guarded.tools,
@@ -334,6 +354,10 @@ ACL 경계를 넘어 제한된 노트·사용자 자료의 내용이나 의미�
 - local: 변경 노트 주변만 정리한다. 다른 영역의 구조는 바꾸지 않는다.
 - structural: structure.signals에 지목된 영역만 정리한다. 변경과 메시지도 평소처럼 처리한다.
 - sweep: structure.focus 폴더 하나만 점검한다.
+정제: local/structural에서는 importedNotes를 읽고, sweep에서는 점검 폴더의 노트에 같은 잔재가 있으면 작성 규칙에 따라 재사용 가능한 지식으로 다시 쓴다. importedNotesCount는 상한을 적용하기 전의 전체 후보 수이며 importedNotes는 현재 경로순 최대 20개다.
+가져오기 과정 설명("가져온 자료에는", "이번 배치", 파일 제외 사유 등), 내보내기 잔재(Notion ID, 의미 없는 "제목 없음", 빈 템플릿 항목, 깨진 첨부 참조)를 제거한다. 실제 식별자나 의미 있는 사실은 잔재로 취급하지 않는다. 반복되는 출처·검증 유보 문구는 정확한 시점·출처 맥락 한 번으로 합치고, 원문 표·목록의 덤프는 그 안의 사실·결정·이유·절차·용어로 정리한다.
+출처 링크는 노트 메타데이터 source 또는 출처 절에만 모은다. source는 위키링크나 http(s) URL의 문자열 배열이며 raw 출처 링크를 보존한다. 노트나 그 raw 출처에 없는 사실은 추가하지 않고, 의미 있는 사실은 버리지 않는다. 제거 대상은 과정 설명·중복·잔재뿐이며 raw/는 절대 편집하지 않는다.
+정제 후 재사용 가능한 지식이 없는 노트나 가져오기 산물만 남은 노트는 의미 있는 사실과 링크를 보존하며 병합·삭제할 수 있다. 기존 이동·삭제 20건 상한을 함께 적용한다. 정제한 노트와 내용, 상한 때문에 남은 후보를 일기의 "정제" 절에 기록한다.
 도메인 구조 신호를 우선 고친다: missingDomainHubs의 경로에 해당 도메인의 큐레이션 허브를 만들고 루트 index.md에서 연결한다. unlinkedDomainHubs는 기존 허브를 루트 index.md에 연결한다. unclassifiedNotes는 wiki/ 바로 아래에 두지 않고 주제에 맞는 wiki/<domain>/로 옮기며, 둘 이상 도메인에서 재사용하거나 도메인과 무관한 개념·용어는 wiki/concepts/, 사람·조직·도구·제품은 wiki/entities/의 정본으로 배치한다. 같은 지식은 한 정본만 유지한다.
 새 도메인은 영문 소문자 kebab-case 폴더, wiki/<domain>/index.md 허브, 루트 index.md의 허브 링크를 함께 만든다. 폴더로 도메인을 나타내며 frontmatter에 domain/category 필드를 추가하지 않는다. wiki/<domain>/ 안의 파일을 쓰거나 편집하기 전에는 해당 도메인의 AGENTS.md가 있으면 읽고 그 도메인 안에서만 적용한다.
 정리 순서는 도메인 배치·허브, 깨지거나 모호한 링크, 그 밖의 구조 문제, 남은 메타데이터 순서다. 큰 기존 메타데이터 backlog가 탐색 경로와 링크 수리를 밀어내지 않게 한다. 앞선 수리로 이미 편집하는 노트의 메타데이터도 함께 고치고, 그 뒤 invalidMetadata의 후보를 차례로 보완한다. invalidMetadataCount는 점검한 main 전체의 미완료 노트 수이며 후보 목록은 최대 20개다. 상한이나 근거 부족으로 남은 후보와 backlog를 일기의 "구조 정리" 절에 남긴다.

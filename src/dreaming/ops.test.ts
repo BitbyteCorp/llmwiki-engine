@@ -497,6 +497,52 @@ it('keeps content edited after capture unlearned while acknowledging unchanged c
   ]);
 });
 
+it.each([1, 23])('selects surviving import notes at current paths with the candidate cap (%i notes)', async (count) => {
+  const f = await fixture();
+  const author = { name: 'Test', email: 'test@example.test' };
+  const wt = await f.repo.createWorktree('import-residue');
+  await wt.write('wiki/topic/original.md', wikiNote('# Original fact\n'));
+  await wt.write('wiki/topic/index.md', wikiNote('# Topic\n', 'hub'));
+  await wt.write('index.md', '[[wiki/topic/index]]\n');
+  await wt.commit('Seed existing notes', author);
+  await f.repo.withMergeLock(() => wt.fastForwardMain());
+  const checkpoint = runRecord(newId(), '2020-01-01T00:00:00.000Z');
+  Object.assign(checkpoint, { status: 'succeeded', toSha: await f.repo.headSha(), finishedAt: '2020-01-01T00:01:00.000Z' });
+  f.runs.create(checkpoint);
+  f.runs.finish(checkpoint);
+
+  wt.setCommitMetadata({ jobId: newId(), source: 'import', requester: author.email });
+  await wt.write('wiki/topic/original.md', wikiNote('# Imported knowledge\n\nA durable imported fact.\n'));
+  await wt.write('wiki/topic/deleted.md', wikiNote('# Removed import\n'));
+  await wt.write('wiki/topic/AGENTS.md', '# Domain writing rules\n');
+  await wt.write('raw/source.md', '# Immutable source\n');
+  const importedPaths = ['wiki/topic/current.MD'];
+  for (let index = 1; index < count; index++) {
+    const path = `wiki/topic/import-${String(index).padStart(2, '0')}.md`;
+    await wt.write(path, wikiNote(`# Imported fact ${index}\n`));
+    importedPaths.push(path);
+  }
+  await wt.commit('Integrate imported knowledge', author);
+
+  wt.setCommitMetadata({ jobId: newId(), source: 'web', requester: author.email });
+  await wt.move('wiki/topic/original.md', 'wiki/topic/intermediate.md');
+  await wt.write('wiki/topic/web-only.md', wikiNote('# A web-only fact\n'));
+  await wt.commit('Rename imported note and update web knowledge', author);
+  await wt.move('wiki/topic/intermediate.md', 'wiki/topic/current.MD');
+  await wt.remove('wiki/topic/deleted.md');
+  await wt.commit('Rename imported note again', author);
+  await wt.write('wiki/topic/current.MD', wikiNote('# Expanded knowledge\n\nA durable imported fact now has additional web context.\n'));
+  await wt.commit('Expand the renamed note', author);
+  await f.repo.withMergeLock(() => wt.fastForwardMain());
+  await wt.dispose();
+
+  const run = await f.dreaming.runOnce();
+  expect(run).toMatchObject({ status: 'succeeded', mode: count === 1 ? 'local' : 'structural', fromSha: checkpoint.toSha });
+  expect(JSON.parse(f.runAgent.mock.calls[0][0].input as string)).toMatchObject({
+    importedNotes: importedPaths.sort().slice(0, 20), importedNotesCount: count,
+  });
+});
+
 it('runs an idle night sweep in the least recently reviewed wiki folder', async () => {
   const f = await fixture();
   f.db.prepare('DELETE FROM messages').run();
@@ -519,6 +565,7 @@ it('runs an idle night sweep in the least recently reviewed wiki folder', async 
   expect(f.runs.get(run.id)).toEqual(run);
   expect(JSON.parse(f.runAgent.mock.calls[0][0].input as string)).toMatchObject({
     mode: 'sweep', focus: 'wiki/topic/', commits: [], userMessages: [],
+    importedNotes: [], importedNotesCount: 0,
     structure: { focus: 'wiki/topic/', files: ['wiki/topic/a.md', 'wiki/topic/index.md'] },
   });
   expect(f.runs.lastSucceededSweeps().get('wiki/topic/')).toBe(run.finishedAt);

@@ -107,3 +107,4 @@ raw/<sha256>/
 - [쓰기 흐름](write-flow.md)은 직접 원문 커밋과 도니 통합 작업의 기록·머지 흐름을 설명한다.
 - [인증](auth.md)은 editor/viewer 권한과 REST bearer 토큰을 설명한다.
 - [MCP](mcp.md)는 같은 수집 기능을 호출하는 `ingest_source` 도구를 설명한다.
+- [꿈꾸기](dreaming.md)는 가져온 뒤 위키 노트에 남은 가져오기 잔여물을 정리한다.
