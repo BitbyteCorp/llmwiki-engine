@@ -49,7 +49,7 @@ async function fixture(jobsAutostart = true) {
       return { summary: 'Save useful knowledge\nDetails of the update.' };
     }),
     resolveConflicts: vi.fn(async () => {}),
-    runAgent: vi.fn(async (_options: RunAgentOptions) => ({ text: 'Metadata unchanged', toolCalls: 0 })),
+    runAgent: vi.fn(async (_options: RunAgentOptions) => ({ text: 'Metadata unchanged', finalText: 'Metadata unchanged', toolCalls: 0 })),
     baseInstructions: vi.fn(async () => 'Write durable knowledge.'),
     worktreeTools: vi.fn((...args: Parameters<AgentService['worktreeTools']>) => makeWorktreeTools({} as SearchService, args[0], args[1], acl, args[2])),
   } as unknown as AgentService;
@@ -358,7 +358,7 @@ describe('WriteJobsService with real git and a Dony double', () => {
       await options.tools.find(tool => tool.name === 'write_file')!.run({
         path: 'wiki/shared.md', content: note('requested fact\n'),
       });
-      return { text: 'Metadata repaired before merge', toolCalls: 1 };
+      return { text: 'Metadata repaired before merge', finalText: 'Metadata repaired before merge', toolCalls: 1 };
     });
     vi.mocked(ctx.agent.resolveConflicts).mockImplementation(async (wt, paths) => {
       expect(paths).toEqual(['wiki/shared.md']);
@@ -543,7 +543,7 @@ describe('WriteJobsService with real git and a Dony double', () => {
       }]);
       options.onUsage?.({ inputTokens: 7, cachedInputTokens: 1, outputTokens: 2, reasoningTokens: 1 });
       await options.tools.find(tool => tool.name === 'write_file')!.run({ path: 'wiki/result.md', content: note(body) });
-      return { text: 'Repaired', toolCalls: 1 };
+      return { text: 'Repaired', finalText: 'Repaired', toolCalls: 1 };
     });
     jobs.start();
     const result = await completed(jobs, jobs.submit({ userId: 1, input: 'save', source: 'mcp' }).id);
@@ -572,7 +572,7 @@ describe('WriteJobsService with real git and a Dony double', () => {
       await options.tools.find(tool => tool.name === 'write_file')!.run({
         path: 'wiki/result.md', content: `---\ntype: note\n---\n${body}`,
       });
-      return { text: 'Incomplete repair', toolCalls: 1 };
+      return { text: 'Incomplete repair', finalText: 'Incomplete repair', toolCalls: 1 };
     });
     jobs.start();
     const result = await completed(jobs, jobs.submit({ userId: 1, input: 'save', source: 'mcp' }).id);

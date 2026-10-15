@@ -52,7 +52,7 @@ async function fixture(jobsAutostart = true) {
     resolveConflicts: vi.fn(async () => {}),
     baseInstructions: vi.fn(async () => 'Write durable knowledge.'),
     worktreeTools: vi.fn((...args: Parameters<AgentService['worktreeTools']>) => makeWorktreeTools({} as SearchService, args[0], args[1], acl, args[2])),
-    runAgent: vi.fn(async (_options: RunAgentOptions) => ({ text: 'Metadata unchanged', toolCalls: 0 })),
+    runAgent: vi.fn(async (_options: RunAgentOptions) => ({ text: 'Metadata unchanged', finalText: 'Metadata unchanged', toolCalls: 0 })),
   } as unknown as AgentService;
   const writer = new NoteWriterService(repository, repo, users, indexer, events, log, acl);
   const jobs = new WriteJobsService(repository, agent, indexer, repo, users, log, events, acl, writer, config);

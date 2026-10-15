@@ -475,6 +475,24 @@ describe('read-only conversation transformations', () => {
     expect(await repo.headSha()).toBe(baseSha);
   });
 
+  it('uses only final path and Markdown responses after read-only tool preambles', async () => {
+    const proposed = '# New fact\nGrounded content.';
+    const { agent, repo, fake } = await fixture([
+      { functionCalls: [{ name: 'read_note', arguments: { path: 'wiki/concepts/existing.md' } }], text: '먼저 관련 개념을 확인한다.\n' },
+      'wiki/concepts/new-fact.md',
+      { functionCalls: [{ name: 'read_note', arguments: { path: 'wiki/concepts/existing.md' } }], text: '초안 작성용 메모: 기존 근거를 확인한다.\n' },
+      proposed,
+    ], { 'wiki/concepts/existing.md': '# Existing\nGrounded content.' });
+    const baseSha = await repo.headSha();
+    const beforeFiles = await repo.listFiles();
+    const proposal = await agent.proposal('# New fact\nGrounded content.', 'new');
+    expect(proposal).toEqual({ path: 'wiki/concepts/new-fact.md', baseSha, original: null, proposed });
+    expect(fake.requests).toHaveLength(4);
+    expect(await repo.readFile(proposal.path)).toBeNull();
+    expect(await repo.listFiles()).toEqual(beforeFiles);
+    expect(await repo.headSha()).toBe(baseSha);
+  });
+
   it('routes a domain proposal through its existing hub and reads its scoped schema', async () => {
     const { agent, repo, fake } = await fixture(['wiki/engineering/cache.md', '# Cache\nA grounded engineering fact.'], {
       'wiki/engineering/index.md': '# Engineering\nDomain entry points.',

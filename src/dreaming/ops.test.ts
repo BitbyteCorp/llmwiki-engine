@@ -77,7 +77,7 @@ async function fixture(slackWebhookUrl?: string, openaiBaseUrl?: string) {
     const input = JSON.parse(options.input as string) as { date: string };
     await options.tools.find((tool) => tool.name === 'write_file')!.run({ path: `journal/${input.date}.md`, content: '# SECRET_NOTE_CONTENT\n' });
     await options.tools.find((tool) => tool.name === 'write_file')!.run({ path: 'wiki/result.md', content: wikiNote('# Reviewed knowledge\n') });
-    return { text: 'SECRET_SUMMARY', toolCalls: 2 };
+    return { text: 'Scratch preamble\nSECRET_SUMMARY', finalText: 'SECRET_SUMMARY', toolCalls: 2 };
   });
   const agent = {
     baseInstructions: async () => 'Review facts.', runAgent,
@@ -208,9 +208,9 @@ async function webhook(handler: (body: string) => number) {
   return `http://127.0.0.1:${address.port}/`;
 }
 
-it.each(['none', 'provider', 'dreaming', 'conflict'] as const)('logs aggregate dreaming and conflict usage with %s failing', async (failure) => {
+it.each(['none', 'provider', 'dreaming', 'conflict'] as const)('logs aggregate dreaming and conflict usage and excludes preambles from the summary with %s failing', async (failure) => {
   interface Request { path: string; body: Record<string, unknown> }
-  type Turn = ({ text: string } | { functionCalls: Array<{ name: string; arguments: Record<string, unknown> }> }) & {
+  type Turn = ({ text: string } | { functionCalls: Array<{ name: string; arguments: Record<string, unknown> }>; text?: string }) & {
     usage: { inputTokens: number; cachedInputTokens: number; outputTokens: number; reasoningTokens: number };
     status?: 'completed' | 'failed';
   };
@@ -235,6 +235,7 @@ it.each(['none', 'provider', 'dreaming', 'conflict'] as const)('logs aggregate d
       const first = (request.body.input as Array<{ content: string }>)[0]!;
       const { journalPath } = JSON.parse(first.content) as { journalPath: string };
       return {
+        text: 'Scratch preamble: I will review the notes and write the journal.',
         functionCalls: [
           { name: 'write_file', arguments: { path: journalPath, content: '# Reviewed knowledge\n' } },
           { name: 'write_file', arguments: { path: 'wiki/shared.md', content: wikiNote('reviewed fact\n') } },

@@ -55,7 +55,7 @@ it('restricts its one bounded run to reading and writing reported notes, even wh
     expect(JSON.parse(String(await read.run({ path: 'wiki/invalid.md', offset: 1 })))).toMatchObject({ content: 'Preserve the body.\n' });
     await write.run({ path: 'wiki/invalid.md', content: '---\ntype: note\n---\n# Useful fact\nPreserve the body.\n' });
     options.onUsage?.({ inputTokens: 11, cachedInputTokens: 3, outputTokens: 4, reasoningTokens: 1 });
-    return { text: 'Metadata repaired', toolCalls: 3 };
+    return { text: 'Metadata repaired', finalText: 'Metadata repaired', toolCalls: 3 };
   });
   const agent = { baseInstructions, worktreeTools, runAgent } as unknown as AgentService;
   await repairNoteMetadata(agent, wt, issues, author, user, { onUsage });

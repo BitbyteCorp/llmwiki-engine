@@ -127,7 +127,7 @@ export async function runWrite(
         return messages;
       },
     });
-    return { summary: result.text.trim() };
+    return { summary: result.finalText.trim() };
   } catch (error) {
     if (!hitTurnLimit || !(error instanceof Error) || error.message !== `Dony exceeded maxTurns (${WRITE_MAX_TURNS}) before finishing`) throw error;
 
@@ -149,7 +149,7 @@ export async function runWrite(
         // Never replace the resumable parent checkpoint with the short wrap-up conversation.
       });
       wt.onPhase?.('editing', { wrapUp: 'finished' });
-      return { summary: result.text.trim() };
+      return { summary: result.finalText.trim() };
     } catch (wrapUpError) {
       const reason = wrapUpError instanceof Error ? wrapUpError.message : String(wrapUpError);
       throw new Error(`Parent write exceeded maxTurns (${WRITE_MAX_TURNS}); turn-limit wrap-up failed with maxTurns (${WRITE_TURN_LIMIT_WRAP_UP_MAX_TURNS}): ${reason}`, { cause: wrapUpError });

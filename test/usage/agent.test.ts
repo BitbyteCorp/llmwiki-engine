@@ -52,7 +52,7 @@ describe('actual agent response usage ledger', () => {
       ]);
       const result = await agent.runAgent({ lane, instructions: '', input: '수도는?', tools: [lookup],
         ...(streaming ? { onTextDelta: () => {} } : {}) });
-      expect(result).toEqual({ text: '서울이다.', toolCalls: 1 });
+      expect(result).toEqual({ text: '서울이다.', finalText: '서울이다.', toolCalls: 1 });
       expect(usage.aggregate(1)).toEqual({ days: 1, rows: [{
         day: new Date().toISOString().slice(0, 10), lane, model: 'usage-model', calls: 2,
         inputTokens: 220, cachedInputTokens: 130, outputTokens: 18, reasoningTokens: 7,
@@ -85,7 +85,7 @@ describe('actual agent response usage ledger', () => {
     expect(checkpoint?.usage).toEqual(first);
     const result = await agent.runAgent({ lane: 'write', instructions: '', input: '다시 시작하지 않는다.',
       tools: [lookup], resume: checkpoint! });
-    expect(result).toEqual({ text: '서울이다.', toolCalls: 1 });
+    expect(result).toEqual({ text: '서울이다.', finalText: '서울이다.', toolCalls: 1 });
     expect(usage.aggregate(1).rows).toEqual([{
       day: new Date().toISOString().slice(0, 10), lane: 'write', model: 'usage-model', calls: 2,
       inputTokens: 220, cachedInputTokens: 130, outputTokens: 18, reasoningTokens: 7,

@@ -24,7 +24,7 @@ import { WriteJobsService } from './write-jobs.service.js';
 
 interface FakeRequest { path: string; body: Record<string, unknown> }
 interface FakeCall { name: string; arguments: Record<string, unknown>; call_id?: string }
-type FakeTurn = string | FakeCall | ({ functionCalls: FakeCall[] } | { text: string }) & {
+type FakeTurn = string | FakeCall | ({ functionCalls: FakeCall[]; text?: string } | { text: string }) & {
   usage?: { inputTokens: number; cachedInputTokens?: number; outputTokens: number; reasoningTokens: number };
   status?: 'completed' | 'failed';
 };
@@ -105,7 +105,10 @@ describe('write job continuation with real Dony and git', () => {
     const content = 'first fact\nsecond fact\nthird fact\nlast fact\n';
     const published = 'wiki/imported.md';
     const f = await fixture((request, turn) => {
-      if (turn === 0) return { name: 'write_file', arguments: { path: published, content: note('# Imported facts\nAll four facts are preserved.\n') } };
+      if (turn === 0) return {
+        text: 'Need source evidence. 먼저 원문과 현재 노트를 확인하겠다.',
+        functionCalls: [{ name: 'write_file', arguments: { path: published, content: note('# Imported facts\nAll four facts are preserved.\n') } }],
+      };
       if (turn === 1) return 'PREMATURE_FIRST_SUMMARY';
       if (turn === 2) {
         expect(lastUserMessage(request)).toContain(path);
@@ -345,7 +348,8 @@ describe('write job continuation with real Dony and git', () => {
         expect(JSON.stringify(messages)).not.toContain('completed-parent-note');
         expect(f.checkpoints.get(`job:${job.id}`)?.toolCalls).toBe(97);
         expect(await f.repo.readFile(published)).toBeNull();
-        return { functionCalls: [{ name: 'read_file', arguments: { path: published }, call_id: 'wrap-up-review' }],
+        return { text: 'Need final review. 먼저 변경 파일을 확인하겠다.',
+          functionCalls: [{ name: 'read_file', arguments: { path: published }, call_id: 'wrap-up-review' }],
           usage: { inputTokens: 30, cachedInputTokens: 10, outputTokens: 8, reasoningTokens: 2 } };
       }
       if (turn === 97) {

@@ -156,7 +156,7 @@ export class AgentService {
     @Optional() @Inject(CodexAuthService) private readonly codex?: CodexCredentialSource,
   ) {}
 
-  async runAgent(opts: RunAgentOptions): Promise<{ text: string; toolCalls: number }> {
+  async runAgent(opts: RunAgentOptions): Promise<{ text: string; finalText: string; toolCalls: number }> {
     const { config } = this;
     if (!llmAvailable(config, this.codex)) {
       if (config.llmProvider === 'openai-codex') throw new CodexNotLoggedInError();
@@ -246,7 +246,7 @@ export class AgentService {
         if (followUp === undefined) {
           text += turnText;
           if (usage) opts.onEvent?.('usage', usage);
-          return { text, toolCalls };
+          return { text, finalText: turnText, toolCalls };
         }
         for (const item of response.output) {
           if (item.type === 'message' || item.type === 'reasoning' || item.type === 'compaction') input.push(item);
@@ -452,7 +452,7 @@ wiki 아래 모든 폴더명은 2자 이상의 ASCII 영어 소문자 kebab-case
         tools, assertAccess: assertCurrentPolicy,
       });
       assertCurrentPolicy();
-      path = selection.text.trim();
+      path = selection.finalText.trim();
       if (path === 'NONE') throw new Error('Create and link a suitable domain hub before proposing this note');
       if (!writable.includes(path)) throw new Error('Dony selected an invalid note placement');
     }
@@ -486,8 +486,8 @@ wiki 아래 모든 폴더명은 2자 이상의 ASCII 영어 소문자 kebab-case
       tools, assertAccess: assertCurrentPolicy,
     });
     assertCurrentPolicy();
-    if (!result.text.trim()) throw new Error('Dony returned an empty note proposal');
-    return { path: canonicalPath, baseSha, original, proposed: result.text };
+    if (!result.finalText.trim()) throw new Error('Dony returned an empty note proposal');
+    return { path: canonicalPath, baseSha, original, proposed: result.finalText };
   }
 
   async answer(messages: ChatMessage[], onTextDelta: (t: string) => void, signal?: AbortSignal, options: AnswerOptions = {}): Promise<{ text: string; citations: Citation[]; usage?: TokenUsage }> {

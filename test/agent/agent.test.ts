@@ -112,7 +112,7 @@ describe('Dony Responses tool loop', () => {
   it('returns a fact after a function-call round trip', async () => {
     const { agent, fake } = await fixture([{ name: 'lookup', arguments: { key: 'capital' }, call_id: 'fact' }, '수도는 서울이다.']);
     await expect(agent.runAgent({ instructions: 'Answer from facts', input: '수도는?', tools: [lookup] }))
-      .resolves.toEqual({ text: '수도는 서울이다.', toolCalls: 1 });
+      .resolves.toEqual({ text: '수도는 서울이다.', finalText: '수도는 서울이다.', toolCalls: 1 });
     expect(fake.requests[1]!.body.input).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: 'function_call_output', call_id: 'fact', output: '서울' }),
     ]));
@@ -132,7 +132,7 @@ describe('Dony Responses tool loop', () => {
       instructions: '', input: '이전 입력이다.', tools: [lookup],
       onCheckpoint: (checkpoint) => checkpoints.push(checkpoint),
       ...(streaming ? { onTextDelta: (text: string) => deltas.push(text) } : {}),
-    })).resolves.toEqual({ text: '중간 확인이다.서울이다.', toolCalls: 2 });
+    })).resolves.toEqual({ text: '중간 확인이다.서울이다.', finalText: '서울이다.', toolCalls: 2 });
     expect(fake.requests[2]!.body.input).toEqual([
       latestCompaction,
       expect.objectContaining({ type: 'function_call', call_id: 'after' }),
@@ -168,7 +168,7 @@ describe('Dony Responses tool loop', () => {
         if (checkpoint.usage) checkpoint.usage.inputTokens = -1;
       },
       onEvent: (event, data) => { if (event === 'usage') usage = data; },
-    })).resolves.toEqual({ text: '이전 답변. 확인. 서울이다.', toolCalls: 5 });
+    })).resolves.toEqual({ text: '이전 답변. 확인. 서울이다.', finalText: '서울이다.', toolCalls: 5 });
     expect(fake.requests[0]!.body.input).toEqual(resume.input);
     expect(resume).toEqual({
       input: [{ type: 'compaction', encrypted_content: 'saved-state' }, { role: 'user', content: '계속한다.' }],
@@ -184,6 +184,40 @@ describe('Dony Responses tool loop', () => {
       { inputTokens: 5, cachedInputTokens: 0, outputTokens: 4, reasoningTokens: 2 },
       { inputTokens: 6, cachedInputTokens: 0, outputTokens: 3, reasoningTokens: 1 },
     ]);
+  });
+
+  it.each([false, true])('excludes resumed text, tool preambles, and rejected finishes from finalText (streaming=%s)', async (streaming) => {
+    const resume: AgentCheckpoint = {
+      input: [{ type: 'compaction', encrypted_content: 'saved-state' }, { role: 'user', content: '계속한다.' }],
+      text: '이전 답변. ', toolCalls: 4,
+    };
+    const { agent, fake } = await fixture([
+      { functionCalls: [{ name: 'lookup', arguments: { key: 'capital' } }], text: '확인. ' },
+      '아직 끝나지 않았다.',
+      { output: ['최종 ', '답변이다.'] },
+    ]);
+    const checkpoints: AgentCheckpoint[] = [];
+    const beforeFinish = vi.fn().mockReturnValueOnce('근거를 확인하고 다시 마무리한다.').mockReturnValue(undefined);
+    await expect(agent.runAgent({
+      instructions: '', input: '무시할 입력', resume, tools: [lookup], beforeFinish,
+      onCheckpoint: (checkpoint) => checkpoints.push(checkpoint),
+      ...(streaming ? { onTextDelta: () => {} } : {}),
+    })).resolves.toEqual({
+      text: '이전 답변. 확인. 최종 답변이다.', finalText: '최종 답변이다.', toolCalls: 5,
+    });
+    expect(beforeFinish.mock.calls).toEqual([
+      ['이전 답변. 확인. 아직 끝나지 않았다.'],
+      ['이전 답변. 확인. 최종 답변이다.'],
+    ]);
+    expect(checkpoints).toHaveLength(2);
+    expect(checkpoints[1]!.text).toBe('이전 답변. 확인. ');
+    expect(fake.requests[2]!.body.input).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: 'message', role: 'assistant',
+        content: [{ type: 'output_text', text: '아직 끝나지 않았다.', annotations: [], logprobs: [] }],
+      }),
+      { role: 'user', content: '근거를 확인하고 다시 마무리한다.' },
+    ]));
   });
 
   it('preserves checkpoint cached totals without charging resumed usage again', async () => {
@@ -320,7 +354,7 @@ describe('Dony Responses tool loop', () => {
     await expect(agent.runAgent({
       instructions: '', input: '', tools: [tool],
       ...(streaming ? { onTextDelta: () => {} } : {}),
-    })).resolves.toEqual({ text: '출력을 확인했다.', toolCalls: 1 });
+    })).resolves.toEqual({ text: '출력을 확인했다.', finalText: '출력을 확인했다.', toolCalls: 1 });
     expect(fake.requests[1]!.body.input).toEqual(expect.arrayContaining([
       {
         type: 'function_call_output', call_id: 'emoji-cap',
@@ -347,7 +381,7 @@ describe('Dony Responses tool loop', () => {
     await expect(agent.runAgent({
       instructions: '', input: 'ignored', resume, tools: [],
       ...(streaming ? { onTextDelta: () => {} } : {}),
-    })).resolves.toEqual({ text: '누적 답변. 재개했다.', toolCalls: 2 });
+    })).resolves.toEqual({ text: '누적 답변. 재개했다.', finalText: '재개했다.', toolCalls: 2 });
     expect(fake.requests[0]!.body.input).toEqual([
       { role: 'user', content: [{ type: 'input_text', text: '질문 � 😀' }] },
       { type: 'function_call', name: 'lookup', arguments: '{"key":"�"}', call_id: 'saved-call' },
@@ -371,7 +405,7 @@ describe('Dony Responses tool loop', () => {
     await expect(agent.runAgent({
       instructions: '', input, tools: [{ ...lookup, run: async () => '도구 \uD83D 😀' }],
       beforeTurn: () => [queued],
-    })).resolves.toEqual({ text: '완료했다.', toolCalls: 1 });
+    })).resolves.toEqual({ text: '완료했다.', finalText: '완료했다.', toolCalls: 1 });
     expect(fake.requests[0]!.body.input).toEqual([
       { role: 'user', content: [{ type: 'input_text', text: '질문 � 😀' }] },
       { role: 'user', content: [{ type: 'input_text', text: '추가 � 😀' }] },
@@ -389,7 +423,7 @@ describe('Dony Responses tool loop', () => {
       '근거를 찾지 못했다.',
     ]);
     await expect(agent.runAgent({ instructions: 'Report failures', input: '찾는다', tools: [lookup] }))
-      .resolves.toEqual({ text: '근거를 찾지 못했다.', toolCalls: 3 });
+      .resolves.toEqual({ text: '근거를 찾지 못했다.', finalText: '근거를 찾지 못했다.', toolCalls: 3 });
     const input = fake.requests[1]!.body.input as Array<{ type: string; call_id?: string; output?: string }>;
     expect(JSON.parse(input.find((item) => item.call_id === 'bad-key' && item.type === 'function_call_output')!.output!)).toEqual({ error: 'Unknown fact' });
     expect(input.filter((item) => item.type === 'function_call_output').every((item) => typeof JSON.parse(item.output!).error === 'string')).toBe(true);

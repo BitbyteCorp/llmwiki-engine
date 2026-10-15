@@ -259,7 +259,7 @@ export class DreamingService implements OnApplicationShutdown {
         } finally {
           run.structuralChanges = guarded.changes();
         }
-        run.summary = result.text || null;
+        run.summary = result.finalText || null;
         if (!(await worktree.read(journalPath))?.trim()) {
           throw new Error(`Dreaming did not write the required journal: ${journalPath}`);
         }
