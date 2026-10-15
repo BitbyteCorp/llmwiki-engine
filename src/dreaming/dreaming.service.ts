@@ -350,9 +350,10 @@ function dreamInstructions(): string {
   return `입력 JSON의 date는 오늘의 한국 표준시(Asia/Seoul) 날짜다. dreaming 정리 작업을 수행한다.
 입력 JSON의 커밋과 changedNotes는 직전 성공한 실행 이후 main의 변경이며 similarNotes는 관련 기존 노트의 경로·제목과 최대 1500자 발췌다. 발췌를 전체 본문으로 간주하지 않고 더 많은 근거가 필요하면 read_file로 읽는다.
 변경과 관련 노트를 읽고 근거에 따라 모순과 중복을 정리한다. read_file은 페이지 JSON을 반환하므로 truncated이면 nextOffset과 nextCharOffset(있을 때)으로 이어 읽는다. 기존 파일을 write_file로 교체할 때는 모든 필요한 페이지를 읽고 유효한 기존 내용을 포함한 전체 파일을 저장한다. list_files는 같은 prefix와 nextOffset으로 이어 조회하거나 폴더를 좁힌다. 최신 근거가 불명확하면 열린 쟁점으로 남기고 지어내지 않는다.
-깨진 위키링크와 index.md를 고치고 MEMORY.md의 낡은 항목을 정리한다. raw/ 원문은 불변으로 보존한다.
+깨진 위키링크와 index.md를 고친다. 도니를 호출하는 매 dreaming 실행에서 MEMORY.md를 기본 메모리 계약에 맞게 통합한다. 중복 관례를 합치고 해결된 쟁점을 제거하며 오래 유지할 지식은 wiki 정본으로 옮겨 포인터만 남긴다. 사용자 정정·정리/답변 선호·반복 결정은 작업 관례에, 열린 쟁점은 날짜와 경로를 붙여 진행 중에, 필요한 포인터는 이유와 함께 참조에 반영한다. 유효한 내용을 보존하며 파일 전체를 예산 안에 유지하고 노트 본문 덤프나 비밀값을 넣지 않는다. raw/ 원문은 불변으로 보존한다.
 ACL 경계를 넘어 제한된 노트·사용자 자료의 내용이나 의미를 다른 권한 영역의 노트, 색인, 메모리, 일기에 복사·요약·의역하지 않는다. 이 시스템 작업은 전체 저장소를 읽을 수 있지만 공유 범위를 확대할 권한은 없다. 경계가 불명확하면 내용을 옮기지 않고 기존 영역에 보존한다.
 입력 structure는 엔진이 계산한 구조 신호이며 mode는 오늘의 정리 범위다.
+structure.signals.memoryIssues가 비어 있지 않으면 MEMORY.md의 형식·순서·예산 위반을 뜻한다. 현재 파일을 읽고 유효한 내용을 위의 통합 절차로 보존·정리한 뒤 기본 메모리 계약을 만족하게 고친다.
 - local: 변경 노트 주변만 정리한다. 다른 영역의 구조는 바꾸지 않는다.
 - structural: structure.signals에 지목된 영역만 정리한다. 변경과 메시지도 평소처럼 처리한다.
 - sweep: structure.focus 폴더 하나만 점검한다.
@@ -360,18 +361,16 @@ ACL 경계를 넘어 제한된 노트·사용자 자료의 내용이나 의미�
 가져오기 과정 설명("가져온 자료에는", "이번 배치", 파일 제외 사유 등), 내보내기 잔재(Notion ID, 의미 없는 "제목 없음", 빈 템플릿 항목, 깨진 첨부 참조)를 제거한다. 실제 식별자나 의미 있는 사실은 잔재로 취급하지 않는다. 반복되는 출처·검증 유보 문구는 정확한 시점·출처 맥락 한 번으로 합치고, 원문 표·목록의 덤프는 그 안의 사실·결정·이유·절차·용어로 정리한다.
 출처 링크는 노트 메타데이터 source 또는 출처 절에만 모은다. source는 위키링크나 http(s) URL의 문자열 배열이며 raw 출처 링크를 보존한다. 노트나 그 raw 출처에 없는 사실은 추가하지 않고, 의미 있는 사실은 버리지 않는다. 제거 대상은 과정 설명·중복·잔재뿐이며 raw/는 절대 편집하지 않는다.
 정제 후 재사용 가능한 지식이 없는 노트나 가져오기 산물만 남은 노트는 의미 있는 사실과 링크를 보존하며 병합·삭제할 수 있다. 기존 이동·삭제 20건 상한을 함께 적용한다. 정제한 노트와 내용, 상한 때문에 남은 후보를 일기의 "정제" 절에 기록한다.
-도메인은 제품·서비스·프로젝트·조직·생활·연구 같은 최상위 관심 영역이며 topic은 그 안에서 반복 조회하는 안정적인 주제·측면이다. 적합한 기존 topic을 우선한다. 일반 도메인 노트의 기본·최소 경로는 wiki/<domain>/<topic>/<노트 제목>.md다. topic의 직속 노트가 15개를 초과하고 분리할 묶음이 3개 이상일 때만 subtopic 한 단계를 추가하며 wiki/<domain>/<topic>/<subtopic>/<노트 제목>.md보다 깊게 만들지 않는다.
-도메인 구조 신호를 우선 고친다: missingDomainHubs의 경로에 해당 도메인의 큐레이션 허브를 만들고 루트 index.md에서 연결한다. unlinkedDomainHubs는 기존 허브를 루트 index.md에 연결한다. unclassifiedNotes와 shallowDomainNotes는 관심 대상과 주제를 확인해 wiki/<domain>/<topic>/로 옮긴다. tooDeepNotes는 허용 깊이 안으로 합치고, invalidFolderNames는 reason을 읽고 배치·날짜·한 글자 폴더 등을 안정적인 주제로 재분류한다. 허브 wiki/<domain>/index.md와 schema wiki/<domain>/AGENTS.md의 위치는 유지한다.
-둘 이상 도메인에서 재사용하거나 도메인과 무관한 개념·용어는 wiki/concepts/, 사람·조직·도구·제품은 wiki/entities/의 정본으로 배치한다. 공유 영역은 평면 또는 topic 한 단계만 허용하며 concepts와 entities는 도메인 이름으로 사용하지 않는다. 같은 지식은 한 정본만 유지한다.
-wiki/ 아래 모든 폴더명은 2자 이상의 ASCII 소문자 kebab-case다. 모든 단계에서 수집 batch/part/chunk·분할 번호, 날짜·기간, 원문 도구·출처, 노트 유형, 상태, 작성자를 분류 축으로 쓰지 않는다. 노트 파일명은 사람이 읽을 제목이며 한국어를 허용한다. 새 도메인은 허브와 루트 index.md의 허브 링크를 함께 만든다. 폴더로 도메인을 나타내며 frontmatter에 domain/category 필드를 추가하지 않는다. wiki/<domain>/ 안의 파일을 쓰거나 편집하기 전에는 해당 도메인의 AGENTS.md가 있으면 읽고 그 도메인 안에서만 적용한다.
+배치·깊이·폴더 이름·공유 정본·schema 우선순위와 허브·색인 연결은 기본 문맥의 엔진 지식 구조 규칙을 따른다. browse_catalog로 현재 main의 기존 주제와 전체 노트 목록을 확인한다.
+도메인 구조 신호를 우선 고친다. missingDomainHubs와 unlinkedDomainHubs는 기본 허브·색인 규칙에 맞춰 보완한다. unclassifiedNotes, shallowDomainNotes, tooDeepNotes, invalidFolderNames는 노트의 관심 대상과 주제를 읽고 기본 배치 규칙에 맞게 정리한다.
 정리 순서는 도메인 배치·허브, 깨지거나 모호한 링크, 그 밖의 구조 문제, 남은 메타데이터 순서다. 큰 기존 메타데이터 backlog가 탐색 경로와 링크 수리를 밀어내지 않게 한다. 앞선 수리로 이미 편집하는 노트의 메타데이터도 함께 고치고, 그 뒤 invalidMetadata의 후보를 차례로 보완한다. invalidMetadataCount는 점검한 main 전체의 미완료 노트 수이며 후보 목록은 최대 20개다. 상한이나 근거 부족으로 남은 후보와 backlog를 일기의 "구조 정리" 절에 남긴다.
 invalidMetadata는 author, date created, date modified처럼 엔진이 채우는 속성을 제외한 오류다. 후보 노트의 본문과 기존 링크를 먼저 읽고 거기에 있는 사실만으로 type, aliases, description, tags를 채운다. description은 300자 이하의 한국어 1~2문장 요약이며, aliases는 실제 다른 이름·약어·번역의 문자열 목록(없으면 []), tags는 하나 이상의 넓고 재사용 가능한 영문 소문자 kebab-case 태그다. 메타데이터를 채우려고 새 사실을 지어내지 않는다.
 type은 hub, concept, entity, guide, decision, reference, project, note 중 고른다. wiki/concepts/의 노트는 concept, wiki/entities/의 노트는 entity, wiki/<domain>/index.md는 hub로 맞춘다. updated는 제거하고 날짜는 엔진에 맡긴다. status/category/domain은 제거하되 지식 의미를 담고 있다면 필요한 의미만 본문에 보존한다. author와 생성·수정 날짜는 추측하거나 계산하지 않으며 엔진이 커밋 시 채운다. 그 밖의 도메인 추가 속성은 보존하며 related/source/confidence/importance 같은 유효한 속성을 버리지 않는다.
 구조 변경은 탐색이나 검색이 분명히 좋아질 때만 한다. 취향 때문에 이름을 바꾸거나 폴더를 다시 나누지 않는다.
 - 합치기: 같은 사실을 다루는 노트는 하나의 정본으로 합치고 나머지는 삭제한다. 삭제한 노트를 가리키던 모든 위키링크는 정본을 가리키게 고친다.
-- 옮기기·이름 바꾸기: 위의 관심 대상·주제와 깊이·이름 규칙을 따른다. oversizedFolders는 직속 노트 15개 초과 신호이며, 의미 있는 3개 이상의 세부 주제 묶음이 없으면 억지로 subtopic을 만들지 않고 중복·범위와 허브를 먼저 정리한다. 기존 평평한 배치나 배치·날짜별 관례를 답습하지 않는다.
+- 옮기기·이름 바꾸기: 기본 엔진 규칙을 따른다. oversizedFolders가 있어도 하위 주제 분리 조건과 실질적인 탐색 개선을 확인한 뒤 이동하며, 조건이 맞지 않으면 중복·범위와 허브를 먼저 정리한다.
 - 쪼개기: 한 노트에 서로 독립적인 주제가 섞였을 때만 원자적 노트로 나누고 서로 링크한다.
-- 허브: 같은 주제의 노트가 흩어져 있으면 지식을 복제하지 않는 허브 노트를 만들고 index.md에 연결한다.
+- 허브: 점검 범위에서 누락된 조회 경로를 기본 엔진 규칙의 큐레이션 형식으로 보완한다.
 파일을 옮기거나 삭제하면 그 경로를 가리키던 모든 [[링크]]를 같은 커밋에서 고친다.
 raw/, journal/, MEMORY.md, 루트 AGENTS.md, wiki/<domain>/AGENTS.md, 루트 index.md의 위치는 바꾸지 않으며 이동·삭제하지 않는다. 도메인 전용 작성 규칙은 그 도메인의 AGENTS.md에만 둔다.
 이동·삭제는 하루 20건까지다. 일기의 "구조 정리" 절에 이전 경로 → 새 경로와 이유를 모두 적고, 남은 후보는 다음 정리 후보로 남긴다.
