@@ -1,5 +1,5 @@
-# Codex 설치 자료
-Codex에 llmwiki Skill을 설치하고 MCP OAuth를 별도로 연결하는 자료다.
+# Codex와 공유 Agent Skills 설치 자료
+Codex와 같은 `.agents/skills`를 탐색하는 에이전트에 llmwiki Skill을 한 번만 설치하고, MCP OAuth는 사용하는 에이전트에서 별도로 연결하는 자료다.
 
 ## 배경
 공통 프롬프트의 단일 원본은 `skills/llmwiki/SKILL.md`다. 이 디렉터리는 셸·CLI 설치 시 Skill의 `client/`에 복사된다. `mcp.example.toml`은 병합용 예시이며 활성 설정이 아니다. Skill 설치, MCP 등록, 브라우저 OAuth 로그인은 별개다.
@@ -14,6 +14,8 @@ git clone https://github.com/BitbyteCorp/llmwiki-engine.git \
 ```
 
 개인 대상은 [공식 Skill 위치](https://developers.openai.com/codex/skills)인 `~/.agents/skills/llmwiki`이고 `--project <dir>`는 `<dir>/.agents/skills/llmwiki`를 선택한다. 이미 받은 저장소는 `git pull --ff-only`로 갱신한 뒤 루트에서 다음 명령을 사용한다.
+
+Gemini CLI·OpenCode·Cursor·GitHub Copilot(VS Code와 CLI)·Windsurf/Devin Desktop·Roo Code·Amp·Goose·Factory Droid·Zed·Crush도 이 개인·프로젝트 공유 위치를 탐색한다. 이 에이전트에서 사용해도 설치 대상 ID는 `codex`이며 에이전트별 이름의 CLI 별칭을 만들지 않는다. 다른 클라이언트 전용 디렉터리에 같은 Skill을 중복 설치하지 않는다. 각 에이전트의 공식 위치·호출 방식과 MCP 설정은 저장소의 `docs/skills.md`를 따른다. 아래 Codex GitHub 기본 설치와 `codex mcp login`은 Codex에서만 사용하며 다른 에이전트에 실행하지 않는다.
 
 ```bash
 sh skills/install.sh status codex

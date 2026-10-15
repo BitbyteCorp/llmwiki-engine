@@ -10,7 +10,7 @@ engine_url=''
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 usage() {
   printf '%s\n' \
-    'Usage: sh skills/install.sh [<install|update|status> <claude-code|codex|hermes> [--project dir] [--force]]' \
+    'Usage: sh skills/install.sh [<install|update|status> <claude-code|codex|hermes|cline|kiro|qwen-code> [--project dir] [--force]]' \
     'Without arguments, choose the client and scope interactively using /dev/tty.' \
     'Non-interactive examples (also work without a terminal):' \
     '  curl -fsSL <ENGINE_URL>/skills/install.sh | sh -s -- install claude-code' \
@@ -52,11 +52,11 @@ if [ -z "$client" ] || [ "$project_missing" = true ]; then
   interactive=true
 fi
 if [ -z "$client" ]; then
-  # Local status is cheap; remote status would download three complete bundles.
+  # Local status is cheap; remote status would download every complete bundle.
   case $0 in */*) preview_assets=${0%/*} ;; *) preview_assets=. ;; esac
   if [ -f "$0" ] && [ -f "$preview_assets/llmwiki/SKILL.md" ]; then
     printf '%s\n' 'Existing installations (personal unless --project was supplied):' >&2
-    for preview_client in claude-code codex hermes; do
+    for preview_client in claude-code codex hermes cline kiro qwen-code; do
       if [ "$project_set" = true ] && [ "$project_missing" = false ]; then
         preview_status=$(sh "$0" status "$preview_client" --project "$base" 2>/dev/null | awk '/"state":/ { gsub(/[",]/, "", $2); print $2 }')
       else
@@ -65,14 +65,17 @@ if [ -z "$client" ]; then
       printf '  %s: %s\n' "$preview_client" "${preview_status:-unavailable}" >&2
     done
   fi
-  printf '%s\n' 'Choose a client:' '  1) Claude Code (default)' '  2) Codex' '  3) Hermes' >&2
+  printf '%s\n' 'Choose a client:' '  1) Claude Code (default)' '  2) Codex · Gemini CLI · OpenCode · Cursor · GitHub Copilot (VS Code/CLI) · Windsurf/Devin Desktop · Roo Code · Amp · Goose · Factory Droid · Zed · Crush (~/.agents/skills)' '  3) Hermes' '  4) Cline' '  5) Kiro' '  6) Qwen Code' >&2
   while :; do
     prompt 'Client [1]: '
     case $answer in
       ''|1|claude-code) client=claude-code; break ;;
       2|codex) client=codex; break ;;
       3|hermes) client=hermes; break ;;
-      *) printf '%s\n' 'Choose 1, 2, or 3.' >&2 ;;
+      4|cline) client=cline; break ;;
+      5|kiro) client=kiro; break ;;
+      6|qwen-code) client=qwen-code; break ;;
+      *) printf '%s\n' 'Choose a listed client.' >&2 ;;
     esac
   done
 fi
@@ -80,6 +83,9 @@ case $client in
   claude-code) client_root=.claude ;;
   codex) client_root=.agents ;;
   hermes) client_root=.hermes ;;
+  cline) client_root=.cline ;;
+  kiro) client_root=.kiro ;;
+  qwen-code) client_root=.qwen ;;
   *) usage ;;
 esac
 if [ "$interactive" = true ] && [ "$project_set" = false ]; then
@@ -584,8 +590,11 @@ print_status
 printf '\nSeparate MCP/OAuth step (not performed by this command):\n' >&2
 case $client in
   claude-code) printf '%s\n' 'Register the engine URL separately: claude mcp add --transport http --scope user llmwiki <ENGINE_URL>/mcp (use --scope project for project scope). Then open /mcp in Claude Code and complete browser OAuth.' >&2 ;;
-  codex) printf '%s\n' 'Add [mcp_servers.llmwiki] with url = "<ENGINE_URL>/mcp" to your existing ~/.codex/config.toml (or trusted project .codex/config.toml), preserving other settings. Then run: codex mcp login llmwiki' >&2 ;;
+  codex) printf '%s\n' 'This target installs shared .agents/skills for Codex, Gemini CLI, OpenCode, Cursor, GitHub Copilot (VS Code/CLI), Windsurf/Devin Desktop, Roo Code, Amp, Goose, Factory Droid, Zed and Crush. Use your agent-specific MCP guide in docs/skills.md. For Codex only: add [mcp_servers.llmwiki] with url = "<ENGINE_URL>/mcp" to ~/.codex/config.toml (or trusted project .codex/config.toml), then run codex mcp login llmwiki.' >&2 ;;
   hermes) printf '%s\n' 'Merge llmwiki: { url: "<ENGINE_URL>/mcp", auth: oauth } under mcp_servers in your existing ~/.hermes/config.yaml, preserving other settings. Then run in a separate terminal: hermes mcp login llmwiki' >&2 ;;
+  cline) printf '%s\n' 'For Cline CLI, merge client/mcp.example.json into ~/.cline/data/settings/cline_mcp_settings.json. Run cline mcp and choose Authorize OAuth for llmwiki. The IDE extension opens separate MCP settings through MCP Servers > Configure.' >&2 ;;
+  kiro) printf '%s\n' 'Merge client/mcp.example.json into ~/.kiro/settings/mcp.json or project .kiro/settings/mcp.json. Connect to llmwiki and complete browser OAuth; Kiro CLI /mcp auth reauthenticates servers.' >&2 ;;
+  qwen-code) printf '%s\n' 'Merge client/mcp.example.json into ~/.qwen/settings.json or project .qwen/settings.json. Use Qwen Code /mcp to authenticate llmwiki through its discovered OAuth browser flow.' >&2 ;;
 esac
 printf '%s\n' 'Replace <ENGINE_URL> with the engine base URL. No secrets or active MCP configuration are written. Start a new agent session after installing.' >&2
 if [ "$client" = hermes ] && [ "$project_set" = true ]; then

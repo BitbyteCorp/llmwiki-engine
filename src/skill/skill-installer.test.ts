@@ -2,7 +2,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { installMarker, SkillInstaller } from './skill-installer.js';
+import { installMarker, skillClients, SkillInstaller } from './skill-installer.js';
 
 let root: string;
 let assets: string;
@@ -13,7 +13,7 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'llmwiki-skill-test-'));
   assets = join(root, 'assets');
   home = join(root, 'home');
-  for (const client of ['llmwiki', 'claude-code', 'codex', 'hermes']) mkdirSync(join(assets, client), { recursive: true });
+  for (const client of ['llmwiki', ...skillClients]) mkdirSync(join(assets, client), { recursive: true });
   writeFileSync(join(assets, 'version.json'), JSON.stringify({ version: '1.0.0' }));
   writeFileSync(join(assets, 'llmwiki', 'SKILL.md'), 'Original skill');
   writeFileSync(join(assets, 'codex', 'mcp.example.toml'), 'Original example');
@@ -99,6 +99,7 @@ describe('skill installation ownership and versions', () => {
 
   it.each([
     ['claude-code', '.claude'], ['codex', '.agents'], ['hermes', '.hermes'],
+    ['cline', '.cline'], ['kiro', '.kiro'], ['qwen-code', '.qwen'],
   ] as const)('installs %s in a project while preserving active config and secrets even with force', (client, clientRoot) => {
     const project = join(root, 'project');
     mkdirSync(join(project, '.codex'), { recursive: true });

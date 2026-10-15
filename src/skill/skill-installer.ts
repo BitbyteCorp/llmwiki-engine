@@ -5,10 +5,13 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 
-export const skillClients = ['claude-code', 'codex', 'hermes'] as const;
+export const skillClients = ['claude-code', 'codex', 'hermes', 'cline', 'kiro', 'qwen-code'] as const;
 export type SkillClient = typeof skillClients[number];
 export const installMarker = '.llmwiki-install.json';
-const roots: Record<SkillClient, string> = { 'claude-code': '.claude', codex: '.agents', hermes: '.hermes' };
+const roots: Record<SkillClient, string> = {
+  'claude-code': '.claude', codex: '.agents', hermes: '.hermes',
+  cline: '.cline', kiro: '.kiro', 'qwen-code': '.qwen',
+};
 const markerSchema = z.object({
   schema: z.literal(1),
   client: z.enum(skillClients),

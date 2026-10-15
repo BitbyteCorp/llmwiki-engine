@@ -16,7 +16,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CONFIG } from '../common/tokens.js';
 import { SkillModule } from './skill.module.js';
 import { SKILL_ASSETS } from './skill-distribution.service.js';
-import { SkillInstaller } from './skill-installer.js';
+import { skillClients, SkillInstaller } from './skill-installer.js';
 
 const execute = promisify(execFile);
 let app: INestApplication;
@@ -33,7 +33,7 @@ class DistributionConfigModule {}
 beforeEach(async () => {
   root = mkdtempSync(join(tmpdir(), 'llmwiki-distribution-'));
   assets = join(root, 'assets');
-  for (const name of ['llmwiki', 'claude-code', 'codex', 'hermes']) mkdirSync(join(assets, name), { recursive: true });
+  for (const name of ['llmwiki', ...skillClients]) mkdirSync(join(assets, name), { recursive: true });
   copyFileSync(fileURLToPath(new URL('../../skills/install.sh', import.meta.url)), join(assets, 'install.sh'));
   writeFileSync(join(assets, 'version.json'), '{"version":"fixture-1"}');
   writeFileSync(join(assets, 'llmwiki/SKILL.md'), 'Skill without a trailing newline');
@@ -67,6 +67,16 @@ describe('public skill distribution', () => {
   it.each(['/skills/files/../../package.json', '/skills/files/%2e%2e%2fpackage.json', '/skills/files/%252e%252e%252fpackage.json', '/skills/files/install.sh', '/skills/version.json/../package.json', '/skills/manifest/unknown', '/skills/package.json'])('rejects non-distributed paths: %s', async (path) => {
     await request(app.getHttpServer()).get(path).expect(404);
   });
+  it.each(skillClients)('publishes a remotely installable manifest for %s', async (client) => {
+    const project = join(root, 'client project');
+    const home = join(root, 'client home');
+    const result = await execute('sh', ['-c', 'curl -fsSL "$SOURCE/skills/install.sh" | HOME="$TARGET_HOME" LLMWIKI_URL="$SOURCE" sh -s -- install "$CLIENT" --project "$PROJECT"'], {
+      cwd: root, env: { ...process.env, SOURCE: url, TARGET_HOME: home, PROJECT: project, CLIENT: client },
+    });
+    expect(JSON.parse(result.stdout).state).toBe('current');
+    expect(new SkillInstaller(assets, home).status(client, { project }).state).toBe('current');
+  });
+
 
   it('downloads over HTTP from a curl pipe and interoperates byte-for-byte with CLI installs', async () => {
     const project = join(root, 'project');

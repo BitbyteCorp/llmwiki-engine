@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { installMarker, SkillInstaller, type SkillClient } from './skill-installer.js';
+import { installMarker, skillClients, SkillInstaller, type SkillClient } from './skill-installer.js';
 
 const repositoryScript = fileURLToPath(new URL('../../skills/install.sh', import.meta.url));
 let root: string;
@@ -19,7 +19,7 @@ beforeEach(() => {
   assets = join(root, 'fixture assets');
   home = join(root, 'home');
   project = join(root, 'project');
-  for (const client of ['llmwiki', 'claude-code', 'codex', 'hermes']) mkdirSync(join(assets, client), { recursive: true });
+  for (const client of ['llmwiki', ...skillClients]) mkdirSync(join(assets, client), { recursive: true });
   mkdirSync(home);
   mkdirSync(project);
   script = join(assets, 'install.sh');
@@ -74,6 +74,16 @@ describe('interactive POSIX skill installer', () => {
       expect(execution.error).toBeUndefined();
       return { ...execution, transcript: execution.stdout + execution.stderr };
     }
+
+    it.each(skillClients)('installs %s interactively in personal and project scopes', (client) => {
+      mkdirSync(join(project, '.git'));
+      const personal = interactive(`${client}\n1\n`);
+      expect(personal.status, personal.transcript).toBe(0);
+      expect(installer.status(client).state).toBe('current');
+      const local = interactive(`${client}\n2\n${project}\n`);
+      expect(local.status, local.transcript).toBe(0);
+      expect(installer.status(client, { project }).state).toBe('current');
+    });
 
     it.each(['dash', 'bash --posix'])('installs a project and skips a current install under %s', (shell) => {
       const answers = `2\n2\n${project}\n`;
@@ -133,7 +143,7 @@ describe('interactive POSIX skill installer', () => {
     it('re-prompts invalid choices and accepts empty defaults', () => {
       const execution = interactive('invalid\n\ninvalid\n\n');
       expect(execution.status, execution.transcript).toBe(0);
-      expect(execution.transcript).toContain('Choose 1, 2, or 3.');
+      expect(execution.transcript).toContain('Choose a listed client.');
       expect(execution.transcript).toContain('Choose 1 or 2.');
       expect(installer.status('claude-code').state).toBe('current');
     });
@@ -158,13 +168,13 @@ describe('interactive POSIX skill installer', () => {
 });
 
 describe('POSIX skill installer interoperability', () => {
-  it.each(['claude-code', 'codex', 'hermes'] as const)('installs the repository bundle for %s in a project without Node', (client) => {
+  it.each(skillClients)('installs the repository bundle for %s in a project without Node', (client) => {
     const status = result('install', client, { source: repositoryScript });
     expect(status).toEqual({ ...new SkillInstaller().status(client, { project }), changed: true });
     expect(status.state).toBe('current');
   });
 
-  it.each(['claude-code', 'codex', 'hermes'] as const)('uses HOME for %s and requires install before update', (client) => {
+  it.each(skillClients)('uses HOME for %s and requires install before update', (client) => {
     expect(result('status', client, { personal: true })).toEqual(installer.status(client));
     expect(run('update', client, { personal: true }).stderr).toMatch(/run skill install/);
     expect(result('install', client, { personal: true })).toEqual({ ...installer.status(client), changed: true });

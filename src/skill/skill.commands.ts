@@ -3,8 +3,11 @@ import { SkillInstaller, skillClients, type SkillClient, type SkillInstallOption
 
 const oauthSteps: Record<SkillClient, string> = {
   'claude-code': 'Register the engine URL separately: claude mcp add --transport http --scope user llmwiki <ENGINE_URL>/mcp (use --scope project for project scope). Then open /mcp in Claude Code and complete browser OAuth.',
-  codex: 'Add [mcp_servers.llmwiki] with url = "<ENGINE_URL>/mcp" to your existing ~/.codex/config.toml (or trusted project .codex/config.toml), preserving other settings. Then run: codex mcp login llmwiki',
+  codex: 'This target installs shared .agents/skills for Codex, Gemini CLI, OpenCode, Cursor, GitHub Copilot (VS Code/CLI), Windsurf/Devin Desktop, Roo Code, Amp, Goose, Factory Droid, Zed and Crush. Use your agent-specific MCP guide in docs/skills.md. For Codex only: add [mcp_servers.llmwiki] with url = "<ENGINE_URL>/mcp" to ~/.codex/config.toml (or trusted project .codex/config.toml), then run codex mcp login llmwiki.',
   hermes: 'Merge llmwiki: { url: "<ENGINE_URL>/mcp", auth: oauth } under mcp_servers in your existing ~/.hermes/config.yaml, preserving other settings. Then run in a separate terminal: hermes mcp login llmwiki',
+  cline: 'For Cline CLI, merge client/mcp.example.json into ~/.cline/data/settings/cline_mcp_settings.json. Run cline mcp and choose Authorize OAuth for llmwiki. The IDE extension opens separate MCP settings through MCP Servers > Configure.',
+  kiro: 'Merge client/mcp.example.json into ~/.kiro/settings/mcp.json or project .kiro/settings/mcp.json. Connect to llmwiki and complete browser OAuth; Kiro CLI /mcp auth reauthenticates servers.',
+  'qwen-code': 'Merge client/mcp.example.json into ~/.qwen/settings.json or project .qwen/settings.json. Use Qwen Code /mcp to authenticate llmwiki through its discovered OAuth browser flow.',
 };
 
 export function registerSkillCommands(program: Command): void {
