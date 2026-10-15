@@ -1,6 +1,6 @@
 import matter from 'gray-matter';
 import type { AclService, AclUser } from '../acl/acl.service.js';
-import { listDomains, SHARED_WIKI_DIRS } from '../knowledge/domains.js';
+import { isUnclassifiedWikiNote, listDomains, SHARED_WIKI_DIRS } from '../knowledge/domains.js';
 import type { KnowledgeRepo } from '../knowledge/repo.js';
 import { normalizeLinkTarget } from '../rag/link-resolver.js';
 
@@ -22,6 +22,7 @@ interface Hub {
 interface Snapshot {
   sha: string;
   entries: Entry[];
+  unclassified: string[];
   hubs: Map<string, Promise<Hub>>;
   root?: Promise<string[]>;
 }
@@ -56,7 +57,7 @@ export class WikiMapBuilder {
         const sharedPaths = paths.filter(path => path.startsWith(folder));
         if (sharedPaths.length) entries.push({ name, path: folder, folder, sharedPaths });
       }
-      return { sha, entries, hubs: new Map() };
+      return { sha, entries, unclassified: paths.filter(isUnclassifiedWikiNote), hubs: new Map() };
     });
     this.snapshot = { sha, value };
     // Do not retain a failed read for the lifetime of this SHA.
@@ -86,7 +87,8 @@ export class WikiMapBuilder {
     const allowed = snapshot.entries.filter(entry => visible(readable, entry));
     const domains = allowed.filter(entry => !entry.sharedPaths);
     const selected = [...domains.slice(0, maxDomains), ...allowed.filter(entry => entry.sharedPaths)];
-    const hubs = await Promise.all(selected.map(entry => entry.sharedPaths ? undefined : this.hub(snapshot, entry)));
+    const hubs = await Promise.all(selected.map(entry => entry.sharedPaths ? undefined
+      : entry.memberPaths ? { title: entry.name, description: entry.name } : this.hub(snapshot, entry)));
     if (hubs.some(hub => hub && !hub.description) && this.acl.canRead(user, 'index.md')) {
       snapshot.root ??= this.repo.readFile('index.md', snapshot.sha).then(content => (content ?? '').split(/\r?\n/));
       await snapshot.root;
@@ -109,8 +111,10 @@ export class WikiMapBuilder {
         }) : undefined;
         summary = rootLine ? singleLine(rootLine) : hub.title;
       }
-      lines.push(`- name: ${quoted(entry.name)}; hub: ${JSON.stringify(entry.path)}; summary: ${quoted(summary)}`);
+      lines.push(`- name: ${quoted(entry.name)}; hub: ${entry.memberPaths ? 'none' : JSON.stringify(entry.path)}; summary: ${quoted(summary)}`);
     }
+    const unclassified = snapshot.unclassified.filter(currentReadable).length;
+    if (unclassified) lines.push(`- unclassified: ${unclassified} notes directly under wiki/; use search or list_notes("wiki/").`);
     if (!lines.length) return 'Wiki is empty or unclassified; call list_notes() to find readable entry points.';
     const remaining = domains.slice(maxDomains).filter(entry => visible(currentReadable, entry)).length;
     if (remaining) lines.push(`…and ${remaining} more; call list_notes().`);

@@ -21,11 +21,11 @@ function fixture(initial: Record<string, string>) {
   return { notes, hidden, repo, builder: new WikiMapBuilder(repo, acl), advance() { sha += '-next'; } };
 }
 
-function entries(map: string): Array<{ name: string; path: string; summary: string }> {
+function entries(map: string): Array<{ name: string; path: string | null; summary: string }> {
   return map.split('\n').filter(line => line.startsWith('- name: ')).map(line => {
-    const match = /^- name: ("(?:[^"\\]|\\.)*"); hub: ("(?:[^"\\]|\\.)*"); summary: ("(?:[^"\\]|\\.)*")$/.exec(line);
+    const match = /^- name: ("(?:[^"\\]|\\.)*"); hub: ("(?:[^"\\]|\\.)*"|none); summary: ("(?:[^"\\]|\\.)*")$/.exec(line);
     expect(match).not.toBeNull();
-    return { name: JSON.parse(match![1]!), path: JSON.parse(match![2]!), summary: JSON.parse(match![3]!) };
+    return { name: JSON.parse(match![1]!), path: match![2] === 'none' ? null : JSON.parse(match![2]!), summary: JSON.parse(match![3]!) };
   });
 }
 
@@ -86,8 +86,8 @@ it('caps domains at thirty, truncates Unicode summaries, and counts only readabl
   expect(f.repo.readFile).toHaveBeenCalledTimes(30);
 });
 
-it.each<Record<string, string>>([{}, { 'index.md': '# Empty\n', 'wiki/legacy.md': '# Legacy\n' }])('falls back to discovery for empty or unclassified repositories', async notes => {
-  const f = fixture(notes);
+it('falls back to discovery for an empty repository', async () => {
+  const f = fixture({});
   const map = await f.builder.build(viewer);
   expect(entries(map)).toEqual([]);
   expect(map).toContain('list_notes()');
@@ -126,11 +126,16 @@ it('rechecks access after asynchronous hub reads', async () => {
 });
 
 it('includes readable hubless domains without exposing domains whose only note is hidden', async () => {
-  const f = fixture({ 'wiki/legacy/topic/note.md': '# Legacy\n', 'wiki/secret/topic/note.md': '# Hidden\n' });
+  const f = fixture({
+    'index.md': '- [[wiki/legacy/index]] — A stale link to a nonexistent hub\n',
+    'wiki/legacy/topic/note.md': '# Legacy\n',
+    'wiki/secret/topic/note.md': '# Hidden\n',
+  });
   f.hidden.add('wiki/secret/topic/note.md');
   expect(entries(await f.builder.build(viewer))).toEqual([
-    { name: 'legacy', path: 'wiki/legacy/index.md', summary: 'legacy' },
+    { name: 'legacy', path: null, summary: 'legacy' },
   ]);
+  expect(await f.builder.build(viewer)).not.toContain('wiki/legacy/index.md');
 });
 
 it('does not copy root link lines that also reference unreadable domains', async () => {
@@ -144,4 +149,31 @@ it('does not copy root link lines that also reference unreadable domains', async
   expect(entries(map)[0]?.summary).toBe('Public title');
   expect(map).not.toContain('secret');
   expect(map).not.toContain('HIDDEN_ROOT_DETAIL');
+});
+
+it('counts only readable unclassified notes and keeps discovery visible alongside domains', async () => {
+  const f = fixture({
+    'wiki/alpha/index.md': '# Alpha\n',
+    'wiki/first.md': '# First\n',
+    'wiki/second.md': '# Second\n',
+    'wiki/hidden.md': '# Hidden\n',
+    'journal/other.md': '# Other\n',
+  });
+  f.hidden.add('wiki/hidden.md');
+  const map = await f.builder.build(viewer);
+  expect(entries(map).map(entry => entry.name)).toEqual(['alpha']);
+  expect(map).toContain('unclassified: 2 notes directly under wiki/');
+  expect(map).toContain('list_notes("wiki/")');
+  expect(map).not.toContain('hidden.md');
+  f.hidden.add('wiki/first.md');
+  f.hidden.add('wiki/second.md');
+  expect(await f.builder.build(viewer)).not.toContain('unclassified:');
+});
+
+it('shows unclassified discovery even when no domain exists', async () => {
+  const f = fixture({ 'wiki/first.md': '# First\n' });
+  const map = await f.builder.build(viewer);
+  expect(entries(map)).toEqual([]);
+  expect(map).toContain('unclassified: 1 notes directly under wiki/');
+  expect(map).toContain('list_notes("wiki/")');
 });
