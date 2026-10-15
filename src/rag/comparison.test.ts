@@ -1,8 +1,9 @@
+import { setImmediate } from 'node:timers/promises';
 import pino from 'pino';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig, type Config } from '../config.js';
 import { openDb, runMigrations, type Db } from '../db/index.js';
-import { AclService } from '../acl/acl.service.js';
+import { AclService, type AclUser } from '../acl/acl.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { UsersService } from '../auth/users.service.js';
 import { UsersRepository } from '../auth/users.repository.js';
@@ -20,7 +21,10 @@ beforeEach(() => {
     new AclService(db, new UsersService(new UsersRepository(db)), new AuditService(db)));
 });
 
-afterEach(() => db?.close());
+afterEach(() => {
+  vi.restoreAllMocks();
+  db?.close();
+});
 
 function addChunk(path: string, options: {
   hash?: string; ordinal?: number; anchor?: string | null; content?: string;
@@ -44,7 +48,7 @@ function addChunk(path: string, options: {
 }
 
 function configureVectors(): void {
-  db.exec('CREATE VIRTUAL TABLE chunk_vectors USING vec0(chunk_id INTEGER PRIMARY KEY, embedding float[2])');
+  db.exec(`CREATE VIRTUAL TABLE chunk_vectors USING vec0(chunk_id INTEGER PRIMARY KEY, embedding float[${config.embeddingDimensions}])`);
   const set = db.prepare('INSERT INTO index_meta(key,value) VALUES (?,?)');
   set.run('embedding_model', config.embeddingModel);
   set.run('embedding_dimensions', String(config.embeddingDimensions));
@@ -68,6 +72,104 @@ describe('note comparison', () => {
         passages: [{ left: { anchor: null, excerpt: 'Same body.' }, right: { anchor: null, excerpt: 'Same body.' } }] },
     ]);
     expect(await comparison.duplicates(1)).toEqual([(await comparison.duplicates())[0]]);
+  });
+
+  it('scopes exact and semantic pairs before loading vectors while preserving the unscoped default', async () => {
+    configureVectors();
+    addChunk('wiki/a.md', { hash: 'same', vector: [1, 0] });
+    addChunk('wiki/b.md', { hash: 'same', vector: [1, 0] });
+    addChunk('wiki/c.md', { vector: [1, 0] });
+    addChunk('raw/a.md', { hash: 'same', vector: [0, 1] });
+    addChunk('raw/b.md', { hash: 'same', vector: [0, 1] });
+    addChunk('raw/c.md', { vector: [0, 1] });
+    const reads = vi.spyOn(Buffer.prototype, 'readFloatLE');
+    const scoped = await comparison.duplicates(20, undefined, { pathPrefixes: ['wiki/'] });
+    expect(scoped.map(({ left, right, reason }) => [left.path, right.path, reason])).toEqual([
+      ['wiki/a.md', 'wiki/b.md', 'exact'],
+      ['wiki/a.md', 'wiki/c.md', 'semantic'],
+      ['wiki/b.md', 'wiki/c.md', 'semantic'],
+    ]);
+    const wikiVector = Buffer.from(new Float32Array([1, 0]).buffer);
+    expect(reads).toHaveBeenCalled();
+    expect(reads.mock.contexts.every((bytes) => bytes.equals(wikiVector))).toBe(true);
+    reads.mockClear();
+    expect(await comparison.duplicates(20, undefined, { pathPrefixes: [] })).toEqual([]);
+    expect(reads).not.toHaveBeenCalled();
+    reads.mockRestore();
+
+    const unscoped = await comparison.duplicates();
+    expect(unscoped.filter(({ left, right }) => left.path.startsWith('wiki/') && right.path.startsWith('wiki/'))).toEqual(scoped);
+    expect(unscoped).toContainEqual(expect.objectContaining({
+      left: { path: 'raw/a.md', title: 'raw/a' }, right: { path: 'raw/c.md', title: 'raw/c' }, reason: 'semantic',
+    }));
+    expect(unscoped).toContainEqual(expect.objectContaining({
+      left: { path: 'raw/a.md', title: 'raw/a' }, right: { path: 'wiki/a.md', title: 'a' }, reason: 'exact',
+    }));
+  });
+
+  it('combines literal path prefixes without SQL wildcard expansion', async () => {
+    for (const path of ['wiki_/a.md', 'wiki_/b.md', 'other%/a.md', 'other%/b.md', 'wikix/a.md']) {
+      addChunk(path, { hash: 'same' });
+    }
+    const pairs = await comparison.duplicates(20, undefined, { pathPrefixes: ['wiki_/', 'other%/'] });
+    expect(pairs).toHaveLength(6);
+    expect(pairs.every(({ left, right }) => left.path !== 'wikix/a.md' && right.path !== 'wikix/a.md')).toBe(true);
+  });
+
+  it.each(['exact', 'semantic'] as const)('yields during %s pair comparisons without changing scores, passages or ordering', async (reason) => {
+    config.embeddingDimensions = 1536;
+    configureVectors();
+    const vector = Array.from({ length: config.embeddingDimensions }, (_, index) => index === 0 ? 1 : 0);
+    for (let index = 0; index < 50; index++) {
+      addChunk(`wiki/${String(index).padStart(2, '0')}.md`, {
+        hash: reason === 'exact' ? 'same' : `different:${index}`, vector,
+        anchor: `section-${index}`, content: `Passage ${index}.`,
+      });
+    }
+    let finished = false;
+    let progress = 0;
+    const tick = setImmediate().then(() => {
+      expect(finished).toBe(false);
+      progress++;
+    });
+    const pending = comparison.duplicates().then((pairs) => {
+      finished = true;
+      return pairs;
+    });
+    const [pairs] = await Promise.all([pending, tick]);
+    expect(progress).toBe(1);
+    expect(pairs).toEqual(Array.from({ length: 20 }, (_, offset) => {
+      const index = offset + 1;
+      const name = String(index).padStart(2, '0');
+      return {
+        left: { path: 'wiki/00.md', title: '00' }, right: { path: `wiki/${name}.md`, title: name },
+        score: 1, reason, passages: [{
+          left: { anchor: 'section-0', excerpt: 'Passage 0.' },
+          right: { anchor: `section-${index}`, excerpt: `Passage ${index}.` },
+        }],
+      };
+    }));
+  });
+
+  it.each(['exact', 'semantic'] as const)('rejects stale ACL results when policy changes while yielding in %s comparisons', async (reason) => {
+    configureVectors();
+    for (let index = 0; index < 50; index++) {
+      addChunk(`wiki/${index}.md`, { hash: reason === 'exact' ? 'same' : `different:${index}`, vector: [1, 0] });
+    }
+    const user: AclUser = { id: 1, role: 'viewer' };
+    const changed = setImmediate().then(() => db.prepare('UPDATE acl_policy SET revision = revision + 1 WHERE id = 1').run());
+    const pending = comparison.duplicates(20, user);
+    await expect(pending).rejects.toThrow('Search policy changed; retry the query');
+    await changed;
+  });
+
+  it('rejects stale duplicate results when the current user role changes across a yield', async () => {
+    for (let index = 0; index < 50; index++) addChunk(`wiki/${index}.md`, { hash: 'same' });
+    const user: AclUser = { id: 1, role: 'viewer' };
+    const changed = setImmediate().then(() => { user.role = 'editor'; });
+    const pending = comparison.duplicates(20, user);
+    await expect(pending).rejects.toThrow('Search policy changed; retry the query');
+    await changed;
   });
 
   it('does not substitute linked neighbors when semantic vectors are unavailable', async () => {

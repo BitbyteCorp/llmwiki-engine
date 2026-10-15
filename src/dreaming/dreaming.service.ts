@@ -18,7 +18,9 @@ import { CatalogService } from '../rag/catalog.service.js';
 import { ComparisonService } from '../rag/comparison.service.js';
 import { normalizeLinkTarget } from '../rag/link-resolver.js';
 import { guardDreamTools, unresolvedLinkTargets } from './dream-tools.js';
-import { collectStructureSignals, restrictStructureSignals, selectDreamMode } from './structure-signals.js';
+import {
+  collectStructureSignals, isDreamingScanPath, restrictStructureSignals, selectDreamMode, type DreamingSnapshot,
+} from './structure-signals.js';
 import type { DreamRun } from './dream-run.types.js';
 import { DreamRunsRepository } from './dream-runs.repository.js';
 
@@ -171,7 +173,27 @@ export class DreamingService implements OnApplicationShutdown {
       // learned. Assistant responses never enter the learning input.
       const messages = runs.unlearnedUserMessages(run.startedAt);
 
-      const structure = await collectStructureSignals(repo, this.catalog, this.comparison, run.toSha);
+      const date = dateFormat.format(new Date(run.startedAt));
+      const journalPath = `journal/${date}.md`;
+      // Pin and reuse each main snapshot across structure and both link baselines.
+      // Only today's journal is inspected: dreaming may append to an existing entry.
+      const snapshots = new Map<string, Promise<DreamingSnapshot>>();
+      const snapshotAt = (sha: string): Promise<DreamingSnapshot> => {
+        let snapshot = snapshots.get(sha);
+        if (!snapshot) {
+          snapshot = (async () => {
+            const paths = (await repo.diffNames(null, sha)).map(({ path }) => path);
+            const files = await repo.readFiles(paths.filter((path) => isDreamingScanPath(path) || path === journalPath), sha);
+            return { paths, files };
+          })();
+          snapshots.set(sha, snapshot);
+        }
+        return snapshot;
+      };
+      const linkTargets = ({ paths, files }: DreamingSnapshot): Set<string> => unresolvedLinkTargets(paths,
+        [...files].flatMap(([path, content]) => content === null ? [] : [{ path, content }]));
+      const before = await snapshotAt(run.toSha);
+      const structure = await collectStructureSignals(repo, this.catalog, this.comparison, run.toSha, before);
       const choice = selectDreamMode(structure.signals, commits.length > 0 || messages.length > 0,
         structure.folders, runs.lastSucceededSweeps());
       run.mode = choice.mode;
@@ -179,11 +201,15 @@ export class DreamingService implements OnApplicationShutdown {
       runs.setInputRange(run);
 
       if (run.mode !== null) {
-        const date = dateFormat.format(new Date(run.startedAt));
-        const changes = (await repo.diffNames(run.fromSha, run.toSha)).filter((change) => /\.md$/i.test(change.path));
+        const changes = (await repo.diffNames(run.fromSha, run.toSha))
+          .filter((change) => isDreamingScanPath(change.path) || change.path === journalPath);
+        const currentInputs = await repo.readFiles(changes.filter((change) => !before.files.has(change.path))
+          .map((change) => change.path), run.toSha);
+        const missingInputs = changes.filter((change) => (before.files.get(change.path) ?? currentInputs.get(change.path)) == null);
+        const previousInputs = await repo.readFiles(missingInputs.map((change) => change.oldPath ?? change.path), run.fromSha);
         const changedNotes = await Promise.all(changes.map(async (change) => {
-          const content = await repo.readFile(change.path, run.toSha!);
-          const previous = content ?? await repo.readFile(change.oldPath ?? change.path, run.fromSha!);
+          const content = before.files.get(change.path) ?? currentInputs.get(change.path) ?? null;
+          const previous = content ?? previousInputs.get(change.oldPath ?? change.path) ?? null;
           const hits = await this.search.search(`${change.path}\n${previous ?? ''}`, { limit: 6 });
           const similarNotes = hits.filter((hit) => hit.path !== change.path).slice(0, 5)
             .map((hit) => ({ path: hit.path, title: hit.title, excerpt: sliceCodePoints(hit.excerpt, 0, SIMILAR_NOTE_EXCERPT_CHARS) }));
@@ -197,7 +223,6 @@ export class DreamingService implements OnApplicationShutdown {
           : run.mode === 'sweep'
             ? restrictStructureSignals(structure.signals, focusedFolder?.files ?? [], run.focus ? [run.focus] : [])
             : structure.signals;
-        const beforePaths = (await repo.diffNames(null, run.toSha)).map(({ path }) => path);
         const importCommits = new Set(commits.filter((commit) => commit.trailers['Wiki-Source'] === 'import')
           .map((commit) => commit.sha));
         const importedNotes: string[] = [];
@@ -218,27 +243,22 @@ export class DreamingService implements OnApplicationShutdown {
             }
           }
         }
-        const beforeNotes = await Promise.all(beforePaths.filter((path) => /\.md$/i.test(path)).map(async (path) =>
-          ({ path, content: (await repo.readFile(path, run.toSha!)) ?? '' })));
-        const beforeLinks = new Set([...unresolvedLinkTargets(beforePaths, beforeNotes)].map(normalizeLinkTarget));
+        const beforeLinks = new Set([...linkTargets(before)].map(normalizeLinkTarget));
         worktree = await repo.createWorktree(`dream-${date}`);
         let editingBaseline = beforeLinks;
         const worktreeSha = worktree.baseSha;
         if (worktreeSha !== run.toSha) {
-          const initialPaths = (await repo.diffNames(null, worktreeSha)).map(({ path }) => path);
-          const initialNotes = await Promise.all(initialPaths.filter((path) => /\.md$/i.test(path)).map(async (path) =>
-            ({ path, content: (await repo.readFile(path, worktreeSha)) ?? '' })));
+          const initial = await snapshotAt(worktreeSha);
           // Worktree creation may inherit main commits newer than the input.
           editingBaseline = new Set(beforeLinks);
-          for (const target of unresolvedLinkTargets(initialPaths, initialNotes)) editingBaseline.add(normalizeLinkTarget(target));
+          for (const target of linkTargets(initial)) editingBaseline.add(normalizeLinkTarget(target));
         }
         worktree.setCommitMetadata({ jobId: run.id, source: 'dreaming', requester: config.gitBotEmail });
         const author = { name: config.gitBotName, email: config.gitBotEmail };
-        const journalPath = `journal/${date}.md`;
         const guarded = guardDreamTools(agent.worktreeTools(worktree, author), this.acl);
         const rejectIntroducedLinks = async (baseline = editingBaseline) => {
           const paths = await worktree!.list();
-          const notes = await Promise.all(paths.filter((path) => /\.md$/i.test(path)).map(async (path) =>
+          const notes = await Promise.all(paths.filter((path) => isDreamingScanPath(path) || path === journalPath).map(async (path) =>
             ({ path, content: (await worktree!.read(path)) ?? '' })));
           const introduced = [...unresolvedLinkTargets(paths, notes)].filter((target) => !baseline.has(normalizeLinkTarget(target))).sort();
           if (introduced.length) throw new Error(`Dreaming introduced broken links: ${introduced.join(', ')}`);
@@ -269,13 +289,11 @@ export class DreamingService implements OnApplicationShutdown {
         const wt = worktree;
         await repo.withMergeLock(async () => {
           const previousHead = await repo.headSha();
-          const mainPaths = (await repo.diffNames(null, previousHead)).map(({ path }) => path);
-          const mainNotes = await Promise.all(mainPaths.filter((path) => /\.md$/i.test(path)).map(async (path) =>
-            ({ path, content: (await repo.readFile(path, previousHead)) ?? '' })));
+          const main = await snapshotAt(previousHead);
           // Concurrent main changes are not dreaming-introduced link failures.
           // Keep the input baseline too: main may have repaired an older target.
           const mergeBaseline = new Set(beforeLinks);
-          for (const target of unresolvedLinkTargets(mainPaths, mainNotes)) mergeBaseline.add(normalizeLinkTarget(target));
+          for (const target of linkTargets(main)) mergeBaseline.add(normalizeLinkTarget(target));
           const merge = await wt.mergeMain();
           if (!merge.ok) {
             await agent.resolveConflicts(wt, merge.conflicts, undefined, { onUsage });

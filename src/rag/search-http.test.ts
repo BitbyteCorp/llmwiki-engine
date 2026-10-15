@@ -4,7 +4,7 @@ import { Test } from '@nestjs/testing';
 import type { Request } from 'express';
 import pino from 'pino';
 import request from 'supertest';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig } from '../config.js';
 import { CONFIG, DB, LOGGER } from '../common/tokens.js';
 import { HttpExceptionFilter } from '../common/filters/http-exception.filter.js';
@@ -60,7 +60,7 @@ describe('search workspace HTTP', () => {
     app.useGlobalFilters(new HttpExceptionFilter(log));
     await app.init();
   });
-  afterEach(async () => { await app.close(); db.close(); });
+  afterEach(async () => { vi.restoreAllMocks(); await app.close(); db.close(); });
 
   it('serves enriched filtered hits and quick-open suggestions to a viewer', async () => {
     const result = await request(app.getHttpServer()).get('/api/search').query({ q: '저장', type: 'guide', folder: 'wiki', tags: 'SEARCH', author: 'Ada', from: '2026-10-01', to: '2026-10-01' }).set('x-session', 'viewer').expect(200);
@@ -114,6 +114,22 @@ describe('search workspace HTTP', () => {
     const similar = await request(app.getHttpServer()).get('/api/search/similar').query({ path: paths[0] }).set('x-session', 'viewer').expect(200);
     expect(similar.body).toEqual([]);
     expect((db.prepare('SELECT COUNT(*) AS count FROM chunks').get() as { count: number }).count).toBe(3);
+  });
+
+  it('keeps the unscoped duplicates HTTP default over all readable notes, including raw sources', async () => {
+    db.prepare(`INSERT INTO chunks(path,title,heading,content,embedding_text,content_hash,kind,ordinal,normalized_hash)
+      VALUES(?,?,?,?,?,?,?,?,?)`).run('raw/source.md', 'Source', '', '저장 데이터 검색', 'raw', 'raw-source', 'raw', 0, 'same');
+    const response = await request(app.getHttpServer()).get('/api/search/duplicates').set('x-session', 'viewer').expect(200);
+    expect(response.body.map(({ left, right }: { left: { path: string }; right: { path: string } }) => [left.path, right.path])).toEqual([
+      ['raw/source.md', paths[0]], ['raw/source.md', paths[1]], [paths[0], paths[1]],
+    ]);
+  });
+
+  it('rejects duplicate results invalidated by a policy change with the public search error', async () => {
+    vi.spyOn(app.get(ComparisonService), 'duplicates').mockRejectedValueOnce(new RangeError('Search policy changed; retry the query'));
+    const response = await request(app.getHttpServer()).get('/api/search/duplicates').set('x-session', 'viewer').expect(400);
+    expect(response.body).toMatchObject({ error: { code: 'invalid_search', message: 'Search policy changed; retry the query' } });
+    expect(response.body).not.toHaveProperty('passages');
   });
 
   it.each(['/api/search?q=저장', '/api/search/suggest?q=a', '/api/search/similar?path=wiki/alpha.md', '/api/search/duplicates', '/api/links?path=wiki/alpha.md', '/api/graph', '/api/tags', '/api/tags/notes?tag=search'])('requires authentication for %s', async (url) => {

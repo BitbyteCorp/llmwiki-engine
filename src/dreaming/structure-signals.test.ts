@@ -1,8 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { KnowledgeRepo } from '../knowledge/repo.js';
 import type { CatalogGraph, CatalogService } from '../rag/catalog.service.js';
-import type { ComparisonService, DuplicateNotes } from '../rag/comparison.service.js';
-import { collectStructureSignals, restrictStructureSignals, selectDreamMode, type StructureSignals } from './structure-signals.js';
+import type { DuplicateNotes } from '../rag/comparison.service.js';
+import {
+  collectStructureSignals, isDreamingScanPath, restrictStructureSignals, selectDreamMode, type StructureSignals,
+} from './structure-signals.js';
 
 function emptySignals(overrides: Partial<StructureSignals> = {}): StructureSignals {
   return {
@@ -13,19 +15,25 @@ function emptySignals(overrides: Partial<StructureSignals> = {}): StructureSigna
   };
 }
 
-function fixture(notes: Record<string, string>, graph: CatalogGraph = { nodes: [], edges: [] }, duplicates: DuplicateNotes[] = []) {
+async function fixture(notes: Record<string, string>, graph: CatalogGraph = { nodes: [], edges: [] }, duplicates: DuplicateNotes[] = []) {
   const repo = {
-    diffNames: async (fromSha: string | null) => fromSha === null
+    diffNames: vi.fn(async (fromSha: string | null) => fromSha === null
       ? Object.keys(notes).map((path) => ({ path, status: 'A' }))
-      : [],
-    readFile: async (path: string) => {
-      if (!/\.md$/i.test(path)) throw new Error(`Binary contents must not be read: ${path}`);
-      return notes[path] ?? null;
-    },
-  } as unknown as KnowledgeRepo;
+      : []),
+    readFile: vi.fn(async () => { throw new Error('Structure scans must use batch reads'); }),
+    readFiles: vi.fn(async (paths: readonly string[]) => {
+      for (const path of paths) {
+        if (!((path.startsWith('wiki/') && /\.md$/i.test(path)) || ['index.md', 'MEMORY.md', 'AGENTS.md'].includes(path))) {
+          throw new Error(`Out-of-scope contents must not be read: ${path}`);
+        }
+      }
+      return new Map(paths.map((path) => [path, notes[path] ?? null]));
+    }),
+  };
   const catalog = { graph: () => graph } as unknown as CatalogService;
-  const comparison = { duplicates: async () => duplicates } as unknown as ComparisonService;
-  return collectStructureSignals(repo, catalog, comparison, 'captured-sha');
+  const comparison = { duplicates: vi.fn(async () => duplicates) };
+  const structure = await collectStructureSignals(repo as unknown as KnowledgeRepo, catalog, comparison, 'captured-sha');
+  return { ...structure, repo, comparison };
 }
 
 const sweepFolders = [
@@ -97,6 +105,65 @@ describe('structural signal collection', () => {
   const validMetadata = `${semanticMetadata}\nauthor: [도니]\ndate created: 2026-10-01\ndate modified: 2026-10-10`;
   const metadataNote = (metadata: string) => `---\n${metadata}\n---\n# 캐시\n\n캐시 개념을 설명한다.`;
 
+  it.each<[string, boolean]>([
+    ['wiki/concepts/note.md', true], ['wiki/domain/AGENTS.md', true], ['wiki/legacy.MD', true],
+    ['index.md', true], ['MEMORY.md', true], ['AGENTS.md', true],
+    ['raw/source.md', false], ['journal/2026-10-15.md', false], ['README.md', false],
+    ['wiki-extra/note.md', false], ['wiki/image.png', false],
+  ])('limits scan contents for %s to %s', (path, expected) => {
+    expect(isDreamingScanPath(path)).toBe(expected);
+  });
+
+  it('batches only wiki markdown and root scan contents while resolving raw, journal and attachment paths', async () => {
+    const { signals, repo, comparison } = await fixture({
+      'index.md': '[[wiki/engineering/index]]',
+      'MEMORY.md': '# Memory\n## 작업 관례\n## 진행 중\n## 참조\n',
+      'AGENTS.md': '# Root instructions',
+      'wiki/engineering/AGENTS.md': '# Domain instructions',
+      'wiki/engineering/index.md': '[[wiki/engineering/topic/note]]',
+      'wiki/engineering/topic/note.MD': '[[raw/reference]] [[journal/2026-10-15]] [[README]] ![[raw/image.png]]',
+      'raw/reference.md': '[[RawMissing]]',
+      'raw/image.png': 'Binary source',
+      'journal/2026-10-15.md': '[[JournalMissing]]',
+      'README.md': '[[ReadmeMissing]]',
+    });
+    expect(repo.diffNames).toHaveBeenCalledExactlyOnceWith(null, 'captured-sha');
+    expect(repo.readFiles).toHaveBeenCalledExactlyOnceWith([
+      'AGENTS.md', 'MEMORY.md', 'index.md', 'wiki/engineering/AGENTS.md',
+      'wiki/engineering/index.md', 'wiki/engineering/topic/note.MD',
+    ], 'captured-sha');
+    expect(repo.readFile).not.toHaveBeenCalled();
+    expect(comparison.duplicates).toHaveBeenCalledExactlyOnceWith(20, undefined, { pathPrefixes: ['wiki/'] });
+    expect(signals.unresolved).toEqual([]);
+    expect(signals.ambiguous).toEqual([]);
+    expect(signals.orphans).toEqual([]);
+    expect(signals.memoryIssues).toEqual([]);
+  });
+
+  it('reuses a shared baseline without repository reads or aliases from extra raw and journal contents', async () => {
+    const repo = {
+      diffNames: vi.fn(async () => { throw new Error('Shared paths must be reused'); }),
+      readFiles: vi.fn(async () => { throw new Error('Shared contents must be reused'); }),
+      readFile: vi.fn(async () => { throw new Error('Shared contents must be reused'); }),
+    };
+    const baseline = {
+      paths: ['wiki/concepts/source.md', 'raw/reference.md', 'journal/2026-10-15.md'],
+      files: new Map([
+        ['wiki/concepts/source.md', '[[raw/reference]] [[journal/2026-10-15]] [[hidden alias]]'],
+        ['raw/reference.md', '---\naliases: ["hidden alias"]\n---\n[[RawMissing]]'],
+        ['journal/2026-10-15.md', '---\naliases: ["hidden alias"]\n---\n[[JournalMissing]]'],
+      ]),
+    };
+    const { signals } = await collectStructureSignals(repo, { graph: () => ({ nodes: [], edges: [] }) },
+      { duplicates: async () => [] }, 'shared-sha', baseline);
+    expect(repo.diffNames).not.toHaveBeenCalled();
+    expect(repo.readFiles).not.toHaveBeenCalled();
+    expect(repo.readFile).not.toHaveBeenCalled();
+    expect(signals.unresolved).toEqual([{ path: 'wiki/concepts/source.md', target: 'hidden alias' }]);
+    expect(signals.ambiguous).toEqual([]);
+    expect(baseline.paths).toEqual(['wiki/concepts/source.md', 'raw/reference.md', 'journal/2026-10-15.md']);
+  });
+
   it.each([
     { content: '# Legacy memory', count: 4 },
     { content: `# Memory\n## 작업 관례\n## 진행 중\n## 참조\n${'a'.repeat(4001)}`, count: 1 },
@@ -117,13 +184,13 @@ describe('structural signal collection', () => {
     }
   });
 
-  it('resolves frontmatter aliases from the complete committed note snapshot', async () => {
+  it('resolves scanned frontmatter aliases and raw paths without reading raw aliases', async () => {
     const { signals } = await fixture({
-      'wiki/concepts/source.md': '[[CACHE TERM#Overview|Cache]] [[raw alias]]',
+      'wiki/concepts/source.md': '[[CACHE TERM#Overview|Cache]] [[raw/reference]] [[raw alias]]',
       'wiki/concepts/cache.md': metadataNote(semanticMetadata.replace('aliases: []', 'aliases: [" cache term ", "CACHE TERM"]')),
       'raw/reference.md': '---\naliases: ["raw alias"]\n---\n# Original reference',
     });
-    expect(signals.unresolved).toEqual([]);
+    expect(signals.unresolved).toEqual([{ path: 'wiki/concepts/source.md', target: 'raw alias' }]);
     expect(signals.ambiguous).toEqual([]);
   });
 
@@ -351,7 +418,7 @@ describe('structural signal collection', () => {
     expect(signals.unclassifiedNotes).toEqual(['wiki/미분류.md']);
   });
 
-  it('reports invalid folder names at every level, including attachment-only ancestors', async () => {
+  it('reports invalid folder names only from scoped markdown ancestors', async () => {
     const { signals } = await fixture({
       'wiki/돈이돼지 batch18/a/노트.md': 'Imported',
       'wiki/donidoeji/crm/사람이 읽는 제목.md': 'Valid',
@@ -364,9 +431,9 @@ describe('structural signal collection', () => {
       'raw/2026/a/source.md': 'Not wiki',
     });
     expect(signals.invalidFolderNames.map(({ path }) => path)).toEqual([
-      'wiki/donidoeji/2026-10-15/', 'wiki/donidoeji/2026-10/', 'wiki/donidoeji/2026/',
+      'wiki/donidoeji/2026-10-15/', 'wiki/donidoeji/2026-10/',
       'wiki/donidoeji/batch18/', 'wiki/donidoeji/batch18/part-2/', 'wiki/donidoeji/batch18/part-2/chunk3/',
-      'wiki/donidoeji/crm/Bad_Name/', 'wiki/entities/people/a/', 'wiki/돈이돼지 batch18/', 'wiki/돈이돼지 batch18/a/',
+      'wiki/donidoeji/crm/Bad_Name/', 'wiki/돈이돼지 batch18/', 'wiki/돈이돼지 batch18/a/',
     ]);
     expect(signals.invalidFolderNames.every(({ reason }) => reason.length > 0)).toBe(true);
   });

@@ -14,6 +14,18 @@ const SIGNAL_LIMIT = 20;
 
 type Folder = { path: string; files: string[] };
 
+export interface DreamingSnapshot {
+  /** All tracked paths at the inspected commit, including unread raw files and attachments. */
+  paths: string[];
+  /** Shared contents may contain extra files; the collector only inspects scan paths. */
+  files: Map<string, string | null>;
+}
+
+export function isDreamingScanPath(path: string): boolean {
+  return (path.startsWith('wiki/') && /\.md$/i.test(path))
+    || path === 'index.md' || path === MEMORY_PATH || path === 'AGENTS.md';
+}
+
 export interface StructureSignals {
   duplicates: Array<{ left: string; right: string; score: number; reason: DuplicateNotes['reason'] }>;
   orphans: string[];
@@ -46,22 +58,25 @@ function folderFor(path: string): string {
 
 /** Catalog and comparison calls deliberately use their unrestricted system view. */
 export async function collectStructureSignals(
-  repo: Pick<KnowledgeRepo, 'diffNames' | 'readFile'>,
+  repo: Pick<KnowledgeRepo, 'diffNames' | 'readFiles'>,
   catalog: Pick<CatalogService, 'graph'>,
   comparison: Pick<ComparisonService, 'duplicates'>,
   sha: string,
+  baseline?: DreamingSnapshot,
 ): Promise<{ signals: StructureSignals; folders: Folder[] }> {
-  const files = (await repo.diffNames(null, sha)).map(({ path }) => path).sort();
+  const files = baseline ? [...baseline.paths].sort() : (await repo.diffNames(null, sha)).map(({ path }) => path).sort();
+  const scanPaths = files.filter(isDreamingScanPath);
+  const contents = baseline?.files ?? await repo.readFiles(scanPaths, sha);
   const wikiFiles = files.filter(wikiNote);
   const wikiPaths = new Set(wikiFiles);
   const noteFiles = files.filter((path) => /\.md$/i.test(path));
   const notes = new Map<string, { content: string; bodyChars: number }>();
   const aliasesByPath = new Map<string, readonly string[]>();
-  // Retain attachment paths for navigation resolution without reading binary contents.
+  // Retain every tracked path as a resolver candidate without reading out-of-scope contents.
   const snapshot = new Map(files.map((path) => [path, '']));
-  for (const path of noteFiles) {
-    const content = await repo.readFile(path, sha);
-    if (content === null) continue;
+  for (const path of scanPaths) {
+    const content = contents.get(path);
+    if (content == null) continue;
     let bodyChars: number;
     try {
       // gray-matter caches before parsing; explicit options avoid caching failed YAML.
@@ -78,7 +93,7 @@ export async function collectStructureSignals(
   }
   const noteResolver = new NoteTargetResolver(noteFiles, aliasesByPath);
   const fileResolver = new NoteTargetResolver(files);
-  const navigation = navigationIssues({ files: snapshot, changed: files });
+  const navigation = navigationIssues({ files: snapshot, changed: scanPaths });
   const navigationPaths = (kind: NavigationIssue['kind']): string[] => navigation
     .filter((issue) => issue.kind === kind).map(({ path }) => path).sort(comparePath).slice(0, SIGNAL_LIMIT);
   const graph = catalog.graph();
@@ -100,7 +115,7 @@ export async function collectStructureSignals(
   const folders = [...folderFiles].sort(([left], [right]) => comparePath(left, right))
     .map(([path, direct]) => ({ path, files: direct }));
   const signals: StructureSignals = {
-    duplicates: (await comparison.duplicates(SIGNAL_LIMIT))
+    duplicates: (await comparison.duplicates(SIGNAL_LIMIT, undefined, { pathPrefixes: ['wiki/'] }))
       .filter(({ left, right }) => wikiPaths.has(left.path) && wikiPaths.has(right.path))
       .slice(0, SIGNAL_LIMIT)
       .map(({ left, right, score, reason }) => ({ left: left.path, right: right.path, score, reason })),

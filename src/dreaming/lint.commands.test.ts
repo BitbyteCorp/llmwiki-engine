@@ -10,6 +10,7 @@ import { loadConfig } from '../config.js';
 import { openDb, runMigrations } from '../db/index.js';
 import { KnowledgeRepo } from '../knowledge/repo.js';
 import { IndexerService } from '../rag/indexer.service.js';
+import { ComparisonService } from '../rag/comparison.service.js';
 import { registerLintCommands } from './lint.commands.js';
 
 const directories: string[] = [];
@@ -85,6 +86,48 @@ async function indexCatalog(dataDir: string): Promise<void> {
 }
 
 describe('read-only CLI lint', () => {
+  it.each([false, true])('batches only scan contents and resolves raw paths with a catalog: %s', async (indexed) => {
+    const body = '# Note [[raw/reference]] [[journal/2026-10-15]] [[README]] ![[raw/image.png]]';
+    const { dataDir, headSha } = await fixture({
+      'index.md': '[[wiki/health/index]]',
+      'MEMORY.md': '# Memory\n## 작업 관례\n## 진행 중\n## 참조\n',
+      'AGENTS.md': '# Root instructions',
+      'wiki/health/AGENTS.md': '# Domain instructions',
+      'wiki/health/index.md': '[[wiki/health/topic/note]]',
+      'wiki/health/topic/note.MD': body,
+      'raw/reference.md': body,
+      'raw/copy.md': body,
+      'raw/image.png': 'Binary source',
+      'journal/2026-10-15.md': '[[JournalMissing]]',
+      'README.md': '[[ReadmeMissing]]',
+    });
+    if (indexed) await indexCatalog(dataDir);
+    const batchReads = vi.spyOn(KnowledgeRepo.prototype, 'readFiles');
+    const singleReads = vi.spyOn(KnowledgeRepo.prototype, 'readFile');
+    const comparisons = vi.spyOn(ComparisonService.prototype, 'duplicates');
+    const logged = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await command().parseAsync(['node', 'test', 'lint', '--json']);
+
+    expect(batchReads).toHaveBeenCalledExactlyOnceWith([
+      'AGENTS.md', 'MEMORY.md', 'index.md', 'wiki/health/AGENTS.md',
+      'wiki/health/index.md', 'wiki/health/topic/note.MD',
+    ], headSha);
+    expect(singleReads).not.toHaveBeenCalled();
+    const report = JSON.parse(String(logged.mock.calls[0]?.[0]));
+    expect(report.signals.unresolved).toEqual([]);
+    expect(report.signals.ambiguous).toEqual([]);
+    expect(report.signals.orphans).toEqual([]);
+    expect(report.signals.memoryIssues).toEqual([]);
+    if (indexed) {
+      expect(comparisons).toHaveBeenCalledExactlyOnceWith(20, undefined, { pathPrefixes: ['wiki/'] });
+      expect(report.signals.duplicates).toEqual([]);
+    } else {
+      expect(comparisons).not.toHaveBeenCalled();
+      expect(report.signals.duplicates).toBeNull();
+    }
+  });
+
   it('prints human-readable findings and exits 1 without changing repository, DB or abandoned worktrees', async () => {
     const { dataDir, repo, headSha } = await fixture({
       'index.md': '# Knowledge\n',

@@ -71,6 +71,7 @@ function humanReport(report: LintReport): string {
     `Knowledge structure lint — main ${report.headSha}`,
     `Catalog: ${report.catalog} (indexed SHA: ${report.indexedSha ?? 'none'})`,
     'Read-only inspection; no initialization, reindexing or embeddings are generated.',
+    'Content scope: wiki/**/*.md and root index.md, MEMORY.md, AGENTS.md; all tracked paths remain link candidates.',
     'Exit 1 when any findings are present, including advisory signals; exit 0 otherwise.',
   ];
   const signals = report.signals;
@@ -116,7 +117,7 @@ export function registerLintCommands(program: Command): void {
   program.command('lint')
     .description('Read-only structure signals from committed main and its existing catalog; exit 1 for any findings')
     .option('--json', 'Print JSON; unavailable duplicate and tag-hub checks are null, stale checks include their indexed SHA')
-    .addHelpText('after', '\nNever initializes, seeds, prunes, migrates or reindexes data and never generates embeddings.\nOrphan and other file-backed checks use committed main. Duplicate and tag-hub checks are labeled stale or unavailable when needed.')
+    .addHelpText('after', '\nNever initializes, seeds, prunes, migrates or reindexes data and never generates embeddings.\nReads only wiki Markdown and root index.md, MEMORY.md, AGENTS.md contents; all tracked paths remain link candidates.\nOrphan and other file-backed checks use committed main. Duplicate checks are wiki-only; duplicate and tag-hub checks are labeled stale or unavailable when needed.')
     .action(async (options: { json?: boolean }) => {
       const report = await inspect();
       console.log(options.json ? JSON.stringify(report, null, 2) : humanReport(report));

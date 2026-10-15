@@ -155,6 +155,9 @@ class TempRepo {
       throw error;
     }
   }
+  async readFiles(paths: readonly string[], ref = 'main'): Promise<Map<string, string | null>> {
+    return new Map(await Promise.all(paths.map(async (path) => [path, await this.readFile(path, ref)] as const)));
+  }
   async listFiles(prefix = '', ref = 'main'): Promise<string[]> {
     return (await this.git(['ls-tree', '-r', '--name-only', ref])).split('\n')
       .filter((path) => /\.md$/i.test(path) && path.startsWith(prefix));
@@ -388,6 +391,65 @@ afterEach(async () => {
 });
 
 describe('DreamingService.runOnce', () => {
+  it('shares scoped main reads and keeps raw sources as path-only link candidates', async () => {
+    const f = await fixture();
+    await f.repo.change('raw/source.md', '# Source\n\n[[raw-only-missing-target]]\n');
+    await f.repo.change('journal/2000-01-01.md', '# Historical journal\n\n[[old-journal-missing-target]]\n');
+    const sampledSha = await f.repo.change('wiki/engineering/releases/deployment.md',
+      `${deploymentContent}\n[[raw/source]]\n`);
+    const reads = vi.spyOn(f.repo, 'readFile');
+    const batches = vi.spyOn(f.repo, 'readFiles');
+    const worktreeReads: string[] = [];
+    const create = f.repo.createWorktree.bind(f.repo);
+    vi.spyOn(f.repo, 'createWorktree').mockImplementationOnce(async (name) => {
+      const wt = await create(name);
+      const read = wt.read.bind(wt);
+      vi.spyOn(wt, 'read').mockImplementation(async (path) => {
+        worktreeReads.push(path);
+        return read(path);
+      });
+      return wt;
+    });
+    f.runAgent.mockImplementationOnce(async (options) => {
+      await writeJournal(options);
+      // Raw source links must resolve without reading or accepting their own links.
+      await options.tools.find((tool) => tool.name === 'write_file')!.run({
+        path: 'wiki/engineering/releases/release.md', content: `${similarContent}\n[[raw/source]]\n`,
+      });
+      return { text: 'Reviewed the curated note.', toolCalls: 2 };
+    });
+
+    const run = await f.dreaming.runOnce();
+
+    expect(run).toMatchObject({ status: 'succeeded', toSha: sampledSha, error: null });
+    expect(reads.mock.calls.every(([path]) => !path.startsWith('raw/') && path !== 'journal/2000-01-01.md')).toBe(true);
+    expect(worktreeReads.every((path) => !path.startsWith('raw/') && path !== 'journal/2000-01-01.md')).toBe(true);
+    const mainBatches = batches.mock.calls.filter(([paths, ref]) => paths.length > 0 && ref === sampledSha);
+    expect(mainBatches).toHaveLength(1);
+    expect(mainBatches[0][0]).toEqual(expect.arrayContaining(['AGENTS.md', 'index.md', 'wiki/engineering/releases/deployment.md']));
+    const input = inputOf(f.runAgent.mock.calls[0][0]);
+    expect(input.changedNotes.some(({ change }) => change.path.startsWith('raw/'))).toBe(false);
+    expect(f.search.search).not.toHaveBeenCalledWith(expect.stringContaining('raw-only-missing-target'), expect.anything());
+  });
+
+  it('still rejects new unresolved links in the current journal', async () => {
+    const f = await fixture();
+    f.addMessage();
+    const head = await f.repo.headSha();
+    f.runAgent.mockImplementationOnce(async (options) => {
+      await writeJournal(options, `${journalContent}\n[[missing-current-journal-target]]\n`);
+      return { text: 'Wrote the journal.', toolCalls: 1 };
+    });
+
+    const run = await f.dreaming.runOnce();
+
+    expect(run).toMatchObject({
+      status: 'failed', mergeSha: null, error: 'Dreaming introduced broken links: missing-current-journal-target',
+    });
+    expect(await f.repo.headSha()).toBe(head);
+    expect(f.indexer.syncToHead).not.toHaveBeenCalled();
+  });
+
   it('logs complete dreaming and conflict totals after a successful merge', async () => {
     const f = await fixture();
     f.addMessage();

@@ -1,3 +1,4 @@
+import { setImmediate } from 'node:timers/promises';
 import { Inject, Injectable } from '@nestjs/common';
 import type Database from 'better-sqlite3';
 import type { Logger } from 'pino';
@@ -8,6 +9,7 @@ import { AclService, type AclUser } from '../acl/acl.service.js';
 interface NoteIdentity { path: string; title: string }
 interface Passage { anchor: string | null; excerpt: string }
 export interface SimilarNote extends NoteIdentity { score: number }
+export interface DuplicateOptions { pathPrefixes?: readonly string[] }
 export interface DuplicateNotes {
   left: NoteIdentity;
   right: NoteIdentity;
@@ -86,9 +88,10 @@ export class ComparisonService {
     return matches.slice(0, limit);
   }
 
-  async duplicates(limit = 20, user?: AclUser): Promise<DuplicateNotes[]> {
+  async duplicates(limit = 20, user?: AclUser, options: DuplicateOptions = {}): Promise<DuplicateNotes[]> {
     validateLimit(limit);
-    const access = user ? this.acl.sql(user, 'c.path') : { sql: '1', params: [] };
+    const policyKey = user ? this.acl.policyKey(user) : undefined;
+    const access = this.noteFilter(user, options.pathPrefixes);
     const notes = this.db.prepare(`SELECT path, MIN(title) AS title, MIN(normalized_hash) AS normalized_hash
       FROM chunks c WHERE ${access.sql} GROUP BY path ORDER BY path`).all(...access.params) as NoteRow[];
     const exactGroups = new Map<string, NoteRow[]>();
@@ -108,22 +111,36 @@ export class ComparisonService {
       ranked.splice(index, 0, candidate);
       if (ranked.length > limit) ranked.pop();
     };
+    let pairsSinceYield = 0;
     for (const group of exactGroups.values()) {
       for (let left = 0; left < group.length; left++) {
-        for (let right = left + 1; right < group.length; right++) consider(group[left]!, group[right]!, 1, 'exact');
+        for (let right = left + 1; right < group.length; right++) {
+          consider(group[left]!, group[right]!, 1, 'exact');
+          if (++pairsSinceYield === 1024) {
+            pairsSinceYield = 0;
+            await setImmediate();
+            this.assertPolicy(user, policyKey);
+          }
+        }
       }
     }
-    const vectorNotes = this.vectorNotes(true, user);
+    const vectorNotes = this.vectorNotes(true, user, options.pathPrefixes);
     const semanticNotes = [...vectorNotes.values()];
     for (let left = 0; left < semanticNotes.length; left++) {
       const a = semanticNotes[left]!;
       for (let right = left + 1; right < semanticNotes.length; right++) {
+        if (++pairsSinceYield === 1024) {
+          pairsSinceYield = 0;
+          await setImmediate();
+          this.assertPolicy(user, policyKey);
+        }
         const b = semanticNotes[right]!;
         if (a.normalized_hash && a.normalized_hash === b.normalized_hash) continue;
         const score = cosine(a.mean, b.mean);
         if (score >= 0.98) consider(a, b, score, 'semantic');
       }
     }
+    this.assertPolicy(user, policyKey);
     const firstChunk = this.db.prepare('SELECT anchor, content FROM chunks WHERE path = ? ORDER BY ordinal, id LIMIT 1');
     return ranked.map(({ left, right, score, reason }) => {
       let passages: DuplicateNotes['passages'];
@@ -138,7 +155,22 @@ export class ComparisonService {
     });
   }
 
-  private vectorNotes(includeChunks: boolean, user?: AclUser): Map<string, VectorNote> {
+  private assertPolicy(user: AclUser | undefined, policyKey: string | undefined): void {
+    if (user && this.acl.policyKey(user) !== policyKey) {
+      throw new RangeError('Search policy changed; retry the query');
+    }
+  }
+
+  private noteFilter(user?: AclUser, pathPrefixes?: readonly string[]): { sql: string; params: Array<string | number> } {
+    const access = user ? this.acl.sql(user, 'c.path') : { sql: '1', params: [] };
+    if (pathPrefixes === undefined) return access;
+    return {
+      sql: `(${access.sql}) AND (${pathPrefixes.map(() => 'substr(c.path, 1, ?) = ?').join(' OR ') || '0'})`,
+      params: [...access.params, ...pathPrefixes.flatMap((prefix) => [prefix.length, prefix])],
+    };
+  }
+
+  private vectorNotes(includeChunks: boolean, user?: AclUser, pathPrefixes?: readonly string[]): Map<string, VectorNote> {
     const notes = new Map<string, VectorNote>();
     const { embeddingModel: model, embeddingDimensions: dimensions } = this.config;
     if (!model || !Number.isInteger(dimensions) || dimensions < 1) return notes;
@@ -149,7 +181,7 @@ export class ComparisonService {
       || metadata.some((row) => row.key === 'vector_mismatch' && row.value === '1')
       || !this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'chunk_vectors'").get()) return notes;
 
-    const access = user ? this.acl.sql(user, 'c.path') : { sql: '1', params: [] };
+    const access = this.noteFilter(user, pathPrefixes);
     const rows = this.db.prepare(`SELECT c.path, c.title, c.normalized_hash, e.embedding
       ${includeChunks ? ', c.anchor, c.content' : ''}
       FROM chunks c JOIN embedding_cache e ON e.content_hash = c.content_hash AND e.model = ? AND e.dimensions = ?
