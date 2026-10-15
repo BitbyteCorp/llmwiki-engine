@@ -55,7 +55,7 @@ async function fixture() {
     { op: 'put', path: 'wiki/private/secret.md', content: '# Private\nHIDDEN_PAYLOAD. Durable hidden fact. [[wiki/public]]\n' },
   ] });
   async function connect(user: User) {
-    const server = module.get(McpService).createServer(user);
+    const server = await module.get(McpService).createServer(user);
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await server.connect(serverTransport);
     const client = new Client({ name: 'acl-consumer', version: '1.0.0' });
@@ -143,4 +143,24 @@ it('uses token user for write/ingest and hides job sources, commits, conflicts a
     expect(importStatus.structuredContent?.job).toMatchObject({ userId: f.editor.id, input: '', commits: [], summary: null });
     expect(JSON.stringify(importStatus)).not.toContain('raw/');
   }
+});
+
+it('initializes each caller with only readable domain hubs and summaries', async () => {
+  const f = await fixture();
+  await f.writer.apply({ userId: f.admin.id, source: 'web', baseSha: await f.repo.headSha(), message: 'Add domain hubs', ops: [
+    { op: 'put', path: 'wiki/public/index.md', content: '---\ndescription: Public domain procedures\n---\n# Public domain\n' },
+    { op: 'put', path: 'wiki/private/index.md', content: '---\ndescription: HIDDEN_DOMAIN_DESCRIPTION\n---\n# Private domain\n' },
+  ] });
+  const admin = await f.connect(f.admin);
+  expect(admin.getInstructions()).toContain('HIDDEN_DOMAIN_DESCRIPTION');
+  const viewer = await f.connect(f.viewer);
+  const instructions = viewer.getInstructions()!;
+  expect(instructions).toContain('wiki/public/index.md');
+  expect(instructions).toContain('Public domain procedures');
+  for (const hidden of ['private', 'wiki/private/index.md', 'HIDDEN_DOMAIN_DESCRIPTION']) {
+    expect(instructions).not.toContain(hidden);
+  }
+  f.acl.create({ prefix: 'wiki/public/index.md', subjectType: 'everyone', subject: '', access: 'none' }, f.admin);
+  const reconnected = await f.connect(f.viewer);
+  expect(reconnected.getInstructions()).not.toContain('wiki/public/index.md');
 });

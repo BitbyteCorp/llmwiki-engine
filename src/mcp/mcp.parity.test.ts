@@ -73,7 +73,7 @@ async function fixture() {
   const indexer = module.get(IndexerService);
   await indexer.syncToHead();
   async function connect(user: User = viewer, clientName?: string) {
-    const server = module.get(McpService).createServer(user, clientName);
+    const server = await module.get(McpService).createServer(user, clientName);
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await server.connect(serverTransport);
     const client = new Client({ name: 'parity-client', version: '1.0.0' });

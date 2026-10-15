@@ -20,7 +20,7 @@ export class McpController {
   async post(@Req() req: Request, @Res() res: Response, @CurrentUser() user: User): Promise<void> {
     // A fresh server captures only this request's authenticated identity.
     const clientName = req.auth?.extra?.clientName;
-    const server = this.mcp.createServer(user, typeof clientName === 'string' ? clientName : undefined);
+    const server = await this.mcp.createServer(user, typeof clientName === 'string' ? clientName : undefined);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,
