@@ -39,7 +39,7 @@ function gate() {
 }
 
 type InputItem = { role?: string; content?: string; type?: string; call_id?: string; output?: string };
-type RequestBody = { input: InputItem[]; stream: boolean; tools: Array<{ name: string }> };
+type RequestBody = { input: InputItem[]; instructions: string; stream: boolean; tools: Array<{ name: string }> };
 type Initial = { id?: string; name?: string; task?: string; files?: string[]; sources?: string[]; jobId?: string };
 type Call = { name: string; arguments: Record<string, unknown>; call_id: string };
 type Reply = FakeTurn | Call[];
@@ -144,7 +144,7 @@ describe('subagent lifecycle failure containment', () => {
     const finished = gate();
     const errors: unknown[] = [];
     const pool = new SubagentPool({
-      agent: { runAgent: async () => { await finished.promise; return { text: 'Child result', toolCalls: 0 }; } } as unknown as AgentService,
+      agent: { runAgent: async () => { await finished.promise; return { text: 'Child result', finalText: 'Child result', toolCalls: 0 }; } } as unknown as AgentService,
       instructions: '', tools: [], wt: { path: tmpdir() },
       log: { error: (error: unknown) => { errors.push(error); } } as unknown as pino.Logger,
       onChange: (snapshot) => { if (snapshot.status !== 'running') throw new Error('SQLite addEvent failed'); },
@@ -175,7 +175,7 @@ describe('subagent lifecycle failure containment', () => {
       agent: {
         runAgent: async () => {
           if (outcome === 'error') throw new Error(oversized);
-          return { text: oversized, toolCalls: 0 };
+          return { text: oversized, finalText: oversized, toolCalls: 0 };
         },
       } as unknown as AgentService,
       instructions: '', tools: [], wt: { path: tmpdir() },
@@ -548,6 +548,48 @@ describe('write subagent pool', () => {
     expect(await waitFor(pool, ids, 'any', 0)).toMatchObject({ timedOut: false, running: [] });
     await expect(waitFor(pool, ids, 'all', 601)).rejects.toThrow();
     await expect(waitFor(pool, ids, 'all', -1)).rejects.toThrow();
+  });
+
+  it('warns once with six turns left after delivering queued parent messages in order', async () => {
+    const beforeWarning = gate();
+    const release = gate();
+    const { requests, makePool } = await fixture(async (_initial, turn) => {
+      if (turn === 25) { beforeWarning.resolve(); await release.promise; }
+      return turn < 31 ? [call('read_file', { path: 'index.md' }, `read-${turn}`)] : '읽은 내용을 담당 노트에 통합했다. 남은 사항은 없다.';
+    });
+    const pool = makePool();
+    const child = await spawn(pool, 'budgeted');
+    await beforeWarning.promise;
+    const messages = ['담당 노트의 기존 설명을 확장한다.', '새 자료 대신 이미 읽은 원문을 통합한다.'];
+    for (const message of messages) await invoke(pool.tools(), 'message_subagent', { id: child.id, message });
+    release.resolve();
+    expect((await waitFor(pool, [child.id])).settled[0]).toMatchObject({ status: 'completed', toolCalls: 31 });
+    expect(requests).toHaveLength(32);
+    const warning = '이번 서브에이전트 실행의 남은 모델 턴은 6턴이다. 새 자료 읽기와 탐색을 중단하고 이미 읽은 자료로 소유한 파일을 작성·확장한다. 턴 한도 전에 작성을 마치고 실제 통합한 내용과 경로, 남은 사항을 결과로 응답한다.';
+    for (const { turn, body } of requests) {
+      expect(body.instructions).toContain('서브에이전트 실행은 최대 32회의 모델 턴만 사용할 수 있다.');
+      expect(body.instructions).toContain('턴 한도에 도달하기 전에 소유한 파일의 작성을 마치고 최종 결과를 응답한다.');
+      const followups = body.input.filter((item) => item.role === 'user').slice(1);
+      expect(followups).toEqual(turn < 26 ? [] : [...messages, warning].map((content) => ({ role: 'user', content })));
+    }
+  });
+
+  it('reports only the final child response without tool-turn preambles', async () => {
+    const preamble = '먼저 작업 트리의 노트를 확인하고 원문을 통합하겠다.';
+    const finalText = 'wiki/final-report.md에 원문을 통합했다. 남은 사항은 없다.';
+    const { wt, changes, makePool } = await fixture((_initial, turn) => turn === 0 ? {
+      text: preamble,
+      functionCalls: [call('write_file', { path: 'wiki/final-report.md', content: '# 통합 결과\n원문에서 읽은 지식이다.\n' })],
+    } : finalText);
+    const pool = makePool();
+    const child = await spawn(pool, 'final-report');
+    const settled = (await waitFor(pool, [child.id])).settled[0];
+    expect(settled).toMatchObject({ status: 'completed', result: finalText, toolCalls: 1 });
+    expect(changes.at(-1)?.result).toBe(finalText);
+    expect(await invoke(pool.tools(), 'subagent_status', { id: child.id })).toMatchObject({
+      subagents: [{ result: finalText }],
+    });
+    expect(await wt.read('wiki/final-report.md')).toContain('원문에서 읽은 지식이다.');
   });
 
   it('delivers queued parent messages on the next child turn exactly once', async () => {
