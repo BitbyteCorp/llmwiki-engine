@@ -142,21 +142,24 @@ export class IngestService implements OnApplicationBootstrap, OnModuleDestroy {
         path: `${extractedRoot}/files/${file.path}`, chars: file.buffer.toString('utf8').length,
       })));
       const batches = planned.length ? planned : [[]];
+      const provenance = `Provenance: ${JSON.stringify({ importId, kind: input.kind, source, ...(finalUrl ? { resolvedUrl: finalUrl } : {}), sha256: sha, filename, path: sourcePath })}`;
       const submitted = batches.map((files, batch) => {
         const integrationInput = [
           'Integrate this imported source into the wiki using the normal writing rules.',
-          `Read the provenance/source Markdown at ${sourcePath}.`,
+          provenance,
           `Batch ${batch + 1} of ${batches.length}.`,
           ...(files.length ? [
+            `The provenance Markdown at ${sourcePath} is an index of every exported file across all batches. Do NOT read it; use its path only as the frontmatter source citation.`,
             'This job owns exactly these extracted Markdown files (raw paths):',
             ...files.map((path) => `- ${JSON.stringify(path)}`),
             'Read EVERY listed file completely. When a read is truncated, continue with nextOffset/nextCharOffset until the entire file has been read.',
+            'Read each listed file once; write or extend each target note immediately after reading its sources instead of reading all files first, and do not re-read pages already read.',
             'The engine verifies that this job (parent or its children) has read EVERY listed file completely before accepting completion. An incomplete read causes the job to fail, not succeed.',
             'For each listed file, integrate its durable knowledge into wiki notes using the normal writing rules, or deliberately skip it with a reason: empty, navigation-only, duplicate, transient, or secret/PII.',
             'Other batches own the remaining extracted files. Do not integrate unlisted extracted files. You may read linked attachments to understand the listed files.',
             'The final summary must account for EVERY listed file with its target wiki note(s) or deliberate skip reason.',
           ] : [
-            'Read the provenance/source Markdown completely, continuing truncated reads with nextOffset/nextCharOffset. Read its linked source and attachments to understand the imported knowledge.',
+            `Read the provenance/source Markdown at ${sourcePath} completely; it contains the extracted body. Continue truncated reads with nextOffset/nextCharOffset. Read its linked source and attachments as needed.`,
             'Integrate durable knowledge into wiki notes or deliberately skip empty, navigation-only, duplicate, transient, or secret/PII content, and explain the outcome in the final summary.',
           ]),
           'Search main and read relevant existing wiki notes. Extend notes created by earlier batches rather than duplicating them.',

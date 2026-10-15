@@ -52,6 +52,9 @@ afterEach(async () => {
   for (const item of fixtures.splice(0)) { await item.jobs.stop(); item.ingest.onModuleDestroy(); item.db.close(); await rm(item.dir, { recursive: true, force: true }); }
   vi.restoreAllMocks();
 });
+function provenanceContext(input: string): Record<string, string> {
+  return JSON.parse(input.match(/^Provenance: (.+)$/m)![1]!);
+}
 async function fixture() {
   const dir = await mkdtemp(join(tmpdir(), 'llmwiki-ingest-'));
   const config = loadConfig({ NODE_ENV: 'test', DATA_DIR: dir, JOBS_AUTOSTART: 'false', PUBLIC_URL: 'http://localhost:3000' });
@@ -66,7 +69,7 @@ async function fixture() {
   const indexer = { syncToHead: vi.fn(async () => {}) } as unknown as IndexerService;
   const observed: string[] = [];
   const agent = { runWrite: vi.fn(async (job: { input: string }, wt: Worktree) => {
-    const path = job.input.match(/at (raw\/[^\s]+\.md)\./)![1]!;
+    const path = provenanceContext(job.input).path!;
     const source = await wt.read(path);
     observed.push(source!);
     await wt.write('wiki/imported.md', `# Integrated knowledge\n[Source](../${path})\n`);
@@ -108,6 +111,12 @@ describe('IngestService with real uploads, SQLite and git', () => {
     expect(queued.source).toBe('import');
     expect(queued.input).toContain(item.rawPaths[1]);
     expect(queued.input).toContain('Explain the key idea');
+    expect(provenanceContext(queued.input)).toEqual({
+      importId: result.importId, kind: 'text', source: 'text:knowledge.md',
+      sha256: sha, filename: 'knowledge.md', path: item.rawPaths[1],
+    });
+    expect(ctx.repository.getRequiredReads(queued.id)).toEqual([]);
+    expect(ctx.jobs.events(queued.id).find((event) => event.phase === 'queued')!.detail!.sourcePaths).toEqual(item.rawPaths);
     ctx.jobs.start();
     await vi.waitFor(() => expect(ctx.ingest.get(result.importId, ctx.owner.id).status).toBe('succeeded'), { timeout: 10_000 });
     expect(ctx.observed[0]).toContain('Durable knowledge');
@@ -168,6 +177,11 @@ describe('IngestService with real uploads, SQLite and git', () => {
     expect(item).toMatchObject({ status: 'queued', source: 'http://source.test/article', userId: ctx.owner.id, error: null, finishedAt: null });
     expect(await ctx.repo.readFile(item.rawPaths[0]!)).toBe('Refetched durable knowledge');
     expect(paths).toEqual(['/article', '/resolved', '/article', '/resolved', '/article', '/resolved']);
+    expect(provenanceContext(ctx.jobs.get(result.jobIds[0]!)!.input)).toEqual({
+      importId: failed.id, kind: 'url', source: 'http://source.test/article',
+      resolvedUrl: 'http://source.test/resolved', sha256: item.sha,
+      filename: version === 'new' ? 'remote.md' : 'resolved', path: item.rawPaths[1],
+    });
     if (version === 'new') {
       expect(item.rawPaths[0]).toContain('/original/remote.md');
       expect(ctx.jobs.get(result.jobIds[0]!)!.input).toContain('Retain original instructions');
@@ -393,6 +407,22 @@ describe('IngestService with real uploads, SQLite and git', () => {
     const expected = pages.map((path) => `raw/${original.sha}/extracted/obsidian/files/${path}`);
     expect(owned.flat().sort()).toEqual(expected);
     expect(new Set(owned.flat()).size).toBe(pages.length);
+    const manifest = (await ctx.repo.readFile(original.rawPaths[1]!))!;
+    for (const [batch, jobId] of result.jobIds.entries()) {
+      const input = ctx.jobs.get(jobId)!.input;
+      expect(provenanceContext(input)).toEqual({
+        importId: result.importId, kind: 'obsidian', source: `upload:${upload.id}`,
+        sha256: original.sha, filename: 'large.zip', path: original.rawPaths[1],
+      });
+      expect(input).not.toMatch(/Read .*provenance\/source Markdown/);
+      expect(input).toMatch(/cit[ae].*without reading/i);
+      const assigned = owned[batch]!;
+      expect(ctx.repository.getRequiredReads(jobId)).toEqual(assigned);
+      const listed = input.split('\n').filter((line) => line.startsWith('- "raw/')).map((line) => JSON.parse(line.slice(2)));
+      expect(listed).toEqual(assigned);
+      for (const path of expected) expect(input.includes(path)).toBe(assigned.includes(path));
+    }
+    for (const path of expected) expect(manifest).toContain(path.split('/files/')[1]!);
     let failSecond = true;
     const consumed: string[] = [];
     vi.mocked(ctx.agent.runWrite).mockImplementation(async (job, wt, _author, _user, options) => {
