@@ -93,6 +93,105 @@ afterEach(async () => {
 });
 
 describe('WriteJobsService with real git and a Dony double', () => {
+  it.each(['chat', 'web', 'mcp', 'dreaming', 'revert'] as const)('runs a later %s write after the running import, before queued batches', async (source) => {
+    const { ctx, jobs } = await fixture();
+    const { promise: gate, resolve: release } = Promise.withResolvers<void>();
+    const observed: string[] = [];
+    vi.mocked(ctx.agent.runWrite).mockImplementation(async (job) => {
+      observed.push(job.input);
+      if (job.input === 'running batch') await gate;
+      return { summary: job.input };
+    });
+    const running = jobs.submit({ userId: 1, input: 'running batch', source: 'import' });
+    jobs.start();
+    await vi.waitFor(() => expect(observed).toEqual(['running batch']));
+    const batches = [1, 2, 3].map(batch => jobs.submit({ userId: 1, input: `queued batch ${batch}`, source: 'import' }));
+    const interactive = jobs.submit({ userId: 1, input: 'interactive', source });
+    try {
+      expect(jobs.get(running.id)?.status).toBe('running');
+      expect(jobs.get(interactive.id)?.status).toBe('queued');
+      expect(observed).toEqual(['running batch']);
+    } finally {
+      release();
+    }
+    expect((await completed(jobs, batches.at(-1)!.id)).status).toBe('succeeded');
+    expect(observed).toEqual(['running batch', 'interactive', 'queued batch 1', 'queued batch 2', 'queued batch 3']);
+  });
+
+  it('keeps FIFO within both classes, including equal timestamps, and lets later batches read earlier merges', async () => {
+    const { ctx, jobs } = await fixture();
+    const observed: string[] = [];
+    const mergedBatches: string[] = [];
+    vi.mocked(ctx.agent.runWrite).mockImplementation(async (job, wt) => {
+      observed.push(job.input);
+      if (job.source === 'import') {
+        for (const earlier of mergedBatches) expect(jobs.get(earlier)?.status).toBe('succeeded');
+        const previous = await wt.read('wiki/batches.md');
+        expect(previous === null ? '' : matter(previous).content).toBe(`${mergedBatches.join('\n')}${mergedBatches.length ? '\n' : ''}`);
+        mergedBatches.push(job.id);
+        await wt.write('wiki/batches.md', note(`${mergedBatches.join('\n')}\n`));
+      }
+      return { summary: job.input };
+    });
+    const submit = (input: string, source: WriteJob['source']) => jobs.submit({ userId: 1, input, source });
+    submit('import A batch 0', 'import');
+    submit('chat first', 'chat');
+    submit('import A batch 1', 'import');
+    submit('web second', 'web');
+    const lastImport = submit('import B batch 0', 'import');
+    submit('mcp third', 'mcp');
+    submit('dreaming fourth', 'dreaming');
+    submit('revert fifth', 'revert');
+    ctx.db.prepare('UPDATE write_jobs SET created_at = ?').run('2026-10-15T00:00:00.000Z');
+    jobs.start();
+    expect((await completed(jobs, lastImport.id)).status).toBe('succeeded');
+    expect(observed).toEqual([
+      'chat first', 'web second', 'mcp third', 'import A batch 0',
+      'dreaming fourth', 'revert fifth', 'import A batch 1', 'import B batch 0',
+    ]);
+  });
+
+  it('runs a waiting import after at most three interactive picks even when more keep arriving', async () => {
+    const { ctx, jobs } = await fixture();
+    const observed: string[] = [];
+    let interactiveCount = 0;
+    vi.mocked(ctx.agent.runWrite).mockImplementation(async (job) => {
+      observed.push(job.input);
+      if (job.source !== 'import' && ++interactiveCount < 7) {
+        jobs.submit({ userId: 1, input: `interactive ${interactiveCount + 1}`, source: 'chat' });
+      }
+      return { summary: job.input };
+    });
+    jobs.submit({ userId: 1, input: 'import first', source: 'import' });
+    const lastImport = jobs.submit({ userId: 1, input: 'import second', source: 'import' });
+    jobs.submit({ userId: 1, input: 'interactive 1', source: 'chat' });
+    jobs.start();
+    expect((await completed(jobs, lastImport.id)).status).toBe('succeeded');
+    await jobs.stop();
+    expect(observed.slice(0, 8)).toEqual([
+      'interactive 1', 'interactive 2', 'interactive 3', 'import first',
+      'interactive 4', 'interactive 5', 'interactive 6', 'import second',
+    ]);
+  });
+
+  it.each(['chat', 'import'] as const)('keeps a retried %s write in its original scheduling class', async (source) => {
+    const { ctx, jobs } = await fixture();
+    const observed: string[] = [];
+    vi.mocked(ctx.agent.runWrite).mockImplementation(async (job) => {
+      observed.push(job.input);
+      return { summary: job.input };
+    });
+    const failed = jobs.submit({ userId: 1, input: 'retried write', source });
+    jobs.cancel(failed.id);
+    const batch = jobs.submit({ userId: 1, input: 'earlier import', source: 'import' });
+    const retried = jobs.retry(failed.id);
+    expect(retried.source).toBe(source);
+    jobs.start();
+    expect((await completed(jobs, batch.id)).status).toBe('succeeded');
+    expect((await completed(jobs, retried.id)).status).toBe('succeeded');
+    expect(observed).toEqual(source === 'import' ? ['earlier import', 'retried write'] : ['retried write', 'earlier import']);
+  });
+
   it('keeps startup, submitted and retried agent jobs queued when autostart is disabled', async () => {
     const { ctx, jobs } = await fixture(false);
     const before = await ctx.repo.headSha();

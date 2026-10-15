@@ -22,11 +22,13 @@ import { NoteWriterService } from './note-writer.service.js';
 import { WriteJobsRepository } from './write-jobs.repository.js';
 
 const execFileAsync = promisify(execFile);
+const MAX_CONSECUTIVE_INTERACTIVE_JOBS = 3;
 
 @Injectable()
 export class WriteJobsService implements OnApplicationShutdown {
   private enabled = false;
   private worker: Promise<void> | null = null;
+  private consecutiveInteractiveJobs = 0;
 
   constructor(
     private readonly repository: WriteJobsRepository,
@@ -231,8 +233,14 @@ export class WriteJobsService implements OnApplicationShutdown {
 
   private async drain(): Promise<void> {
     while (this.enabled) {
-      const job = this.repository.next();
-      if (!job) return;
+      const job = this.repository.next(this.consecutiveInteractiveJobs >= MAX_CONSECUTIVE_INTERACTIVE_JOBS);
+      if (!job) {
+        this.consecutiveInteractiveJobs = 0;
+        return;
+      }
+      this.consecutiveInteractiveJobs = job.source === 'import'
+        ? 0
+        : Math.min(this.consecutiveInteractiveJobs + 1, MAX_CONSECUTIVE_INTERACTIVE_JOBS);
       await this.run(job);
     }
   }

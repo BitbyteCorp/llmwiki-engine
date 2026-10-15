@@ -125,10 +125,11 @@ export class WriteJobsRepository {
     })();
   }
 
-  next(): WriteJob | null {
+  next(preferImport = false): WriteJob | null {
     const row = this.db.prepare(`
-      SELECT * FROM write_jobs WHERE status = 'queued' AND kind = 'agent' ORDER BY created_at, rowid LIMIT 1
-    `).get() as JobRow | undefined;
+      SELECT * FROM write_jobs WHERE status = 'queued' AND kind = 'agent'
+      ORDER BY CASE WHEN source = 'import' THEN ? ELSE 0 END, created_at, rowid LIMIT 1
+    `).get(preferImport ? -1 : 1) as JobRow | undefined;
     return row ? toJob(row) : null;
   }
   queuedDirect(): WriteJob[] {
