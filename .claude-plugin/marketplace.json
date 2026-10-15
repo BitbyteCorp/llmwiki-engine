@@ -5,7 +5,7 @@
   },
   "metadata": {
     "description": "Shared team knowledge skills for llmwiki-engine.",
-    "version": "0.2.0"
+    "version": "0.3.0"
   },
   "plugins": [
     {
