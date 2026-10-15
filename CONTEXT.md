@@ -55,6 +55,7 @@ Node.js 기반으로 LLM Wiki를 관리하는 도구다.
 ### 접점
 
 - [인증](docs/auth.md) — 관리자에게 발급받은 이메일·비밀번호와 Google Workspace 로그인, 엔진이 인가 서버가 되는 MCP OAuth를 설명한다. 비밀번호 관리와 웹 세션 폐기, 첫 관리자 등록 및 로그인 정책의 경계를 기록한다.
+- [Codex OAuth](docs/codex-oauth.md) — 엔진이 ChatGPT 계정으로 Codex 응답 모델에 접근하는 로그인과 자격 증명 수명 주기를 설명한다. Google 웹 로그인·MCP OAuth와의 구분, 로컬 콜백·원격 붙여넣기 및 별도 임베딩 키의 경계를 기록한다.
 - [폴더별 접근 제어](docs/access-control.md) — 경로 규칙의 우선순위와 웹·MCP·검색·도니·이벤트·내보내기의 읽기·쓰기 범위, 공유 대화와 꿈꾸기의 한계를 설명한다. 작업 조회의 경로 기반 판정과 관리자 메타데이터 조회 계약도 설명한다.
 - [MCP](docs/mcp.md) — 지식 도구·리소스와 stateless Streamable HTTP 전송 계약을 설명한다.
 - [설치형 Skills](docs/skills.md) — Claude Code·Codex·Hermes에 엔진의 공개 curl 한 명령(macOS·Linux), 저장소 셸 설치 또는 클라이언트 기본 배포 경로로 Skill을 설치한다. 원격 다운로드의 SHA-256 검증, CLI 호환 표식·수정 보호와 Skill 설치와 별개인 설정 MCP 탭의 클라이언트 등록·OAuth·문제 해결을 설명한다.

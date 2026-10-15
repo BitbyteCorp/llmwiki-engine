@@ -5,6 +5,7 @@ import type { INestApplicationContext } from '@nestjs/common';
 import { Command, CommanderError } from 'commander';
 import { AppModule } from './app.module.js';
 import { registerAuthCommands } from './auth/auth.commands.js';
+import { registerCodexCommands } from './codex/codex.commands.js';
 import { registerRagCommands } from './rag/rag.commands.js';
 import { registerDreamCommands } from './dreaming/dreaming.commands.js';
 import { registerLintCommands } from './dreaming/lint.commands.js';
@@ -20,6 +21,7 @@ const getApp = (): Promise<INestApplicationContext> => pendingApp ??= NestFactor
 
 try {
   registerAuthCommands(program, getApp);
+  registerCodexCommands(program, getApp);
   registerRagCommands(program, getApp);
   registerDreamCommands(program, getApp);
   registerLintCommands(program);
