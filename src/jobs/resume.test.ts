@@ -291,6 +291,42 @@ describe('write job continuation with real Dony and git', () => {
     expect(await f.repo.headSha()).toBe(mainBefore);
   }, 20000);
 
+  it('warns a read-only parent once with twelve turns left and restarts the count on resume', async () => {
+    const warning = '이번 부모 쓰기 실행의 남은 모델 턴은 12턴이다. 새 탐색을 중단하고 이미 읽은 자료로 노트를 작성·확장한다. 실행 중인 서브에이전트는 wait_subagents로 종료를 기다리고 실제 변경 파일을 한 번 검토한 뒤 즉시 commit으로 커밋하고 마지막 요약을 응답한다.';
+    let retrying = false;
+    let turns = 0;
+    let originalInstructions: unknown;
+    const f = await fixture((request) => {
+      const messages = request.body.input as Array<{ role?: string; content?: unknown }>;
+      const warnings = messages.filter(message => message.role === 'user' && String(message.content).includes('남은 모델 턴은'));
+      if (!retrying) {
+        expect(warnings).toEqual([]);
+        originalInstructions ??= request.body.instructions;
+        if (turns++ === 2) throw new Error('provider interrupted before budget warning');
+      } else {
+        const turn = turns++;
+        expect(request.body.instructions).toBe(originalInstructions);
+        expect(warnings).toEqual(turn < 84 ? [] : [{ role: 'user', content: warning }]);
+      }
+      return { name: 'read_file', arguments: { path: 'index.md' } };
+    });
+    f.jobs.start();
+    const original = f.jobs.submit({ userId: 1, source: 'mcp', input: 'Inspect notes before writing' });
+    expect(await settled(f.jobs, original.id)).toMatchObject({
+      status: 'failed', error: expect.stringContaining('provider interrupted before budget warning'),
+    });
+    expect(turns).toBe(3);
+    retrying = true;
+    turns = 0;
+    const retry = f.jobs.retry(original.id);
+    f.jobs.start();
+    expect(await settled(f.jobs, retry.id)).toMatchObject({
+      status: 'failed', summary: null, mergeSha: null,
+      error: 'Dony exceeded maxTurns (96) before finishing',
+    });
+    expect(turns).toBe(96);
+  }, 20000);
+
   it.each(['missing', 'denied'] as const)('does not credit a %s read_file result as assigned-source coverage', async (kind) => {
     const path = `raw/import/${kind}.md`;
     const published = 'wiki/unread-import.md';
