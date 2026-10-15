@@ -1,7 +1,10 @@
 import { posix } from 'node:path';
 import matter from 'gray-matter';
 import type { KnowledgeRepo } from '../knowledge/repo.js';
-import { domainOf, isDomainSchemaPath, isUnclassifiedWikiNote, listDomains } from '../knowledge/domains.js';
+import {
+  domainOf, invalidWikiFolderNameReason, isDomainSchemaPath, isShallowDomainNote, isTooDeepWikiNote,
+  isUnclassifiedWikiNote, listDomains, wikiFolderPaths,
+} from '../knowledge/domains.js';
 import { ENGINE_FIELDS, isMetadataTarget, validateNoteMetadata, type MetadataIssue } from '../knowledge/note-metadata.js';
 import type { CatalogService } from '../rag/catalog.service.js';
 import { aliasesFromFrontmatter, wikilinkTargets } from '../rag/chunking.js';
@@ -24,6 +27,9 @@ export interface StructureSignals {
   missingDomainHubs: string[];
   unlinkedDomainHubs: string[];
   unclassifiedNotes: string[];
+  shallowDomainNotes: string[];
+  tooDeepNotes: string[];
+  invalidFolderNames: Array<{ path: string; reason: string }>;
   invalidMetadata: Array<{ path: string; issues: MetadataIssue[] }>;
   /** Full inspected-main backlog, even when candidate lists are capped or scoped. */
   invalidMetadataCount: number;
@@ -106,7 +112,7 @@ export async function collectStructureSignals(
     orphans: wikiFiles.filter((path) => !domainHubPaths.has(path) && !incoming.has(path)).slice(0, SIGNAL_LIMIT),
     unresolved: [],
     ambiguous: [],
-    oversizedFolders: folders.filter(({ files: direct }) => direct.length > 30).slice(0, SIGNAL_LIMIT)
+    oversizedFolders: folders.filter(({ files: direct }) => direct.length > 15).slice(0, SIGNAL_LIMIT)
       .map(({ path, files: direct }) => ({ path, count: direct.length, files: direct.slice(0, SIGNAL_LIMIT) })),
     oversizedNotes: [],
     tinyNotes: [],
@@ -115,6 +121,12 @@ export async function collectStructureSignals(
     unlinkedDomainHubs: domains.filter(({ hasHub, hubPath }) => hasHub && !rootLinks.has(hubPath))
       .slice(0, SIGNAL_LIMIT).map(({ hubPath }) => hubPath),
     unclassifiedNotes: wikiFiles.filter(isUnclassifiedWikiNote).slice(0, SIGNAL_LIMIT),
+    shallowDomainNotes: wikiFiles.filter(isShallowDomainNote).slice(0, SIGNAL_LIMIT),
+    tooDeepNotes: wikiFiles.filter(isTooDeepWikiNote).slice(0, SIGNAL_LIMIT),
+    invalidFolderNames: wikiFolderPaths(files).flatMap((path) => {
+      const reason = invalidWikiFolderNameReason(posix.basename(path));
+      return reason === null ? [] : [{ path, reason }];
+    }).slice(0, SIGNAL_LIMIT),
     invalidMetadata: [],
     invalidMetadataCount: 0,
   };
@@ -191,6 +203,7 @@ export function selectDreamMode(
   if (signals.duplicates.length || signals.orphans.length >= 5 || signals.oversizedFolders.length
     || signals.ambiguous.length || signals.unresolved.length >= 5 || signals.missingHubs.length
     || signals.missingDomainHubs.length || signals.unlinkedDomainHubs.length || signals.unclassifiedNotes.length
+    || signals.shallowDomainNotes.length || signals.tooDeepNotes.length || signals.invalidFolderNames.length
     || signals.invalidMetadataCount > 0) {
     return { mode: 'structural', focus: null };
   }
@@ -224,6 +237,8 @@ export function restrictStructureSignals(signals: StructureSignals, paths: strin
     || normalizedFolders.has(folderFor(`${normalizeLinkTarget(target)}.md`));
   const selectedDomains = new Set([...paths, ...selectedFolders].map(domainOf).filter((domain) => domain !== null));
   const touchesDomain = (hub: string): boolean => touches(hub) || selectedDomains.has(domainOf(hub)!);
+  const touchesAncestorFolder = (folder: string): boolean => paths.some((path) => wikiNote(path) && path.startsWith(folder))
+    || [...selectedFolders].some((selected) => selected.startsWith(folder));
   return {
     duplicates: signals.duplicates.filter(({ left, right }) => touches(left) || touches(right)).slice(0, SIGNAL_LIMIT),
     orphans: signals.orphans.filter(touches).slice(0, SIGNAL_LIMIT),
@@ -240,6 +255,9 @@ export function restrictStructureSignals(signals: StructureSignals, paths: strin
     unlinkedDomainHubs: signals.unlinkedDomainHubs.filter((hub) => touchesDomain(hub) || selectedPaths.has('index.md'))
       .slice(0, SIGNAL_LIMIT),
     unclassifiedNotes: signals.unclassifiedNotes.filter(touches).slice(0, SIGNAL_LIMIT),
+    shallowDomainNotes: signals.shallowDomainNotes.filter(touches).slice(0, SIGNAL_LIMIT),
+    tooDeepNotes: signals.tooDeepNotes.filter(touches).slice(0, SIGNAL_LIMIT),
+    invalidFolderNames: signals.invalidFolderNames.filter(({ path }) => touchesAncestorFolder(path)).slice(0, SIGNAL_LIMIT),
     invalidMetadata: signals.invalidMetadata.filter(({ path }) => touches(path)).slice(0, SIGNAL_LIMIT),
     invalidMetadataCount: signals.invalidMetadataCount,
   };

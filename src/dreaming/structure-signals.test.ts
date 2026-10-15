@@ -8,6 +8,7 @@ function emptySignals(overrides: Partial<StructureSignals> = {}): StructureSigna
   return {
     duplicates: [], orphans: [], unresolved: [], ambiguous: [], oversizedFolders: [], oversizedNotes: [],
     tinyNotes: [], missingHubs: [], missingDomainHubs: [], unlinkedDomainHubs: [], unclassifiedNotes: [],
+    shallowDomainNotes: [], tooDeepNotes: [], invalidFolderNames: [],
     invalidMetadata: [], invalidMetadataCount: 0, ...overrides,
   };
 }
@@ -38,13 +39,16 @@ describe('dream mode selection', () => {
   it.each<Partial<StructureSignals>>([
     { duplicates: [duplicate] },
     { orphans: Array.from({ length: 5 }, (_, index) => `wiki/${index}.md`) },
-    { oversizedFolders: [{ path: 'wiki/', count: 31, files: ['wiki/index.md'] }] },
+    { oversizedFolders: [{ path: 'wiki/', count: 16, files: ['wiki/index.md'] }] },
     { ambiguous: [{ path: 'wiki/a.md', target: 'shared', candidates: ['wiki/x/shared.md', 'wiki/y/shared.md'] }] },
     { unresolved: Array.from({ length: 5 }, (_, index) => ({ path: 'wiki/a.md', target: `missing-${index}` })) },
     { missingHubs: [{ tag: 'topic', count: 5, paths: ['wiki/a.md'] }] },
     { missingDomainHubs: ['wiki/engineering/index.md'] },
     { unlinkedDomainHubs: ['wiki/research/index.md'] },
     { unclassifiedNotes: ['wiki/loose.md'] },
+    { shallowDomainNotes: ['wiki/engineering/cache.md'] },
+    { tooDeepNotes: ['wiki/engineering/backend/cache/eviction/policy.md'] },
+    { invalidFolderNames: [{ path: 'wiki/batch18/', reason: '배치 번호' }] },
     { invalidMetadataCount: 1, invalidMetadata: [{ path: 'wiki/concepts/cache.md', issues: [{ field: 'tags', message: '필수 속성이 없다' }] }] },
   ])('prioritizes structural repair over local changes and sweeps for %j', (signals) => {
     expect(selectDreamMode(emptySignals(signals), true, sweepFolders, new Map())).toEqual({ mode: 'structural', focus: null });
@@ -275,6 +279,68 @@ describe('structural signal collection', () => {
     expect(clean.signals.unclassifiedNotes).toEqual([]);
   });
 
+  it('enforces subject depth while exempting domain hubs, schemas and flat shared notes', async () => {
+    const { signals } = await fixture({
+      'wiki/donidoeji/얕은 노트.MD': 'Shallow',
+      'wiki/donidoeji/index.md': 'Hub',
+      'wiki/donidoeji/AGENTS.md': 'Schema',
+      'wiki/donidoeji/crm/기본 노트.md': 'Topic',
+      'wiki/donidoeji/crm/rewards/허용 노트.md': 'Subtopic',
+      'wiki/donidoeji/crm/rewards/mobile/깊은 노트.MD': 'Too deep',
+      'wiki/concepts/평평한 정본.md': 'Shared',
+      'wiki/concepts/cache/주제 정본.md': 'Shared topic',
+      'wiki/concepts/cache/expiry/깊은 정본.md': 'Too deep shared',
+      'wiki/entities/정본.md': 'Entity',
+      'wiki/entities/people/인물.md': 'Entity topic',
+      'wiki/entities/people/team/깊은 인물.md': 'Too deep entity',
+      'wiki/미분류.md': 'Unclassified',
+    });
+    expect(signals.shallowDomainNotes).toEqual(['wiki/donidoeji/얕은 노트.MD']);
+    expect(signals.tooDeepNotes).toEqual([
+      'wiki/concepts/cache/expiry/깊은 정본.md',
+      'wiki/donidoeji/crm/rewards/mobile/깊은 노트.MD',
+      'wiki/entities/people/team/깊은 인물.md',
+    ]);
+    expect(signals.unclassifiedNotes).toEqual(['wiki/미분류.md']);
+  });
+
+  it('reports invalid folder names at every level, including attachment-only ancestors', async () => {
+    const { signals } = await fixture({
+      'wiki/돈이돼지 batch18/a/노트.md': 'Imported',
+      'wiki/donidoeji/crm/사람이 읽는 제목.md': 'Valid',
+      'wiki/donidoeji/2026/image.png': 'Attachment',
+      'wiki/donidoeji/2026-10/note.md': 'Month',
+      'wiki/donidoeji/2026-10-15/note.md': 'Date',
+      'wiki/donidoeji/batch18/part-2/chunk3/note.md': 'Batch',
+      'wiki/donidoeji/crm/Bad_Name/note.md': 'Invalid nested',
+      'wiki/entities/people/a/image.png': 'Single-letter attachment folder',
+      'raw/2026/a/source.md': 'Not wiki',
+    });
+    expect(signals.invalidFolderNames.map(({ path }) => path)).toEqual([
+      'wiki/donidoeji/2026-10-15/', 'wiki/donidoeji/2026-10/', 'wiki/donidoeji/2026/',
+      'wiki/donidoeji/batch18/', 'wiki/donidoeji/batch18/part-2/', 'wiki/donidoeji/batch18/part-2/chunk3/',
+      'wiki/donidoeji/crm/Bad_Name/', 'wiki/entities/people/a/', 'wiki/돈이돼지 batch18/', 'wiki/돈이돼지 batch18/a/',
+    ]);
+    expect(signals.invalidFolderNames.every(({ reason }) => reason.length > 0)).toBe(true);
+  });
+
+  it('caps new depth and name signals at twenty sorted paths', async () => {
+    const notes: Record<string, string> = {};
+    for (let index = 0; index < 25; index++) {
+      const number = String(index).padStart(2, '0');
+      notes[`wiki/donidoeji/shallow-${number}.md`] = 'Shallow';
+      notes[`wiki/donidoeji/crm/rewards/mobile/deep-${number}.md`] = 'Deep';
+      notes[`wiki/donidoeji/batch${number}/note.md`] = 'Batch';
+    }
+    const { signals } = await fixture(notes);
+    expect(signals.shallowDomainNotes).toEqual(Array.from({ length: 20 }, (_, index) =>
+      `wiki/donidoeji/shallow-${String(index).padStart(2, '0')}.md`));
+    expect(signals.tooDeepNotes).toEqual(Array.from({ length: 20 }, (_, index) =>
+      `wiki/donidoeji/crm/rewards/mobile/deep-${String(index).padStart(2, '0')}.md`));
+    expect(signals.invalidFolderNames.map(({ path }) => path)).toEqual(Array.from({ length: 20 }, (_, index) =>
+      `wiki/donidoeji/batch${String(index).padStart(2, '0')}/`));
+  });
+
   it('caps domain hygiene signals at twenty sorted paths', async () => {
     const notes: Record<string, string> = {};
     for (let index = 0; index < 25; index++) {
@@ -305,8 +371,8 @@ describe('structural signal collection', () => {
       'index.md': 'root index',
       'wiki/index.md': 'wiki index',
     };
-    for (let index = 0; index < 30; index++) notes[`wiki/exact/${String(index).padStart(2, '0')}.md`] = 'x'.repeat(200);
-    for (let index = 0; index < 31; index++) notes[`wiki/big/${String(index).padStart(2, '0')}.md`] = 'x'.repeat(200);
+    for (let index = 0; index < 15; index++) notes[`wiki/exact/${String(index).padStart(2, '0')}.md`] = 'x'.repeat(200);
+    for (let index = 0; index < 16; index++) notes[`wiki/big/${String(index).padStart(2, '0')}.md`] = 'x'.repeat(200);
     notes['wiki/exact/nested/note.md'] = 'x'.repeat(200);
     const { signals, folders } = await fixture(notes);
     expect(signals.oversizedNotes).toEqual([{ path: 'wiki/sizes/oversized.md', chars: 20_001 }]);
@@ -316,11 +382,11 @@ describe('structural signal collection', () => {
       { path: 'wiki/sizes/tiny.md', chars: 199 },
     ]);
     expect(signals.oversizedFolders).toEqual([{
-      path: 'wiki/big/', count: 31,
-      files: Array.from({ length: 20 }, (_, index) => `wiki/big/${String(index).padStart(2, '0')}.md`),
+      path: 'wiki/big/', count: 16,
+      files: Array.from({ length: 16 }, (_, index) => `wiki/big/${String(index).padStart(2, '0')}.md`),
     }]);
     expect(folders.map(({ path, files }) => [path, files.length])).toEqual([
-      ['wiki/', 1], ['wiki/big/', 31], ['wiki/exact/', 30], ['wiki/exact/nested/', 1], ['wiki/sizes/', 5],
+      ['wiki/', 1], ['wiki/big/', 16], ['wiki/exact/', 15], ['wiki/exact/nested/', 1], ['wiki/sizes/', 5],
     ]);
   });
 
@@ -475,6 +541,7 @@ describe('structural signal scopes', () => {
       oversizedFolders: [signals.oversizedFolders[0]], oversizedNotes: [signals.oversizedNotes[0]], tinyNotes: [],
       missingHubs: [signals.missingHubs[0]],
       missingDomainHubs: [], unlinkedDomainHubs: [], unclassifiedNotes: [],
+      shallowDomainNotes: [], tooDeepNotes: [], invalidFolderNames: [],
       invalidMetadata: [], invalidMetadataCount: 0,
     });
     expect(restrictStructureSignals(signals, [], [])).toEqual(emptySignals());
@@ -487,6 +554,7 @@ describe('structural signal scopes', () => {
       oversizedFolders: [signals.oversizedFolders[0]], oversizedNotes: [signals.oversizedNotes[0]], tinyNotes: [],
       missingHubs: [signals.missingHubs[0]],
       missingDomainHubs: [], unlinkedDomainHubs: [], unclassifiedNotes: [],
+      shallowDomainNotes: [], tooDeepNotes: [], invalidFolderNames: [],
       invalidMetadata: [], invalidMetadataCount: 0,
     });
     expect(signals.orphans).toEqual(['wiki/a/note.md', 'wiki/a/nested/note.md', 'wiki/b/note.md']);
@@ -510,6 +578,34 @@ describe('structural signal scopes', () => {
     expect(restrictStructureSignals(domains, ['wiki/loose.md'])).toEqual(emptySignals({
       unclassifiedNotes: ['wiki/loose.md'],
     }));
+  });
+
+  it('keeps only direct placement candidates and invalid ancestor folders for local and sweep scopes', () => {
+    const placement = emptySignals({
+      shallowDomainNotes: ['wiki/donidoeji/loose.md', 'wiki/health/loose.md'],
+      tooDeepNotes: [
+        'wiki/donidoeji/crm/rewards/mobile/note.md',
+        'wiki/donidoeji/crm/rewards/mobile/nested/note.md',
+        'wiki/health/habits/daily/morning/note.md',
+      ],
+      invalidFolderNames: [
+        'wiki/돈이돼지 batch18/', 'wiki/돈이돼지 batch18/a/', 'wiki/돈이돼지 batch18/a/b/',
+        'wiki/돈이돼지 batch18/b/', 'wiki/health/2026-10/',
+      ].map((path) => ({ path, reason: 'Invalid folder' })),
+    });
+    expect(restrictStructureSignals(placement, ['wiki/donidoeji/loose.md'])).toEqual(emptySignals({
+      shallowDomainNotes: ['wiki/donidoeji/loose.md'],
+    }));
+    expect(restrictStructureSignals(placement, [], ['wiki/donidoeji/crm/rewards/mobile/'])).toEqual(emptySignals({
+      tooDeepNotes: ['wiki/donidoeji/crm/rewards/mobile/note.md'],
+    }));
+    const expected = emptySignals({ invalidFolderNames: placement.invalidFolderNames.slice(0, 2) });
+    expect(restrictStructureSignals(placement, ['wiki/돈이돼지 batch18/a/note.md'])).toEqual(expected);
+    expect(restrictStructureSignals(placement, [], ['wiki/돈이돼지 batch18/a/'])).toEqual(expected);
+    expect(restrictStructureSignals(placement, [], ['wiki/돈이돼지 batch18/'])).toEqual(emptySignals({
+      invalidFolderNames: [placement.invalidFolderNames[0]!],
+    }));
+    expect(restrictStructureSignals(placement, ['index.md'])).toEqual(emptySignals());
   });
 
   it('scopes metadata candidates to direct notes but preserves the inspected-main backlog count', () => {

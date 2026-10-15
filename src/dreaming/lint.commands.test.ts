@@ -188,6 +188,46 @@ describe('read-only CLI lint', () => {
     expect(await snapshot(dataDir)).toEqual(before);
   });
 
+  it('reports placement and folder-name findings from committed paths without a catalog or mutations', async () => {
+    const { dataDir } = await fixture({
+      'wiki/donidoeji/index.md': '# Domain',
+      'wiki/donidoeji/AGENTS.md': '# Schema',
+      'wiki/donidoeji/메모.md': '# Shallow',
+      'wiki/donidoeji/crm/정상.md': '# Topic note',
+      'wiki/donidoeji/crm/rewards/mobile/너무 깊은 노트.md': '# Deep',
+      'wiki/돈이돼지 batch18/a/가져온 노트.md': '# Invalid folders',
+      'wiki/donidoeji/2026-10/기간 노트.md': '# Date folder',
+      'wiki/concepts/정본.md': '# Shared',
+      'wiki/entities/people/인물.md': '# Shared topic',
+      'wiki/미분류.md': '# Unclassified',
+    });
+    const before = await snapshot(dataDir);
+    const logged = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await command().parseAsync(['node', 'test', 'lint', '--json']);
+
+    const report = JSON.parse(String(logged.mock.calls[0]?.[0]));
+    expect(report.catalog).toBe('unavailable');
+    expect(report.signals.shallowDomainNotes).toEqual(['wiki/donidoeji/메모.md']);
+    expect(report.signals.tooDeepNotes).toEqual(['wiki/donidoeji/crm/rewards/mobile/너무 깊은 노트.md']);
+    expect(report.signals.unclassifiedNotes).toEqual(['wiki/미분류.md']);
+    expect(report.signals.invalidFolderNames.map(({ path }: { path: string }) => path)).toEqual([
+      'wiki/donidoeji/2026-10/', 'wiki/돈이돼지 batch18/', 'wiki/돈이돼지 batch18/a/',
+    ]);
+    expect(report.signals.invalidFolderNames).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: 'wiki/돈이돼지 batch18/', reason: expect.any(String) }),
+    ]));
+
+    await command().parseAsync(['node', 'test', 'lint']);
+
+    const output = String(logged.mock.calls[1]?.[0]);
+    expect(output).toContain('Shallow domain notes (1)');
+    expect(output).toContain('Too-deep notes (1)');
+    expect(output).toContain('Invalid folder names (3)');
+    expect(output).toContain(`wiki/돈이돼지 batch18/: ${report.signals.invalidFolderNames[1].reason}`);
+    expect(await snapshot(dataDir)).toEqual(before);
+  });
+
   it('labels stale index findings while collecting path-backed signals from current main without reindexing', async () => {
     const { dataDir, repo, headSha: indexedSha } = await fixture({
       'index.md': '[[wiki/health/index]]',

@@ -552,27 +552,29 @@ it('runs an idle night sweep in the least recently reviewed wiki folder', async 
   f.db.prepare('DELETE FROM messages').run();
   const wt = await f.repo.createWorktree('idle-seed');
   const author = { name: 'Test', email: 'test@example.test' };
-  await wt.write('wiki/topic/a.md', wikiNote('# Topic\n\nA unique fact.\n'));
-  await wt.write('wiki/topic/index.md', wikiNote('[[wiki/topic/a]]\n', 'hub'));
+  await wt.write('wiki/topic/notes/a.md', wikiNote('# Topic\n\nA unique fact.\n'));
+  await wt.write('wiki/topic/index.md', wikiNote('[[wiki/topic/notes/a]]\n', 'hub'));
   await wt.write('index.md', '[[wiki/topic/index]]\n');
   await wt.commit('Seed sweep folder', author);
   await f.repo.withMergeLock(() => wt.fastForwardMain());
   await wt.dispose();
   const checkpoint = runRecord(newId(), '2020-01-01T00:00:00.000Z');
   checkpoint.status = 'succeeded';
+  checkpoint.mode = 'sweep';
+  checkpoint.focus = 'wiki/topic/';
   checkpoint.toSha = await f.repo.headSha();
   checkpoint.finishedAt = '2020-01-01T00:01:00.000Z';
   f.runs.create(checkpoint);
   f.runs.finish(checkpoint);
   const run = await f.dreaming.runOnce();
-  expect(run).toMatchObject({ status: 'succeeded', mode: 'sweep', focus: 'wiki/topic/' });
+  expect(run).toMatchObject({ status: 'succeeded', mode: 'sweep', focus: 'wiki/topic/notes/' });
   expect(f.runs.get(run.id)).toEqual(run);
   expect(JSON.parse(f.runAgent.mock.calls[0][0].input as string)).toMatchObject({
-    mode: 'sweep', focus: 'wiki/topic/', commits: [], userMessages: [],
+    mode: 'sweep', focus: 'wiki/topic/notes/', commits: [], userMessages: [],
     importedNotes: [], importedNotesCount: 0,
-    structure: { focus: 'wiki/topic/', files: ['wiki/topic/a.md', 'wiki/topic/index.md'] },
+    structure: { focus: 'wiki/topic/notes/', files: ['wiki/topic/notes/a.md'] },
   });
-  expect(f.runs.lastSucceededSweeps().get('wiki/topic/')).toBe(run.finishedAt);
+  expect(f.runs.lastSucceededSweeps().get('wiki/topic/notes/')).toBe(run.finishedAt);
 });
 
 it.each([false, true])('validates backlinks before merging a moved note (fixed: %s)', async (fixLinks) => {

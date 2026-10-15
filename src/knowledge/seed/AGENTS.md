@@ -14,7 +14,11 @@
 │   ├── entities/
 │   └── <domain>/
 │       ├── index.md
-│       └── AGENTS.md    # 선택적인 도메인 schema
+│       ├── AGENTS.md    # 선택적인 도메인 schema
+│       └── <topic>/
+│           ├── <노트 제목>.md
+│           └── <subtopic>/    # 조건을 만족할 때만 한 단계 추가
+│               └── <노트 제목>.md
 ├── index.md
 ├── journal/
 │   └── YYYY-MM-DD.md
@@ -34,8 +38,10 @@ Obsidian 규칙의 LiveSync는 사용하지 않으며 git 동기화로 대체한
 
 ## 배치·허브·schema 계층과 우선순위
 
-- 오래 유지할 노트는 `wiki/<domain>/` 또는 공용 `wiki/concepts/`, `wiki/entities/`에 둔다. `wiki/` 바로 아래에는 지식 노트를 만들지 않는다. 도메인 이름은 영어 소문자 kebab-case로 정하며 `concepts`, `entities`는 도메인이 아닌 공용 영역이다.
-- 한 도메인에만 속하는 지식은 해당 도메인에 둔다. 둘 이상의 도메인에서 재사용하거나 명백히 도메인 독립적인 개념·용어는 `wiki/concepts/`, 사람·조직·도구·제품은 `wiki/entities/`에 정본을 둔다. 도메인별 맥락은 각 도메인 노트에서 공용 정본으로 연결하며 본문을 복제하지 않는다.
+- domain은 독자가 처음 구분하는 최상위 관심 영역(제품·서비스·프로젝트·조직·생활·연구)이다. topic은 그 안에서 반복 조회하는 안정적인 주제·측면이며, 노트가 적어도 적합한 기존 topic을 우선한다.
+- 일반 도메인 노트의 기본·최소 경로는 `wiki/<domain>/<topic>/<노트 제목>.md`다. topic 바로 아래 노트가 15개를 초과하고 분리할 주제 묶음에 노트가 3개 이상일 때만 subtopic 한 단계를 추가해 `wiki/<domain>/<topic>/<subtopic>/<노트 제목>.md`까지 허용한다. 도메인 허브 `wiki/<domain>/index.md`와 schema `wiki/<domain>/AGENTS.md`의 위치는 바꾸지 않는다.
+- 둘 이상의 도메인에서 재사용하거나 명백히 도메인 독립적인 개념·용어는 `wiki/concepts/`, 사람·조직·도구·제품은 `wiki/entities/`에 정본을 둔다. 공용 영역은 노트를 바로 두거나 topic 한 단계까지만 허용한다. `concepts`, `entities`는 도메인이 아닌 공용 영역이며 `wiki/` 바로 아래에는 지식 노트를 만들지 않는다. 도메인별 맥락은 각 도메인 노트에서 공용 정본으로 연결하며 본문을 복제하지 않는다.
+- `wiki/` 아래 모든 폴더명은 2자 이상의 ASCII 영어 소문자 kebab-case로 정한다. 모든 폴더 계층에서 batch/part/chunk 등 수집 배치·분할 순번, 날짜·기간, 원문 도구·출처, 노트 유형, 상태, 작성자를 분류 축으로 쓰지 않는다. 노트 파일명은 사람이 읽을 제목이며 한국어를 허용한다.
 - 새 도메인을 만들면 `wiki/<domain>/index.md` 허브를 만들고 루트 `index.md`에서 그 허브로 연결한다. 도메인 허브는 실제 도메인 노트와 필요한 공용 정본으로 안내한다. 루트 색인은 도메인 허브와 공용 진입점으로 안내하며 도메인 내부 노트 목록을 복제하지 않는다. 없는 노트나 허브의 링크를 미리 만들지 않는다.
 - 해당 도메인에 편집하기 전에 허브와 선택적인 `wiki/<domain>/AGENTS.md`를 읽는다. 도메인 schema는 필요한 경우에만 두며 도메인별 용어·노트 형식·출처 속성 등 지역 규칙을 루트 schema 위에 확장하거나 재정의한다. 공용 영역과 다른 도메인에는 적용하지 않는다.
 - 우선순위는 엔진의 실행·보안 지시, 해당 도메인의 schema, 루트 schema 순이다. 도메인 schema의 재정의는 그 도메인의 작성 관례에 한정하며 불변 원문, 민감 정보, 사실성, 정본 한 곳, 공통 배치·허브 규칙과 아래 공통 메타데이터 표준을 완화하지 않는다. 도메인은 경로로 표현한다.
@@ -65,7 +71,7 @@ Obsidian 규칙의 LiveSync는 사용하지 않으며 git 동기화로 대체한
 
 ## 폴더·태그·위키링크·색인의 역할
 
-- 폴더는 지식 저장소의 큰 구조를 나누는 데 사용한다.
+- 폴더는 최상위 관심 영역과 안정적인 조회 주제를 나누는 데 사용하며 위 배치·깊이 기준을 따른다.
 - 태그는 검색·필터링·주제 분류에 사용한다.
 - 본문의 위키링크는 큐레이션된 탐색과 직접 참조에 사용한다.
 - 색인 노트는 한 영역의 중요한 진입점을 모으는 데 사용한다.
@@ -156,23 +162,23 @@ source: ['https://redis.io/docs/latest/']
 ---
 ```
 
-도메인 허브 `wiki/software/index.md`:
+도메인 허브 `wiki/llmwiki-engine/index.md`:
 
 ```yaml
 ---
 type: hub
-aliases: ['소프트웨어 지식', 'Software knowledge']
-description: '소프트웨어 설계와 운영의 주요 결정, 절차, 공유 개념으로 안내한다.'
+aliases: ['LLM 위키 엔진', 'LLM Wiki engine']
+description: 'LLM 위키 엔진의 주요 결정, 절차, 공유 개념으로 안내한다.'
 author: ['김민수']
 date created: '2026-10-01'
 date modified: '2026-10-10'
 tags: ['knowledge-management']
 related:
-  ['[[wiki/concepts/cache-invalidation]]', '[[wiki/software/cache-policy]]']
+  ['[[wiki/concepts/cache-invalidation]]', '[[wiki/llmwiki-engine/caching/캐시 만료 정책]]']
 ---
 ```
 
-도메인 결정 `wiki/software/cache-policy.md`:
+도메인 결정 `wiki/llmwiki-engine/caching/캐시 만료 정책.md`:
 
 ```yaml
 ---

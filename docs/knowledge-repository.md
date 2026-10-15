@@ -68,7 +68,7 @@ main과 과거 커밋의 읽기는 작업 디스크 파일을 직접 읽지 않�
 │   └── <domain>/
 │       ├── index.md
 │       ├── AGENTS.md # 선택적인 도메인 schema
-│       └── ...       # 노트와 중첩 폴더
+│       └── <topic>/  # 주제별 노트, 깊이 규칙은 지식 도메인 구조 참조
 ├── index.md
 ├── journal/
 │   └── YYYY-MM-DD.md
@@ -94,13 +94,13 @@ Obsidian 규칙의 LiveSync는 사용하지 않으며, git 동기화로 대체�
 | --- | --- | --- |
 | raw sources | `raw/` | 불변 원문 소스를 보관한다. |
 | wiki | `wiki/` | 도니가 유지하는 노트를 보관한다. |
-| index | 루트·도메인의 `index.md` | 전체·분야별 탐색 진입점을 제공한다. |
+| index | 루트·도메인의 `index.md` | 전체·최상위 관심 영역별 탐색 진입점을 제공한다. |
 | log | `journal/YYYY-MM-DD.md` | `log.md` 대신 날짜별 일기를 쓰고, 세부 변경 이력은 git 커밋 이력으로 남긴다. |
-| schema | 루트·도메인의 `AGENTS.md` | 공통·분야별 작성 규칙을 담는다. |
+| schema | 루트·도메인의 `AGENTS.md` | 공통·도메인별 작성 규칙을 담는다. |
 
 ## 관련 문서
 - [엔진 아키텍처](architecture.md)는 지식 저장소 클론과 작업 워크트리의 영속 위치를 설명한다.
-- [지식 도메인 구조](knowledge-domains.md)는 분야별 배치와 공유 정본, 허브·schema 및 기존 저장소의 수동 전환을 설명한다.
+- [지식 도메인 구조](knowledge-domains.md)는 최상위 관심 영역과 주제별 배치, 공유 정본, 허브·schema 및 기존 저장소의 수동 전환을 설명한다.
 - [작성 규칙](writing-rules.md)은 지식 저장소 안의 문서 작성 기준을 설명한다.
 - [노트 메타데이터](note-metadata.md)는 지식 노트의 공통 frontmatter 표준을 설명한다.
 - [쓰기 흐름](write-flow.md)과 [꿈꾸기](dreaming.md)는 지식 변경과 정리 절차를 설명한다.

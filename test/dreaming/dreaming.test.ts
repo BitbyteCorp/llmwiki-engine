@@ -88,7 +88,7 @@ const mergedReleaseContent = wikiNote(
   'dreaming review\nconcurrent review\n',
 );
 const similarHit: SearchHit = {
-  path: 'wiki/engineering/release.md', title: 'Release process', heading: '',
+  path: 'wiki/engineering/releases/release.md', title: 'Release process', heading: '',
   snippet: 'A reviewer approves each release.', score: 0.9, kind: 'wiki', related: [],
   anchor: null, excerpt: 'A reviewer approves each release.', highlights: [], tags: [], updatedAt: null,
   type: null, description: null,
@@ -136,8 +136,8 @@ class TempRepo {
     await this.git(['config', 'user.email', this.config.gitBotEmail]);
     await this.git(['config', 'commit.gpgsign', 'false']);
     await this.git(['config', 'core.hooksPath', '/dev/null']);
-    await mkdir(join(this.path, 'wiki/engineering'), { recursive: true });
-    await writeFile(join(this.path, 'wiki/engineering/release.md'), similarContent);
+    await mkdir(join(this.path, 'wiki/engineering/releases'), { recursive: true });
+    await writeFile(join(this.path, 'wiki/engineering/releases/release.md'), similarContent);
     await writeFile(join(this.path, 'wiki/engineering/index.md'), engineeringIndexContent);
     await writeFile(join(this.path, 'index.md'), '# Knowledge\n\n- [[wiki/engineering/index]]\n');
     await writeFile(join(this.path, 'AGENTS.md'), 'Use verified facts.\n');
@@ -213,7 +213,7 @@ class TempRepo {
     await this.git(['push', 'origin', 'main']);
     return { pushed: true };
   }
-  async change(path = 'wiki/engineering/deployment.md', content = deploymentContent): Promise<string> {
+  async change(path = 'wiki/engineering/releases/deployment.md', content = deploymentContent): Promise<string> {
     await mkdir(dirname(join(this.path, path)), { recursive: true });
     await writeFile(join(this.path, path), content);
     await this.git(['add', '.']);
@@ -395,20 +395,20 @@ describe('DreamingService.runOnce', () => {
       options.onUsage?.({ inputTokens: 100, cachedInputTokens: 60, outputTokens: 20, reasoningTokens: 6 });
       await writeJournal(options);
       const write = options.tools.find(tool => tool.name === 'write_file')!;
-      await write.run({ path: 'wiki/engineering/release.md', content: dreamingReleaseContent });
-      await f.repo.change('wiki/engineering/release.md', concurrentReleaseContent);
+      await write.run({ path: 'wiki/engineering/releases/release.md', content: dreamingReleaseContent });
+      await f.repo.change('wiki/engineering/releases/release.md', concurrentReleaseContent);
       options.onUsage?.({ inputTokens: 80, cachedInputTokens: 40, outputTokens: 12, reasoningTokens: 3 });
       return { text: 'Reviewed knowledge.', toolCalls: 2 };
     });
     f.agent.resolveConflicts.mockImplementationOnce(async (wt, files, _user, options) => {
-      expect(files).toEqual(['wiki/engineering/release.md']);
+      expect(files).toEqual(['wiki/engineering/releases/release.md']);
       options?.onUsage?.({ inputTokens: 50, cachedInputTokens: 20, outputTokens: 10, reasoningTokens: 2 });
-      await wt.write('wiki/engineering/release.md', mergedReleaseContent);
+      await wt.write('wiki/engineering/releases/release.md', mergedReleaseContent);
       options?.onUsage?.({ inputTokens: 30, cachedInputTokens: 10, outputTokens: 5, reasoningTokens: 1 });
     });
     const run = await f.dreaming.runOnce();
     expect(run.status).toBe('succeeded');
-    expect(await f.repo.readFile('wiki/engineering/release.md')).toBe(mergedReleaseContent);
+    expect(await f.repo.readFile('wiki/engineering/releases/release.md')).toBe(mergedReleaseContent);
     expect(f.logs.find(log => log.msg === 'Dreaming completed' && log.runId === run.id)).toMatchObject({
       usage: { inputTokens: 260, cachedInputTokens: 130, outputTokens: 47, reasoningTokens: 12 },
     });
@@ -436,7 +436,7 @@ describe('DreamingService.runOnce', () => {
 
   it('pushes without an agent or worktree when there are no inputs or sweepable notes', async () => {
     const f = await fixture();
-    await f.repo.git(['rm', 'wiki/engineering/release.md', 'wiki/engineering/index.md']);
+    await f.repo.git(['rm', 'wiki/engineering/releases/release.md', 'wiki/engineering/index.md']);
     await f.repo.git(['commit', '-m', 'Remove sweepable knowledge']);
     const head = await f.repo.headSha();
     f.checkpoint(head);
@@ -467,7 +467,7 @@ describe('DreamingService.runOnce', () => {
     expect(input).toMatchObject({ date: kstDate, fromSha: f.baseSha, toSha, mode: 'local', focus: null });
     expect(input.commits.map((commit) => commit.sha)).toEqual([toSha]);
     expect(input.changedNotes).toEqual([{
-      change: { status: 'A', path: 'wiki/engineering/deployment.md' },
+      change: { status: 'A', path: 'wiki/engineering/releases/deployment.md' },
       content: deploymentContent,
       similarNotes: [{ path: similarHit.path, title: similarHit.title, excerpt: similarHit.excerpt }],
     }]);
@@ -573,16 +573,17 @@ describe('DreamingService.runOnce', () => {
     const f = await fixture();
     const head = await f.repo.headSha();
     f.checkpoint(head);
+    f.db.prepare("UPDATE dream_runs SET mode = 'sweep', focus = 'wiki/engineering/'").run();
     const run = await f.dreaming.runOnce();
     const input = inputOf(f.runAgent.mock.calls[0][0]);
     const journalPath = `journal/${input.date}.md`;
     expect(run).toMatchObject({
-      status: 'succeeded', fromSha: head, toSha: head, mode: 'sweep', focus: 'wiki/engineering/',
+      status: 'succeeded', fromSha: head, toSha: head, mode: 'sweep', focus: 'wiki/engineering/releases/',
       journalPath, changedPaths: [journalPath], structuralChanges: [], pushed: true, error: null,
     });
     expect(input).toMatchObject({
-      mode: 'sweep', focus: 'wiki/engineering/', commits: [], changedNotes: [], userMessages: [],
-      structure: { focus: 'wiki/engineering/', files: ['wiki/engineering/index.md', 'wiki/engineering/release.md'] },
+      mode: 'sweep', focus: 'wiki/engineering/releases/', commits: [], changedNotes: [], userMessages: [],
+      structure: { focus: 'wiki/engineering/releases/', files: ['wiki/engineering/releases/release.md'] },
     });
     expect(await f.repo.readFile(journalPath)).toBe(journalContent);
     expect(await f.repo.headSha()).toBe(run.mergeSha);
@@ -664,7 +665,7 @@ describe('DreamingService.runOnce', () => {
     expect(first).toMatchObject({ status: 'succeeded', toSha: sampledSha });
     const firstInput = inputOf(f.runAgent.mock.calls[0][0]);
     expect(firstInput.commits.map((commit) => commit.sha)).toEqual([sampledSha]);
-    expect(firstInput.changedNotes.map((note) => note.change.path)).toEqual(['wiki/engineering/deployment.md']);
+    expect(firstInput.changedNotes.map((note) => note.change.path)).toEqual(['wiki/engineering/releases/deployment.md']);
     expect(await f.repo.readFile('wiki/engineering/later.md')).toBe(concurrentContent);
     expect(first.mergeSha).not.toBe(sampledSha);
 
@@ -770,13 +771,13 @@ describe('DreamingService.runOnce', () => {
       'note',
       '배포 노트와 미해결 위키링크를 함께 참조한다.',
       ['reference'],
-      '# Concurrent note\n\n[[wiki/engineering/release]]\n[[missing-concurrent-note]]\n',
+      '# Concurrent note\n\n[[wiki/engineering/releases/release]]\n[[missing-concurrent-note]]\n',
     );
     let concurrentSha: string | undefined;
     f.runAgent.mockImplementationOnce(async (options) => {
       await writeJournal(options);
       const move = options.tools.find(tool => tool.name === 'move_file')!;
-      await move.run({ from: 'wiki/engineering/release.md', to: 'wiki/engineering/renamed-release.md' });
+      await move.run({ from: 'wiki/engineering/releases/release.md', to: 'wiki/engineering/releases/renamed-release.md' });
       await options.tools.find(tool => tool.name === 'write_file')!.run({
         path: 'wiki/engineering/index.md',
         content: wikiNote('hub', '엔지니어링 분야의 배포 노트로 이동하는 탐색 경로다.', ['engineering', 'reference'], '# Engineering\n\n- [[renamed-release]]\n'),
@@ -789,12 +790,12 @@ describe('DreamingService.runOnce', () => {
 
     expect(run).toMatchObject({
       status: 'failed', mergeSha: null, pushed: true,
-      error: 'Dreaming introduced broken links: wiki/engineering/release',
-      structuralChanges: [{ kind: 'move', from: 'wiki/engineering/release.md', to: 'wiki/engineering/renamed-release.md' }],
+      error: 'Dreaming introduced broken links: wiki/engineering/releases/release',
+      structuralChanges: [{ kind: 'move', from: 'wiki/engineering/releases/release.md', to: 'wiki/engineering/releases/renamed-release.md' }],
     });
     expect(await f.repo.headSha()).toBe(concurrentSha);
-    expect(await f.repo.readFile('wiki/engineering/release.md')).toBe(similarContent);
-    expect(await f.repo.readFile('wiki/engineering/renamed-release.md')).toBeNull();
+    expect(await f.repo.readFile('wiki/engineering/releases/release.md')).toBe(similarContent);
+    expect(await f.repo.readFile('wiki/engineering/releases/renamed-release.md')).toBeNull();
     expect(await f.repo.readFile('wiki/engineering/concurrent.md')).toBe(concurrentContent);
     expect(await f.repo.listFiles('journal/')).toEqual([]);
     expect(f.learnedAt(messageId)).toBeNull();

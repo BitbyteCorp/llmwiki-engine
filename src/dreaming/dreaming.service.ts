@@ -360,14 +360,16 @@ ACL 경계를 넘어 제한된 노트·사용자 자료의 내용이나 의미�
 가져오기 과정 설명("가져온 자료에는", "이번 배치", 파일 제외 사유 등), 내보내기 잔재(Notion ID, 의미 없는 "제목 없음", 빈 템플릿 항목, 깨진 첨부 참조)를 제거한다. 실제 식별자나 의미 있는 사실은 잔재로 취급하지 않는다. 반복되는 출처·검증 유보 문구는 정확한 시점·출처 맥락 한 번으로 합치고, 원문 표·목록의 덤프는 그 안의 사실·결정·이유·절차·용어로 정리한다.
 출처 링크는 노트 메타데이터 source 또는 출처 절에만 모은다. source는 위키링크나 http(s) URL의 문자열 배열이며 raw 출처 링크를 보존한다. 노트나 그 raw 출처에 없는 사실은 추가하지 않고, 의미 있는 사실은 버리지 않는다. 제거 대상은 과정 설명·중복·잔재뿐이며 raw/는 절대 편집하지 않는다.
 정제 후 재사용 가능한 지식이 없는 노트나 가져오기 산물만 남은 노트는 의미 있는 사실과 링크를 보존하며 병합·삭제할 수 있다. 기존 이동·삭제 20건 상한을 함께 적용한다. 정제한 노트와 내용, 상한 때문에 남은 후보를 일기의 "정제" 절에 기록한다.
-도메인 구조 신호를 우선 고친다: missingDomainHubs의 경로에 해당 도메인의 큐레이션 허브를 만들고 루트 index.md에서 연결한다. unlinkedDomainHubs는 기존 허브를 루트 index.md에 연결한다. unclassifiedNotes는 wiki/ 바로 아래에 두지 않고 주제에 맞는 wiki/<domain>/로 옮기며, 둘 이상 도메인에서 재사용하거나 도메인과 무관한 개념·용어는 wiki/concepts/, 사람·조직·도구·제품은 wiki/entities/의 정본으로 배치한다. 같은 지식은 한 정본만 유지한다.
-새 도메인은 영문 소문자 kebab-case 폴더, wiki/<domain>/index.md 허브, 루트 index.md의 허브 링크를 함께 만든다. 폴더로 도메인을 나타내며 frontmatter에 domain/category 필드를 추가하지 않는다. wiki/<domain>/ 안의 파일을 쓰거나 편집하기 전에는 해당 도메인의 AGENTS.md가 있으면 읽고 그 도메인 안에서만 적용한다.
+도메인은 제품·서비스·프로젝트·조직·생활·연구 같은 최상위 관심 영역이며 topic은 그 안에서 반복 조회하는 안정적인 주제·측면이다. 적합한 기존 topic을 우선한다. 일반 도메인 노트의 기본·최소 경로는 wiki/<domain>/<topic>/<노트 제목>.md다. topic의 직속 노트가 15개를 초과하고 분리할 묶음이 3개 이상일 때만 subtopic 한 단계를 추가하며 wiki/<domain>/<topic>/<subtopic>/<노트 제목>.md보다 깊게 만들지 않는다.
+도메인 구조 신호를 우선 고친다: missingDomainHubs의 경로에 해당 도메인의 큐레이션 허브를 만들고 루트 index.md에서 연결한다. unlinkedDomainHubs는 기존 허브를 루트 index.md에 연결한다. unclassifiedNotes와 shallowDomainNotes는 관심 대상과 주제를 확인해 wiki/<domain>/<topic>/로 옮긴다. tooDeepNotes는 허용 깊이 안으로 합치고, invalidFolderNames는 reason을 읽고 배치·날짜·한 글자 폴더 등을 안정적인 주제로 재분류한다. 허브 wiki/<domain>/index.md와 schema wiki/<domain>/AGENTS.md의 위치는 유지한다.
+둘 이상 도메인에서 재사용하거나 도메인과 무관한 개념·용어는 wiki/concepts/, 사람·조직·도구·제품은 wiki/entities/의 정본으로 배치한다. 공유 영역은 평면 또는 topic 한 단계만 허용하며 concepts와 entities는 도메인 이름으로 사용하지 않는다. 같은 지식은 한 정본만 유지한다.
+wiki/ 아래 모든 폴더명은 2자 이상의 ASCII 소문자 kebab-case다. 모든 단계에서 수집 batch/part/chunk·분할 번호, 날짜·기간, 원문 도구·출처, 노트 유형, 상태, 작성자를 분류 축으로 쓰지 않는다. 노트 파일명은 사람이 읽을 제목이며 한국어를 허용한다. 새 도메인은 허브와 루트 index.md의 허브 링크를 함께 만든다. 폴더로 도메인을 나타내며 frontmatter에 domain/category 필드를 추가하지 않는다. wiki/<domain>/ 안의 파일을 쓰거나 편집하기 전에는 해당 도메인의 AGENTS.md가 있으면 읽고 그 도메인 안에서만 적용한다.
 정리 순서는 도메인 배치·허브, 깨지거나 모호한 링크, 그 밖의 구조 문제, 남은 메타데이터 순서다. 큰 기존 메타데이터 backlog가 탐색 경로와 링크 수리를 밀어내지 않게 한다. 앞선 수리로 이미 편집하는 노트의 메타데이터도 함께 고치고, 그 뒤 invalidMetadata의 후보를 차례로 보완한다. invalidMetadataCount는 점검한 main 전체의 미완료 노트 수이며 후보 목록은 최대 20개다. 상한이나 근거 부족으로 남은 후보와 backlog를 일기의 "구조 정리" 절에 남긴다.
 invalidMetadata는 author, date created, date modified처럼 엔진이 채우는 속성을 제외한 오류다. 후보 노트의 본문과 기존 링크를 먼저 읽고 거기에 있는 사실만으로 type, aliases, description, tags를 채운다. description은 300자 이하의 한국어 1~2문장 요약이며, aliases는 실제 다른 이름·약어·번역의 문자열 목록(없으면 []), tags는 하나 이상의 넓고 재사용 가능한 영문 소문자 kebab-case 태그다. 메타데이터를 채우려고 새 사실을 지어내지 않는다.
 type은 hub, concept, entity, guide, decision, reference, project, note 중 고른다. wiki/concepts/의 노트는 concept, wiki/entities/의 노트는 entity, wiki/<domain>/index.md는 hub로 맞춘다. updated는 제거하고 날짜는 엔진에 맡긴다. status/category/domain은 제거하되 지식 의미를 담고 있다면 필요한 의미만 본문에 보존한다. author와 생성·수정 날짜는 추측하거나 계산하지 않으며 엔진이 커밋 시 채운다. 그 밖의 도메인 추가 속성은 보존하며 related/source/confidence/importance 같은 유효한 속성을 버리지 않는다.
 구조 변경은 탐색이나 검색이 분명히 좋아질 때만 한다. 취향 때문에 이름을 바꾸거나 폴더를 다시 나누지 않는다.
 - 합치기: 같은 사실을 다루는 노트는 하나의 정본으로 합치고 나머지는 삭제한다. 삭제한 노트를 가리키던 모든 위키링크는 정본을 가리키게 고친다.
-- 옮기기·이름 바꾸기: 저장소의 기존 폴더와 파일명 관례를 따른다. 도메인 생성은 위 규칙을 따르며, 도메인 안의 세부 주제 폴더는 같은 주제의 노트가 3개 이상일 때만 만든다.
+- 옮기기·이름 바꾸기: 위의 관심 대상·주제와 깊이·이름 규칙을 따른다. oversizedFolders는 직속 노트 15개 초과 신호이며, 의미 있는 3개 이상의 세부 주제 묶음이 없으면 억지로 subtopic을 만들지 않고 중복·범위와 허브를 먼저 정리한다. 기존 평평한 배치나 배치·날짜별 관례를 답습하지 않는다.
 - 쪼개기: 한 노트에 서로 독립적인 주제가 섞였을 때만 원자적 노트로 나누고 서로 링크한다.
 - 허브: 같은 주제의 노트가 흩어져 있으면 지식을 복제하지 않는 허브 노트를 만들고 index.md에 연결한다.
 파일을 옮기거나 삭제하면 그 경로를 가리키던 모든 [[링크]]를 같은 커밋에서 고친다.

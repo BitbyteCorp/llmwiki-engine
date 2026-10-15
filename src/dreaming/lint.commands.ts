@@ -93,6 +93,9 @@ function humanReport(report: LintReport): string {
   section('Missing domain hubs', signals.missingDomainHubs);
   section('Unlinked domain hubs', signals.unlinkedDomainHubs);
   section('Unclassified notes', signals.unclassifiedNotes);
+  section('Shallow domain notes', signals.shallowDomainNotes);
+  section('Too-deep notes', signals.tooDeepNotes);
+  section('Invalid folder names', signals.invalidFolderNames.map(({ path, reason }) => `${path}: ${reason}`));
   section('Duplicate candidates', signals.duplicates?.map(({ left, right, reason, score }) => `${left} ↔ ${right} (${reason}, score ${score})`) ?? null);
   section('Orphan notes', signals.orphans);
   section('Unresolved wikilinks', signals.unresolved.map(({ path, target }) => `${path} → [[${target}]]`));

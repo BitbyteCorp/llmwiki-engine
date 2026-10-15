@@ -16,7 +16,7 @@
 
 | 필드 | 필수 여부·형식 | 의미와 작성 기준 |
 | --- | --- | --- |
-| `type` | 필수 문자열, 아래 유형 어휘 중 하나다. | 노트가 수행하는 역할이다. 분야 이름이 아니다. |
+| `type` | 필수 문자열, 아래 유형 어휘 중 하나다. | 노트가 수행하는 역할이다. 도메인 이름이 아니다. |
 | `aliases` | 필수 문자열 배열, `[]`도 허용한다. | 다른 이름, 약어, 한국어·영어 번역을 기록한다. 제목을 기계적으로 복제하지 않는다. |
 | `description` | 필수, 비어 있지 않은 문자열, 300자 이하다. | LLM과 검색을 위한 한국어 1~2문장 요약이다. 노트가 설명하는 대상과 핵심 내용을 구체적으로 적는다. |
 | `author` | 필수, 비어 있지 않은 문자열 배열, 엔진 자동 속성이다. | 요청자의 표시 이름을 기록한다. 이름이 없으면 이메일을 사용하며, 사람 요청자가 없으면 봇 이름을 사용한다. |
@@ -44,7 +44,7 @@
 | `project` | 특정 프로젝트의 지속적인 맥락·목표·설계를 기록한다. 임시 진행 상태를 저장하는 유형은 아니다. |
 | `note` | 다른 유형보다 일반 노트가 적합한 지식이다. 분류를 생략하기 위한 기본값이 아니다. |
 
-`wiki/concepts/` 아래는 `concept`, `wiki/entities/` 아래는 `entity`, `wiki/<domain>/index.md`는 `hub`여야 한다. 그 밖의 도메인 노트는 목적에 맞는 유형을 선택한다. `type`이 `reference`인 연구 노트와 `guide`인 개발 노트도 각각 분야 폴더에 두므로 `domain` 속성이 필요하지 않다.
+`wiki/concepts/` 아래는 `concept`, `wiki/entities/` 아래는 `entity`, `wiki/<domain>/index.md`는 `hub`여야 한다. 그 밖의 도메인 노트는 목적에 맞는 유형을 선택한다. `type`이 `reference`인 연구 노트와 `guide`인 개발 노트도 각각 관심 대상의 도메인·주제 폴더에 두므로 `domain` 속성이 필요하지 않다. 배치와 깊이는 [지식 도메인 구조](knowledge-domains.md#레이아웃)를 따른다.
 
 ### 엔진 자동 속성
 
@@ -76,7 +76,7 @@
 
 일곱 공통 필수 속성, 노트의 역할을 나타내는 유형, 별칭·설명으로 탐색을 돕는 방식과 명시적인 관련 노트·출처를 채택한다. 필드 이름을 채택한다는 것이 각 참고 체계의 모든 값과 운용 규칙을 복제한다는 뜻은 아니다. 이 엔진은 한국어 설명, 요청자 표시 이름의 작성자 배열, 날짜 단위의 엔진 자동 속성과 위의 여덟 유형을 사용한다. 모든 속성을 많이 채우는 것이 목적은 아니며 본문에서 확인할 수 있는 내용을 정확히 기록한다.
 
-CMDS의 [숫자 분류 체계](https://github.com/johnfkoo951/cmds-system-files/blob/main/rules/directory-structure.md#L145-L164)와 이를 참조하는 선택 속성 `CMDS:`는 채택하지 않는다. 원래 체계가 일반 `category` 필드를 필수로 요구한다는 뜻은 아니다. 이 엔진에서도 별도 category 필드를 도입하지 않는다. 이미 읽을 수 있는 도메인 폴더가 있고 경로 기반 ACL과 검색 범위가 있으므로 별도 숫자 체계를 중복 관리하지 않는다. LLM Wiki의 [검증 상태](https://llm-wiki.cmdspace.work/docs/#v5-verification) 속성인 `verificationStatus`, `claimType`과 [탐색 상태](https://llm-wiki.cmdspace.work/docs/#ingest)인 `explored`도 의무화하지 않는다. 현재 엔진에는 해당 상태를 일관되게 판정·갱신하는 절차가 없으며, 검증되었다는 인상을 주는 속성을 형식만 채우지 않는다. `status`도 공통 노트 메타데이터로 도입하지 않는다. 쟁점과 적용 범위는 본문에 설명하고 근거 강도는 선택적인 `confidence`로 표현한다.
+CMDS의 [숫자 분류 체계](https://github.com/johnfkoo951/cmds-system-files/blob/main/rules/directory-structure.md#L145-L164)와 이를 참조하는 선택 속성 `CMDS:`는 채택하지 않는다. 원래 체계가 일반 `category` 필드를 필수로 요구한다는 뜻은 아니다. 이 엔진에서도 별도 category 필드를 도입하지 않는다. 이미 읽을 수 있는 도메인 폴더가 있고 경로 기반 ACL과 검색 범위가 있으므로 별도 숫자 체계를 중복 관리하지 않는다. 관심 대상 중심의 배치 기준은 [지식 도메인 구조](knowledge-domains.md#레이아웃)를 따른다. LLM Wiki의 [검증 상태](https://llm-wiki.cmdspace.work/docs/#v5-verification) 속성인 `verificationStatus`, `claimType`과 [탐색 상태](https://llm-wiki.cmdspace.work/docs/#ingest)인 `explored`도 의무화하지 않는다. 현재 엔진에는 해당 상태를 일관되게 판정·갱신하는 절차가 없으며, 검증되었다는 인상을 주는 속성을 형식만 채우지 않는다. `status`도 공통 노트 메타데이터로 도입하지 않는다. 쟁점과 적용 범위는 본문에 설명하고 근거 강도는 선택 속성 `confidence`로 표현한다.
 
 ### 예시
 
@@ -97,7 +97,7 @@ confidence: high
 ---
 ```
 
-다음은 `wiki/engineering/backup-guide.md`에 가져온 자료를 반영한 예시다. `raw/<sha>/imports/<id>` 형태의 링크에는 실제 수집 SHA와 import ID를 사용한다.
+다음은 `wiki/llmwiki-engine/backup/백업 절차.md`에 가져온 자료를 반영한 예시다. `raw/<sha>/imports/<id>` 형태의 링크에는 실제 수집 SHA와 import ID를 사용한다.
 
 ```yaml
 ---
@@ -108,13 +108,13 @@ author: [홍길동]
 date created: 2026-10-09
 date modified: 2026-10-10
 tags: [backup, maintenance]
-related: ["[[wiki/engineering/recovery-decision]]"]
+related: ["[[wiki/llmwiki-engine/backup/복구 결정]]"]
 source: ["[[raw/4f9a217ca54826e1b33fb28b0f6ae933469daf1cf86441cda5871f410720e153/imports/7Qx]]", "https://www.sqlite.org/backup.html"]
 importance: high
 ---
 ```
 
-허브는 `type: hub`로 분야의 조회 경로를 설명하며, 쓸 별칭이 없는 노트도 `aliases: []`를 명시한다. 예시의 경로를 실재 노트나 원문이 없는 상태에서 그대로 복사하지 않는다.
+허브는 `type: hub`로 해당 관심 영역의 조회 경로를 설명하며, 쓸 별칭이 없는 노트도 `aliases: []`를 명시한다. 예시의 경로를 실재 노트나 원문이 없는 상태에서 그대로 복사하지 않는다.
 
 ## 관련 문서
 
