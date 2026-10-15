@@ -1,6 +1,6 @@
 const CACHE_NAME = 'llmwiki-offline-v1'
 const OFFLINE_URL = '/offline.html'
-const BACKEND_PATH = /^\/(api|auth|oauth|mcp|\.well-known|healthz|readyz|metrics)(\/|$)/
+const BACKEND_PATH = /^\/(api|auth|oauth|mcp|skills|\.well-known|healthz|readyz|metrics)(\/|$)/
 
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {

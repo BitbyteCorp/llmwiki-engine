@@ -7,6 +7,24 @@ MCP 연결만으로는 클라이언트가 언제 지식을 검색하고 무엇�
 Skill 설치와 MCP 연결·OAuth 로그인은 별개다. 설치기는 로그인하거나 비밀값을 저장하지 않으며, 기존 클라이언트 설정을 수정하지 않는다. 프롬프트 배치만으로 엔진 연결이 완료되었다고 간주하지 않는다.
 
 ## 내용
+### 엔진에서 한 명령으로 설치와 갱신
+엔진의 공개 URL만 있으면 저장소를 복제하지 않고 macOS와 Linux에서 설치한다. `<ENGINE_URL>`은 실제 엔진 주소로 바꾸며, 마지막 클라이언트는 `claude-code`, `codex`, `hermes` 중에서 선택한다.
+
+```bash
+curl -fsSL <ENGINE_URL>/skills/install.sh | sh -s -- install claude-code
+curl -fsSL <ENGINE_URL>/skills/install.sh | sh -s -- install codex --project /path/to/project
+curl -fsSL <ENGINE_URL>/skills/install.sh | sh -s -- status codex --project /path/to/project
+curl -fsSL <ENGINE_URL>/skills/install.sh | sh -s -- update codex --project /path/to/project
+```
+
+POSIX `sh`, 기본 파일 도구, `awk`, `sha256sum` 또는 macOS의 `shasum -a 256`, `curl` 또는 `wget`이 필요하다. Git, Node.js, pnpm, Python과 엔진 빌드는 필요 없다. `wget -qO- <ENGINE_URL>/skills/install.sh | sh -s -- install codex`도 가능하다. 설치기는 MCP 설정·OAuth 로그인·Hermes 프로젝트 신뢰 승인을 수행하지 않고 별도 단계를 출력한다.
+
+`install`, `status`, `update`는 선택적인 `--project <dir>`, `--force`를 받는다. `--force`의 수정 보호 경계와 상태는 [기존 설치와 로컬 수정 보호](#기존-설치와-로컬-수정-보호)를 따른다. 다른 엔진에서 자료를 받으려면 파이프 오른쪽에 `LLMWIKI_URL=https://other.example.com sh -s -- install codex`를 지정한다. 이 변수는 다운로드 주소만 바꾸며 MCP 연결 주소를 저장하지 않는다.
+
+공개 `GET /skills/install.sh`는 하나의 정본 `skills/install.sh`에 서버 설정 `PUBLIC_URL`의 끝 슬래시를 제거한 주소를 셸 인용해 넣는다. 요청의 `Host`·전달 헤더로 주소를 계산하지 않는다. 같은 스크립트가 복제본에서는 로컬 자료를, 표준 입력에서는 엔진 자료를 사용한다. `GET /skills/manifest/<client>`는 버전·설치 파일별 SHA-256을, `GET /skills/files/<sha256>`는 해당 배포 파일의 원본 바이트를 제공하며 `GET /skills/version.json`은 배포 버전 원본을 제공한다. 서버는 공통 `SKILL.md`와 세 클라이언트 자료만 시작 시 읽어 보관하므로 요청 경로로 저장소 파일을 탐색하지 않으며 경로 순회를 허용하지 않는다.
+
+원격 설치는 모든 파일을 비공개 임시 디렉터리에 내려받고 각 SHA-256을 manifest와 대조한 뒤 기존 설치 보호 검사와 쓰기를 시작한다. 다운로드 실패·체크섬 불일치에서는 대상 파일과 설치 표식을 전혀 바꾸지 않는다. 원본 바이트를 그대로 내려받으므로 마지막 줄바꿈이 없는 파일·바이너리도 셸·CLI 설치와 동일하다. 스크립트와 manifest·파일 응답은 `Cache-Control: public, max-age=60`을 사용한다. 체크섬은 전송 일관성 검사이며 엔진 신뢰나 HTTPS를 대체하지 않는다.
+
 ### 저장소만으로 설치와 갱신
 Skill만 사용할 때는 엔진 의존성 설치나 실행이 필요 없다. Git으로 저장소를 받은 뒤 POSIX `sh`와 기본 파일·SHA-256 도구로 설치한다. Node.js, pnpm, Python과 빌드는 필요 없다. 다음 명령은 저장소 상위 디렉터리에서 실행하며 마지막 클라이언트를 `codex` 또는 `hermes`로 바꾸어 사용할 수 있다.
 
@@ -24,7 +42,7 @@ sh skills/install.sh update codex --project /path/to/project
 ```
 
 ### 기존 CLI와 설치 위치
-엔진을 이미 설치한 환경의 빌드된 CLI는 `llmwiki skill`을 사용하며, 엔진 개발 환경에서는 `pnpm cli skill`을 사용한다. 저장소 전용 설치를 위해 엔진을 빌드하지 않는다. 셸 설치기와 기존 CLI는 아래 설치 위치와 `.llmwiki-install.json` 표식·해시·수정 보호 계약을 공유하므로 서로 설치한 결과를 조회하고 갱신할 수 있다.
+엔진을 이미 설치한 환경의 빌드된 CLI는 `llmwiki skill`을 사용하며, 엔진 개발 환경에서는 `pnpm cli skill`을 사용한다. Skill 설치를 위해 엔진을 빌드하지 않는다. 원격·저장소 셸 설치기와 기존 CLI는 아래 설치 위치와 `.llmwiki-install.json` 표식·해시·수정 보호 계약을 공유하므로 서로 설치한 결과를 조회하고 갱신할 수 있다.
 
 ```bash
 llmwiki skill install claude-code
@@ -48,9 +66,9 @@ llmwiki skill update codex --project /path/to/project
 - `client/`에는 선택한 클라이언트의 `skills/<client>/` 자료를 원래 상대 경로대로 복사한다. README와 MCP 병합 예시는 참고 자료이며 활성 클라이언트 설정이 아니다. Claude 플러그인 manifest는 이 디렉터리에 복사하지 않는다.
 - `.llmwiki-install.json`은 설치기 스키마, 클라이언트, 설치 버전, 관리 파일별 SHA-256을 기록한다. 비밀값이나 OAuth 토큰을 기록하지 않는다.
 
-공통 원본과 클라이언트 자료의 배포 버전은 `skills/version.json`에서 관리한다. 프롬프트뿐 아니라 README·MCP 예시·설치 자료가 바뀌어도 배포 버전을 올린다. Claude 플러그인의 `skills/.claude-plugin/plugin.json`의 `version`과 마켓플레이스의 `.claude-plugin/marketplace.json`의 `metadata.version`도 같은 값으로 갱신한다. 호스팅한 Claude 플러그인은 manifest 버전으로 캐시를 갱신하므로 내용만 바꾸고 버전을 유지하지 않는다.
+공통 원본과 클라이언트 자료의 배포 버전은 `skills/version.json`에서 관리한다. 프롬프트뿐 아니라 실제 설치하는 README·MCP 예시가 바뀌어도 배포 버전을 올린다. 설치 대상이 아닌 설치기 자체만 바뀌면 배포 버전은 유지한다. Claude 플러그인의 `skills/.claude-plugin/plugin.json`의 `version`과 마켓플레이스의 `.claude-plugin/marketplace.json`의 `metadata.version`도 같은 값으로 갱신한다. 호스팅한 Claude 플러그인은 manifest 버전으로 캐시를 갱신하므로 내용만 바꾸고 버전을 유지하지 않는다.
 
-셸 설치기는 스크립트 위치로 원본 `skills/`를 찾는다. 기존 TypeScript 설치기는 모듈 위치 기준 `../../skills/`를 읽으므로 개발의 `src/skill`과 빌드의 `dist/skill`에서 모두 저장소 루트의 자료를 사용한다. 현재 작업 디렉터리에 의존하지 않는다. 빌드 배포물은 `dist/`와 함께 루트 `skills/`를 포함해야 하며, Docker 런타임도 이 디렉터리를 복사한다.
+복제본의 셸 설치기는 스크립트 위치로 원본 `skills/`를 찾는다. 기존 TypeScript 설치기와 공개 배포 서비스는 모듈 위치 기준 `../../skills/`를 읽으므로 개발의 `src/skill`과 빌드의 `dist/skill`에서 모두 저장소 루트의 자료를 사용한다. 현재 작업 디렉터리에 의존하지 않는다. 빌드 배포물은 `dist/`와 함께 루트 `skills/`를 포함해야 하며, Docker 런타임도 이 디렉터리를 복사한다.
 
 ### 기존 설치와 로컬 수정 보호
 명령은 JSON 상태를 출력한 뒤 수행하지 않은 MCP/OAuth 단계를 별도로 출력한다. `installedVersion`, `availableVersion`, `directory`, `modifiedFiles`, `unmanagedFiles`로 설치 위치와 수정 파일을 확인한다.
@@ -210,7 +228,7 @@ MCP 서버를 시작하고 서버 신뢰 확인과 브라우저 OAuth 인증을 
 Streamable HTTP와 OAuth를 지원하는 클라이언트에 전체 MCP URL을 등록한다. [인증 흐름](auth.md#mcp-로그인-흐름)에 따른 발견·PKCE 브라우저 로그인·엔진 토큰 발급을 마친 뒤 `initialize`와 `tools/list`로 시작한다. 요청 헤더, 서버의 stateless 동작과 명세 버전 차이는 [MCP 전송 계약](mcp.md#제공-범위와-전송)을 따른다. 헤더를 임의로 고정하지 않고 협상한 프로토콜 버전에 맞춰 클라이언트 SDK가 구성하게 한다.
 
 ### 설치부터 실제 사용 확인까지
-1. Skill을 지원하는 클라이언트는 [저장소 전용 설치](#저장소만으로-설치와-갱신)나 [기본 배포 경로](#클라이언트-기본-배포-경로) 중 하나를 선택한다. 셸·CLI 설치는 같은 범위로 `status`와 `update`를 사용한다. Hermes 프로젝트 설치의 Git 루트와 별도 신뢰 승인은 [설치 위치](#기존-cli와-설치-위치)를 따른다.
+1. Skill을 지원하는 클라이언트는 [엔진 한 명령 설치](#엔진에서-한-명령으로-설치와-갱신), [저장소 전용 설치](#저장소만으로-설치와-갱신), [기본 배포 경로](#클라이언트-기본-배포-경로) 중 하나를 선택한다. 셸·CLI 설치는 같은 범위로 `status`와 `update`를 사용한다. Hermes 프로젝트 설치의 Git 루트와 별도 신뢰 승인은 [설치 위치](#기존-cli와-설치-위치)를 따른다.
 2. [클라이언트별 MCP 연결](#별도-mcp-연결과-oauth)을 등록하고 브라우저 OAuth 로그인을 별도로 완료한다. 원격 호스트에서 실행하는 클라이언트는 각 공식 문서의 콜백 안내를 따른다.
 3. 새 클라이언트 세션에서 지식 질문으로 `search`와 `read_note`를 실행하고 답변에 실제 노트 경로가 인용되는지 확인한다. Skill이나 서버 목록에 이름이 보이는 것만으로 실제 도구 실행 성공을 판단하지 않는다.
 4. 쓰기 완료를 검증할 때는 [비동기 쓰기 확인](mcp.md#쓰기-입력)에 따라 반환된 `jobId`로 `get_write_status`의 `succeeded`를 확인한다. 설치·로그인·작업 접수는 각각 저장 완료와 구분한다.

@@ -4,6 +4,9 @@ set -eu
 LC_ALL=C
 export LC_ALL
 
+# The public endpoint replaces this assignment with PUBLIC_URL, shell-quoted.
+engine_url=''
+
 fail() { printf '%s\n' "$*" >&2; exit 1; }
 usage() { fail 'Usage: sh skills/install.sh <install|update|status> <claude-code|codex|hermes> [--project dir] [--force]'; }
 [ "$#" -ge 2 ] || usage
@@ -238,11 +241,14 @@ parse_json() {
     if (kind[schema] != "number" || data[schema] + 0 != 1 || kind[client] != "string" || data[client] != ENVIRON["LLMWIKI_CLIENT"] || kind[files] != "object") bad();
     for (i = 1; i <= counts[files]; i++) {
       name = keys[files, i]; child = members[files, name];
+      if (ENVIRON["LLMWIKI_JSON_MODE"] == "remote" && name != "SKILL.md" && substr(name, 1, 7) != "client/") bad();
       if (!safe_name(name) || kind[child] != "string" || length(data[child]) != 64 || data[child] ~ /[^a-f0-9]/) bad();
     }
-    print "installed_version_json=" shell_quote(encoded[version]);
+    if (ENVIRON["LLMWIKI_JSON_MODE"] == "remote") print "bundle_version_json=" shell_quote(encoded[version]);
+    else print "installed_version_json=" shell_quote(encoded[version]);
     for (i = 1; i <= counts[files]; i++) {
-      name = keys[files, i]; print "add_old " shell_quote(name) " " shell_quote(data[members[files, name]]);
+      name = keys[files, i];
+      print (ENVIRON["LLMWIKI_JSON_MODE"] == "remote" ? "add_remote " : "add_old ") shell_quote(name) " " shell_quote(data[members[files, name]]);
     }
   }' "$2"
 }
@@ -298,12 +304,38 @@ load_files() (
     else fail "Skill assets must be regular files: $source_path"; fi
   done
 )
-assignments=$(parse_json version "$assets/version.json") || fail 'Invalid skill bundle version.json.'
-eval "$assignments"
-load_files "$assets/llmwiki" ''
+download() {
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$1" -o "$2" || fail "Cannot download skill asset: $1"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -O "$2" "$1" || fail "Cannot download skill asset: $1"
+  else
+    fail 'Remote installation requires curl or wget.'
+  fi
+}
+add_remote() {
+  remote_name=$1
+  remote_hash=$2
+  download "$engine_url/skills/files/$remote_hash" "$temporary/download"
+  hash_file "$temporary/download"
+  [ "$file_hash" = "$remote_hash" ] || fail "SHA-256 mismatch for skill asset: $remote_name"
+  add_bundle "$remote_name" "$temporary/download"
+}
+if [ -f "$0" ] && [ -f "$assets/llmwiki/SKILL.md" ]; then
+  assignments=$(parse_json version "$assets/version.json") || fail 'Invalid skill bundle version.json.'
+  eval "$assignments"
+  load_files "$assets/llmwiki" ''
+  load_files "$assets/$client" client
+else
+  engine_url=${LLMWIKI_URL:-$engine_url}
+  while [ "${engine_url%/}" != "$engine_url" ]; do engine_url=${engine_url%/}; done
+  case $engine_url in http://?*|https://?*) ;; *) fail 'Remote installation requires an engine URL; set LLMWIKI_URL.' ;; esac
+  download "$engine_url/skills/manifest/$client" "$temporary/manifest.json"
+  assignments=$(parse_json remote "$temporary/manifest.json") || fail 'Invalid remote skill manifest.'
+  eval "$assignments"
+fi
 find_record "$temporary/bundle" SKILL.md
 [ "$found_index" -ne 0 ] || fail 'Canonical skill asset SKILL.md is missing'
-load_files "$assets/$client" client
 bundle_count=$(cat "$temporary/bundle/count")
 
 safe_path "$directory"

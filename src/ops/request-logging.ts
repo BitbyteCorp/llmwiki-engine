@@ -16,7 +16,7 @@ export function requestLogging(log: Logger, metrics: MetricsService, sessions: S
     response.once('finish', () => {
       const registeredRoute: unknown = request.route?.path;
       const route = typeof registeredRoute === 'string' ? registeredRoute
-        : /^\/(api|auth|oauth|mcp|\.well-known|healthz|readyz|metrics)(\/|$)/.test(request.path) ? 'unmatched_backend'
+        : /^\/(api|auth|oauth|mcp|skills|\.well-known|healthz|readyz|metrics)(\/|$)/.test(request.path) ? 'unmatched_backend'
         : request.path.startsWith('/_next/') ? 'next_asset' : 'next_page';
       const method = /^(GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS|CONNECT|TRACE)$/.test(request.method) ? request.method : 'OTHER';
       const ms = performance.now() - started;

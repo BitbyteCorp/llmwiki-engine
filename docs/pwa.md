@@ -45,10 +45,10 @@ navigation preload를 쓰지 않는 이유는 백엔드 경로의 중복 요청 
 서비스 워커는 같은 origin의 `GET` 내비게이션 요청만 가로챈다. API 조회 같은 비내비게이션 요청, 다른 origin의 요청, `POST` 등은 그대로 네트워크로 간다. 내비게이션도 다음 백엔드 경로와 하위 경로는 제외한다.
 
 ```text
-/api, /auth, /oauth, /mcp, /.well-known, /healthz, /readyz, /metrics
+/api, /auth, /oauth, /mcp, /skills, /.well-known, /healthz, /readyz, /metrics
 ```
 
-제외 판정은 `^/(api|auth|oauth|mcp|\.well-known|healthz|readyz|metrics)(/|$)` 정규식으로 수행한다. 경로 경계를 검사하므로 `/api`와 `/api/me`는 제외하지만 `/api-example`까지 제외하지 않는다. 이 정규식은 [Nest와 Next의 라우팅 경계](architecture.md#nestjs와-nextjs의-mvc-경계)를 정하는 `src/main.ts`의 정규식과 같아야 한다. 백엔드 경로를 추가하거나 변경하면 `src/main.ts`와 `web/public/sw.js`를 함께 고친다. 한쪽만 바꾸면 인증이나 백엔드 내비게이션에 웹 오프라인 안내가 대신 나타날 수 있다.
+제외 판정은 `^/(api|auth|oauth|mcp|skills|\.well-known|healthz|readyz|metrics)(/|$)` 정규식으로 수행한다. 경로 경계를 검사하므로 `/api`와 `/api/me`는 제외하지만 `/api-example`까지 제외하지 않는다. 이 정규식은 [Nest와 Next의 라우팅 경계](architecture.md#nestjs와-nextjs의-mvc-경계)를 정하는 `src/main.ts`의 정규식과 같아야 한다. 백엔드 경로를 추가하거나 변경하면 `src/main.ts`와 `web/public/sw.js`를 함께 고친다. 한쪽만 바꾸면 인증이나 백엔드 내비게이션에 웹 오프라인 안내가 대신 나타날 수 있다. 공개 Skill 다운로드도 오프라인 안내로 대체하거나 서비스 워커 캐시에 보관하지 않는다.
 
 로그인은 Nest가 처리하는 `/auth` 경로로 이동한다. 서비스 워커는 로그인과 OAuth 내비게이션을 가로채거나 캐시하지 않으므로 오프라인 로그인을 제공하지 않는다. 웹의 로그인 화면과 설정 흐름은 [웹 문서](web.md#로그인과-관리-화면)에 기록한다.
 

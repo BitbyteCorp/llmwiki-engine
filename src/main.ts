@@ -58,7 +58,7 @@ async function main(): Promise<void> {
     app.use(cookieParser(config.sessionSecret));
     configureApp(app, config);
     app.use((req: Request, res: Response, nextRoute: NextFunction) => {
-      if (/^\/(api|auth|oauth|mcp|\.well-known|healthz|readyz|metrics)(\/|$)/.test(req.path)) {
+      if (/^\/(api|auth|oauth|mcp|skills|\.well-known|healthz|readyz|metrics)(\/|$)/.test(req.path)) {
         nextRoute();
         return;
       }
