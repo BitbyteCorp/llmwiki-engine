@@ -512,6 +512,24 @@ describe('MCP OAuth authorization server', () => {
     expect(await response.json()).toMatchObject({ error: 'invalid_request' });
   });
 
+  it('accepts any loopback port for a registered loopback redirect but still matches host, path and query exactly', async () => {
+    const fixture = await setup();
+    const registration = await fetch(`${fixture.url}/oauth/register`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...clientMetadata, redirect_uris: ['http://127.0.0.1/callback/abc', 'https://client.example/cb'] }) });
+    const clientId = (await registration.json()).client_id as string;
+    for (const redirect of ['http://127.0.0.1:55224/callback/abc', 'http://127.0.0.1/callback/abc']) {
+      const accepted = await fetch(fixture.authorizationUrl(clientId, { redirect_uri: redirect }), { redirect: 'manual' });
+      expect(accepted.status).toBe(302);
+      expect(new URL(accepted.headers.get('location')!, fixture.url).pathname).toBe('/login');
+    }
+    for (const redirect of ['http://localhost:55224/callback/abc', 'http://127.0.0.1:55224/callback/other',
+      'http://127.0.0.1:55224/callback/abc?x=1', 'https://127.0.0.1:55224/callback/abc', 'https://client.example:8443/cb']) {
+      const rejected = await fetch(fixture.authorizationUrl(clientId, { redirect_uri: redirect }), { redirect: 'manual' });
+      expect(rejected.status).toBe(400);
+      expect(rejected.headers.get('location')).toBeNull();
+    }
+  });
+
   it.each([
     ['missing resource', { resource: null }, 'invalid_request'],
     ['foreign resource', { resource: 'https://another.example.com/mcp' }, 'invalid_target'],

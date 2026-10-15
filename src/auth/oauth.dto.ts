@@ -8,13 +8,33 @@ export function field(source: unknown, key: string, optional = false): string {
   return value;
 }
 
+const loopbackHosts = ['localhost', '127.0.0.1', '[::1]'];
+
 function validRedirect(value: string): boolean {
   try {
     const u = new URL(value);
     return !u.username && !u.password && !u.hash && (u.protocol === 'https:' ||
-      (u.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname)));
+      (u.protocol === 'http:' && loopbackHosts.includes(u.hostname)));
   } catch { return false; }
 }
+
+function loopbackWithoutPort(value: string): string | undefined {
+  try {
+    const u = new URL(value);
+    if (u.protocol !== 'http:' || !loopbackHosts.includes(u.hostname)) return undefined;
+    u.port = '';
+    return u.href;
+  } catch { return undefined; }
+}
+
+// RFC 8252 §7.3: native clients listen on an ephemeral loopback port chosen per request,
+// so loopback HTTP redirects match on everything except the port. Other redirects match exactly.
+export function redirectRegistered(registered: readonly string[], requested: string): boolean {
+  if (registered.includes(requested)) return true;
+  const key = loopbackWithoutPort(requested);
+  return key !== undefined && registered.some((uri) => loopbackWithoutPort(uri) === key);
+}
+
 export function metadata(input: unknown, clientId: string): ClientMetadata {
   if (!input || typeof input !== 'object') throw new OAuthFailure('invalid_client_metadata', 'Client metadata must be an object');
   const data = input as Record<string, unknown>;

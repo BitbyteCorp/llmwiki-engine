@@ -14,7 +14,7 @@ import { LoginRequestsService } from './login-requests.service.js';
 import type { AuthFlow } from './google-oidc.types.js';
 import { UsersService } from './users.service.js';
 import { OAuthRepository } from './oauth.repository.js';
-import { field, metadata } from './oauth.dto.js';
+import { field, metadata, redirectRegistered } from './oauth.dto.js';
 import { OAuthFailure, type ClientMetadata } from './oauth.types.js';
 
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -156,7 +156,7 @@ export class OAuthService {
     const id = field(req.query, 'client_id');
     const client = await this.getClient(id);
     const redirect = field(req.query, 'redirect_uri');
-    if (!client.redirect_uris.includes(redirect)) throw new OAuthFailure('invalid_request', 'redirect_uri is not registered');
+    if (!redirectRegistered(client.redirect_uris, redirect)) throw new OAuthFailure('invalid_request', 'redirect_uri is not registered');
     try {
       if (field(req.query, 'response_type') !== 'code') throw new OAuthFailure('unsupported_response_type', 'Use code');
       if (field(req.query, 'code_challenge_method') !== 'S256') throw new OAuthFailure('invalid_request', 'PKCE S256 is required');

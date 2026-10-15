@@ -109,6 +109,7 @@ Google 로그인은 인가 코드, PKCE S256, 임의의 `state`와 `nonce`를 �
 - Protected Resource Metadata는 `/.well-known/oauth-protected-resource`와 `/.well-known/oauth-protected-resource/mcp`에서 제공한다. 리소스 식별자는 `PUBLIC_URL`의 `/mcp`다.
 - Authorization Server Metadata는 `/.well-known/oauth-authorization-server`에서 제공한다.
 - `/oauth/authorize`는 등록된 `redirect_uri`, `response_type=code`, `code_challenge_method=S256`, PKCE challenge, `resource`를 검사한다. 성공한 로그인은 5분 유효한 일회용 엔진 인가 코드를 클라이언트에 반환한다. 검증된 리디렉션 주소에는 인가 오류도 `error`와 원래 `state`로 반환한다. 알 수 없는 클라이언트나 미등록 리디렉션 주소에는 이동하지 않고 400 오류를 반환한다.
+- 리디렉션 주소는 정확히 일치해야 하지만, 루프백 HTTP 주소(`127.0.0.1`·`[::1]`·`localhost`)만 포트를 무시하고 비교한다(RFC 8252 §7.3). Codex 같은 네이티브 클라이언트는 CIMD 문서에 `http://127.0.0.1/callback/<id>`처럼 포트 없는 주소를 등록하고 요청마다 임의 포트(`http://127.0.0.1:55224/callback/<id>`)를 쓰기 때문이다. 호스트·경로·쿼리는 그대로 비교하므로 `127.0.0.1`로 등록한 주소에 `localhost`로 요청하면 거부한다. 토큰 교환의 `redirect_uri`는 인가 요청에 쓴 포트 포함 주소와 정확히 같아야 한다.
 - `/oauth/register`는 DCR을 제공한다. 공개 클라이언트(`token_endpoint_auth_method=none`)만 지원하며 리디렉션은 HTTPS 또는 로컬 루프백 HTTP여야 한다.
 - CIMD는 HTTPS URL 형태의 `client_id` 문서를 가져와 URL과 문서의 `client_id` 및 리디렉션 목록을 확인한다. 문서는 1시간 캐시하고, 64 KiB 크기와 5초 요청 제한을 적용하며 리디렉션 응답과 사설 네트워크 주소를 거부한다. 테스트 환경에서만 HTTP 문서를 허용한다.
 - `/oauth/token`은 PKCE를 검증해 1시간 액세스 토큰과 30일 리프레시 토큰을 발급한다. 리프레시 때 새 토큰을 발급하고 이전 리프레시 토큰을 폐기한다. `/oauth/revoke`로 액세스 토큰을 폐기할 수 있으며, 리프레시 토큰을 폐기하면 같은 발급 계열의 액세스·리프레시 토큰도 폐기한다. DB에는 코드·토큰의 SHA-256 해시만 저장한다.
