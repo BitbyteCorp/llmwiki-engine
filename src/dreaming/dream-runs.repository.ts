@@ -92,6 +92,13 @@ export class DreamRunsRepository {
     return row?.to_sha;
   }
 
+  lastSucceededStartedAt(): string | undefined {
+    const row = this.db.prepare(`SELECT started_at FROM dream_runs
+      WHERE status = 'succeeded'
+      ORDER BY finished_at DESC, rowid DESC LIMIT 1`).get() as { started_at: string } | undefined;
+    return row?.started_at;
+  }
+
   lastSucceededSweeps(): Map<string, string> {
     const rows = this.db.prepare(`SELECT focus, MAX(finished_at) AS finished_at FROM dream_runs
       WHERE status = 'succeeded' AND mode = 'sweep' AND focus IS NOT NULL AND finished_at IS NOT NULL

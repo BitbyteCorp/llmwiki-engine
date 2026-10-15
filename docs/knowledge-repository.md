@@ -78,11 +78,11 @@ main과 과거 커밋의 읽기는 작업 디스크 파일을 직접 읽지 않�
 
 - `raw/<sha256>/`는 불변 원문 파일과 추출 마크다운을 담는다. 원문 수집 경로와 해시 규칙은 [수집](ingestion.md)을 따른다.
 - `wiki/`는 도니가 유지하는 노트를 담으며, [노트 메타데이터](note-metadata.md)의 frontmatter와 태그, 위키링크를 사용해 Obsidian 볼트로 열 수 있다. 도메인과 공유 영역의 배치, 전체·도메인 허브의 역할은 [지식 도메인 구조](knowledge-domains.md#노트-배치와-탐색)를 따른다.
-- `journal/YYYY-MM-DD.md`는 꿈꾸기가 날짜별로 쓰는 일기다. LLM Wiki 표준의 `log.md`를 대신하며, 세부 변경 이력은 git 커밋 이력이 담는다.
+- `journal/YYYY-MM-DD.md`는 꿈꾸기가 날짜별로 쓰는 독자용 지식 다이제스트이며 LLM Wiki 표준의 `log.md`를 대신한다. 작성 계약은 [꿈꾸기의 일기](dreaming.md#독자용-일기)를 따르고, 세부 변경 이력은 git 커밋 이력으로 확인한다.
 - `MEMORY.md`는 [메모리 파일의 문맥 제공 규칙](#메모리-파일의-문맥-제공-규칙)을 따르는 파일이다.
 - 지식 저장소 안의 schema는 도니의 [작성 규칙](writing-rules.md)을 담으며, 루트와 도메인 schema의 적용 범위는 [지식 도메인 구조](knowledge-domains.md#도메인-schema)를 따른다. 엔진 저장소의 작업 규칙 파일과 구분한다.
 
-Obsidian 규칙의 LiveSync는 사용하지 않으며, git 동기화로 대체한다. 날짜별 정리 내용은 `journal/YYYY-MM-DD.md`에서 읽고, 개별 변경은 git 커밋 이력으로 확인한다.
+Obsidian 규칙의 LiveSync는 사용하지 않으며, git 동기화로 대체한다.
 
 ### 메모리 파일의 문맥 제공 규칙
 `MEMORY.md`는 다음 작업에도 필요한 도니 전용 운영 문맥이며, 전체 공용 파일 하나를 유지한다. 쓰기·꿈꾸기·웹 질의응답과 초안 제안에서 사용하는 도니의 기본 문맥에 항상 넣으며, 요청자의 읽기 권한을 우회하지 않는다. 항상 전달하는 문맥이므로 장기 지식 본문이 아니라 짧은 작업 관례·진행 상태·참조 포인터만 담는다.
@@ -109,7 +109,7 @@ Obsidian 규칙의 LiveSync는 사용하지 않으며, git 동기화로 대체�
 | raw sources | `raw/` | 불변 원문 소스를 보관한다. |
 | wiki | `wiki/` | 도니가 유지하는 노트를 보관한다. |
 | index | 루트·도메인의 `index.md` | 전체·최상위 관심 영역별 탐색 진입점을 제공한다. |
-| log | `journal/YYYY-MM-DD.md` | `log.md` 대신 날짜별 일기를 쓰고, 세부 변경 이력은 git 커밋 이력으로 남긴다. |
+| log | `journal/YYYY-MM-DD.md` | `log.md` 대신 [독자용 일기](dreaming.md#독자용-일기)를 쓴다. |
 | schema | 루트·도메인의 `AGENTS.md` | 공통·도메인별 작성 규칙을 담는다. |
 
 ## 관련 문서

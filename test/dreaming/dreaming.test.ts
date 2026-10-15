@@ -18,6 +18,7 @@ import { DreamingService } from '../../src/dreaming/dreaming.service.js';
 import type { StructureSignals } from '../../src/dreaming/structure-signals.js';
 import { EventsService } from '../../src/events/events.service.js';
 import { KnowledgeRepo, type CommitInfo, type FileChange, type Worktree } from '../../src/knowledge/repo.js';
+import { WriteJobsRepository } from '../../src/jobs/write-jobs.repository.js';
 import { commitTrailers, type CommitMetadata } from '../../src/knowledge/commit-trailers.js';
 import { AgentService } from '../../src/agent/agent.service.js';
 import type { AgentTool, RunAgentOptions } from '../../src/agent/agent.types.js';
@@ -300,7 +301,7 @@ async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'llmwiki-dreaming-'));
   const db = new Database(':memory:');
   resources.push({ root, db });
-  for (const migration of ['001_core', '002_auth', '005_dreaming', '008_ops', '011_platform', '013_acl', '021_dream_modes', '027_user_passwords']) db.exec(await readFile(new URL(`../../src/db/migrations/${migration}.sql`, import.meta.url), 'utf8'));
+  for (const migration of ['001_core', '002_auth', '003_jobs', '005_dreaming', '007_history', '008_ops', '011_platform', '013_acl', '019_agent_checkpoints', '021_dream_modes', '027_user_passwords']) db.exec(await readFile(new URL(`../../src/db/migrations/${migration}.sql`, import.meta.url), 'utf8'));
   db.exec(`CREATE TABLE messages (
     id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('user', 'assistant')), content TEXT NOT NULL,
@@ -352,6 +353,7 @@ async function fixture() {
       { provide: UsersService, useValue: new UsersService(new UsersRepository(db)) },
       AclService,
       DreamRunsRepository,
+      WriteJobsRepository,
       EventsService,
       DreamingService,
       { provide: 'otherDreaming', useClass: DreamingService },

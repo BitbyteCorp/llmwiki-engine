@@ -18,6 +18,8 @@ import { newId, toStorageId } from '../common/ids.js';
 import { loadConfig } from '../config.js';
 import { EventsService } from '../events/events.service.js';
 import type { WikiEvent } from '../events/events.types.js';
+import type { JobSource, WriteJob } from '../jobs/write-job.types.js';
+import { WriteJobsRepository } from '../jobs/write-jobs.repository.js';
 import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
 import { WikiCatalog } from '../knowledge/wiki-catalog.js';
 import { AgentService } from '../agent/agent.service.js';
@@ -45,7 +47,7 @@ afterEach(async () => {
 async function database() {
   const db = new Database(':memory:');
   resources.push(() => { db.close(); });
-  for (const migration of ['001_core', '002_auth', '005_dreaming', '008_ops', '011_platform', '013_acl', '021_dream_modes', '027_user_passwords']) db.exec(await readFile(new URL(`../db/migrations/${migration}.sql`, import.meta.url), 'utf8'));
+  for (const migration of ['001_core', '002_auth', '003_jobs', '005_dreaming', '007_history', '008_ops', '011_platform', '013_acl', '016_agent_job_kind', '017_write_job_dedupe', '019_agent_checkpoints', '021_dream_modes', '022_write_job_required_reads', '027_user_passwords']) db.exec(await readFile(new URL(`../db/migrations/${migration}.sql`, import.meta.url), 'utf8'));
   db.exec('CREATE TABLE messages (id TEXT PRIMARY KEY, conversation_id TEXT, role TEXT, content TEXT, created_at TEXT, learned_at TEXT)');
   return { db, runs: new DreamRunsRepository(db) };
 }
@@ -57,6 +59,24 @@ function runRecord(id: string, startedAt: string): DreamRun {
     mode: null, focus: null, structuralChanges: [],
     error: null, push: { status: 'pending', remote: null, sha: null, at: null, reason: null },
   };
+}
+
+function completedJob(jobs: WriteJobsRepository, finishedAt: string, options: {
+  status?: 'succeeded' | 'failed'; source?: JobSource; summary?: string; error?: string;
+  detail?: Record<string, unknown>; commits?: string[]; conflicts?: string[];
+} = {}): WriteJob {
+  const id = newId();
+  const createdAt = '1970-01-01T00:00:00.000Z';
+  jobs.enqueue(id, 1, 'PRIVATE_WRITE_JOB_INPUT_NEVER_COPY', createdAt, options.source ?? 'web',
+    undefined, 'agent', undefined, undefined, options.detail);
+  jobs.markRunning(id, createdAt);
+  jobs.markMerging(id, options.summary ?? 'Reviewed write result', options.commits ?? []);
+  if (options.conflicts) jobs.recordConflicts(id, options.conflicts);
+  if (options.status === 'failed' || options.error !== undefined) {
+    jobs.markFailed(id, options.error ?? 'Write failed before integration', finishedAt);
+  }
+  if (options.status !== 'failed') jobs.markSucceeded(id, finishedAt);
+  return jobs.get(id)!;
 }
 
 async function fixture(slackWebhookUrl?: string, openaiBaseUrl?: string) {
@@ -94,13 +114,136 @@ async function fixture(slackWebhookUrl?: string, openaiBaseUrl?: string) {
   const audit = new AuditService(db);
   const acl = new AclService(db, new UsersService(new UsersRepository(db)), audit);
   const serviceAgent = openaiBaseUrl ? new AgentService(config, log, repo, search, acl, new WikiCatalog(repo, acl)) : agent;
-  const dreaming = new DreamingService(repo, serviceAgent, indexer, search, config, log, runs, events, acl, audit, catalog, comparison);
-  const other = new DreamingService(repo, serviceAgent, indexer, search, config, log, runs, events, acl, audit, catalog, comparison);
-  return { root, repo, runs, db, dreaming, other, config, runAgent, events, seen, warn, logs };
+  const jobs = new WriteJobsRepository(db);
+  const dreaming = new DreamingService(repo, serviceAgent, indexer, search, config, log, runs, events, acl, audit, catalog, comparison, jobs);
+  const other = new DreamingService(repo, serviceAgent, indexer, search, config, log, runs, events, acl, audit, catalog, comparison, jobs);
+  return { root, repo, runs, jobs, db, dreaming, other, config, acl, runAgent, events, seen, warn, logs };
 }
 
 @Module({})
 class DreamingStartupTestModule {}
+
+it('includes only completed non-dreaming jobs in the last succeeded start to current start window without their inputs', async () => {
+  const f = await fixture();
+  const checkpoint = runRecord(newId(), '2020-01-01T00:00:00.000Z');
+  Object.assign(checkpoint, { status: 'succeeded', toSha: await f.repo.headSha(), finishedAt: '2020-01-02T00:00:00.000Z' });
+  f.runs.create(checkpoint);
+  f.runs.finish(checkpoint);
+  const failedDream = runRecord(newId(), '2020-01-03T00:00:00.000Z');
+  Object.assign(failedDream, { status: 'failed', finishedAt: '2020-01-03T00:01:00.000Z' });
+  f.runs.create(failedDream);
+  f.runs.finish(failedDream);
+  completedJob(f.jobs, '2019-12-31T23:59:59.999Z');
+  completedJob(f.jobs, checkpoint.startedAt);
+  const failed = completedJob(f.jobs, '2020-01-01T00:00:00.001Z', {
+    status: 'failed', source: 'import', summary: 'Only part of the source was integrated', error: 'Source read failed',
+  });
+  // A persisted successful retry can retain an earlier error; it must not enter the prompt.
+  const succeeded = completedJob(f.jobs, '2020-01-01T01:00:00.000Z', { error: 'Stale failure from an earlier attempt' });
+  completedJob(f.jobs, '9999-01-01T00:00:00.000Z');
+  completedJob(f.jobs, '2020-01-01T02:00:00.000Z', { source: 'dreaming' });
+  for (const status of ['queued', 'running', 'merging'] as const) {
+    const id = newId();
+    f.jobs.enqueue(id, 1, 'PRIVATE_UNFINISHED_INPUT', checkpoint.startedAt, 'web');
+    if (status !== 'queued') f.jobs.markRunning(id, checkpoint.startedAt);
+    if (status === 'merging') f.jobs.markMerging(id, 'Still merging', []);
+  }
+  let atStart!: WriteJob;
+  f.events.subscribe((event) => {
+    if (event.type === 'dream.updated' && event.status === 'running') {
+      atStart = completedJob(f.jobs, f.runs.get(event.runId)!.startedAt, { source: 'chat', summary: 'Completed at capture boundary' });
+    }
+  });
+
+  const run = await f.dreaming.runOnce();
+  expect(run).toMatchObject({ status: 'succeeded', mode: 'local' });
+  expect(atStart.finishedAt).toBe(run.startedAt);
+  const input = JSON.parse(f.runAgent.mock.calls[0][0].input as string);
+  expect(input).toMatchObject({ jobOutcomesCount: 3 });
+  expect(input.jobOutcomes).toEqual([
+    { id: failed.id, source: 'import', status: 'failed', finishedAt: failed.finishedAt,
+      summary: 'Only part of the source was integrated', error: 'Source read failed' },
+    { id: succeeded.id, source: 'web', status: 'succeeded', finishedAt: succeeded.finishedAt,
+      summary: 'Reviewed write result', error: null },
+    { id: atStart.id, source: 'chat', status: 'succeeded', finishedAt: run.startedAt,
+      summary: 'Completed at capture boundary', error: null },
+  ]);
+  expect(JSON.stringify(input.jobOutcomes)).not.toContain('PRIVATE_');
+  expect(JSON.stringify(input.jobOutcomes)).not.toContain('Stale failure');
+  for (const outcome of input.jobOutcomes) expect(outcome).not.toHaveProperty('input');
+  const instructions = f.runAgent.mock.calls[0][0].instructions;
+  expect([...instructions.matchAll(/^- "(## [^"]+)":/gm)].map(match => match[1])).toEqual([
+    '## 새로 알게 된 것', '## 바뀐 사실과 정정', '## 반영되지 못한 자료', '## 지식 쟁점', '## 정리',
+  ]);
+});
+
+it('excludes and does not count outcomes whose event, conflict, or commit paths differ from the journal ACL rule set', async () => {
+  const f = await fixture();
+  const actor = { id: 1, role: 'admin' as const };
+  f.acl.create({ prefix: '/', subjectType: 'everyone', subject: '', access: 'read' }, actor);
+  f.acl.create({ prefix: 'raw/private/', subjectType: 'everyone', subject: '', access: 'none' }, actor);
+  // Equal effective access is insufficient: this extra rule still changes the full rule set.
+  f.acl.create({ prefix: 'raw/extra-rule/', subjectType: 'everyone', subject: '', access: 'read' }, actor);
+  const wt = await f.repo.createWorktree('outcome-acl-paths');
+  const author = { name: 'Test', email: 'test@example.test' };
+  await wt.write('raw/public.md', '# Public source\n');
+  const publicSha = (await wt.commit('Add public source', author))!;
+  await wt.write('raw/private/source.md', '# Restricted source\n');
+  await wt.write('raw/public.md', '# Public source updated with restricted source\n');
+  const mixedSha = (await wt.commit('Add mixed visibility sources', author))!;
+  await f.repo.withMergeLock(() => wt.fastForwardMain());
+  await wt.dispose();
+
+  const finishedAt = '2020-01-01T00:00:00.000Z';
+  const singlePath = completedJob(f.jobs, finishedAt, { detail: { sourcePath: 'raw/public.md' } });
+  const multiplePaths = completedJob(f.jobs, '2020-01-01T00:01:00.000Z', {
+    detail: { sourcePaths: ['raw/public.md', 'wiki/public.md'] }, conflicts: ['wiki/public-conflict.md'],
+  });
+  const publicCommit = completedJob(f.jobs, '2020-01-01T00:02:00.000Z', { commits: [publicSha] });
+  const hidden = [
+    completedJob(f.jobs, finishedAt, { detail: { sourcePath: 'raw/private/source.md' } }),
+    completedJob(f.jobs, finishedAt, { detail: { sourcePaths: ['raw/public.md', 'raw/private/source.md'] } }),
+    completedJob(f.jobs, finishedAt, { detail: { sourcePath: 'raw/public.md' }, conflicts: ['raw/private/source.md'] }),
+    completedJob(f.jobs, finishedAt, { detail: { sourcePath: 'raw/public.md' }, commits: [mixedSha] }),
+    completedJob(f.jobs, finishedAt, { detail: { sourcePath: 'raw/extra-rule/source.md' } }),
+    completedJob(f.jobs, finishedAt),
+    completedJob(f.jobs, finishedAt, { commits: ['0000000000000000000000000000000000000000'] }),
+  ];
+  const mergeOnly = completedJob(f.jobs, finishedAt, { detail: { sourcePath: 'raw/public.md' } });
+  f.jobs.recordMerge(mergeOnly.id, [], mixedSha);
+  hidden.push(mergeOnly);
+
+  const run = await f.dreaming.runOnce();
+  expect(run.status).toBe('succeeded');
+  const input = JSON.parse(f.runAgent.mock.calls[0][0].input as string);
+  expect(input.jobOutcomesCount).toBe(3);
+  expect(input.jobOutcomes.map((job: { id: string }) => job.id)).toEqual([singlePath.id, multiplePaths.id, publicCommit.id]);
+  for (const job of hidden) expect(JSON.stringify(input.jobOutcomes)).not.toContain(job.id);
+});
+
+it('counts outcomes before the forty-item cap, keeps old failures before newest successes, and truncates by code point', async () => {
+  const f = await fixture();
+  const summary = `${'🧠'.repeat(799)}🌱summary beyond the limit`;
+  const error = `${'🔥'.repeat(299)}🧯error beyond the limit`;
+  const firstFailed = completedJob(f.jobs, '1971-01-01T00:00:00.000Z', { status: 'failed', summary, error });
+  const secondFailed = completedJob(f.jobs, '1972-01-01T00:00:00.000Z', { status: 'failed' });
+  const successes = Array.from({ length: 45 }, (_, index) => completedJob(f.jobs,
+    `2020-01-01T00:${String(index).padStart(2, '0')}:00.000Z`, { summary }));
+
+  const run = await f.dreaming.runOnce();
+  expect(run).toMatchObject({ status: 'succeeded', mode: 'local' });
+  const input = JSON.parse(f.runAgent.mock.calls[0][0].input as string);
+  expect(input.jobOutcomesCount).toBe(47);
+  expect(input.jobOutcomes).toHaveLength(40);
+  expect(input.jobOutcomes.map((job: { id: string }) => job.id)).toEqual([
+    firstFailed.id, secondFailed.id, ...successes.slice(7).map(job => job.id),
+  ]);
+  expect(input.jobOutcomes[0]).toMatchObject({ summary: `${'🧠'.repeat(799)}🌱`, error: `${'🔥'.repeat(299)}🧯` });
+  expect(input.jobOutcomes[39]).toMatchObject({ summary: `${'🧠'.repeat(799)}🌱`, error: null });
+  expect(Array.from(input.jobOutcomes[0].summary)).toHaveLength(800);
+  expect(Array.from(input.jobOutcomes[0].error)).toHaveLength(300);
+  for (const outcome of input.jobOutcomes) expect(outcome).not.toHaveProperty('input');
+});
 
 it('recovers orphan runs at explicit HTTP startup even with autostart disabled and preserves backup history', async () => {
   const f = await fixture();
@@ -441,6 +584,7 @@ it('keeps local success but persists backup failure and sends a private success 
 it('keeps the checkpoint on a backup-only run despite real Git push failure', async () => {
   const f = await fixture();
   f.db.prepare('DELETE FROM messages').run();
+  completedJob(f.jobs, '2020-01-01T00:00:00.000Z', { status: 'failed', source: 'import' });
   await git('git', ['remote', 'add', 'origin', join(f.root, 'missing-backup.git')], { cwd: join(f.root, 'knowledge') });
   const sha = await f.repo.headSha();
   const run = await f.dreaming.runOnce();
@@ -597,7 +741,7 @@ it.each([false, true])('validates backlinks before merging a moved note (fixed: 
       path: 'wiki/topic/source.md', content: wikiNote('[[wiki/topic/new]]\n'),
     });
     await options.tools.find((tool) => tool.name === 'write_file')!.run({
-      path: input.journalPath, content: '# 일기\n\n## 구조 정리\nwiki/topic/old.md → wiki/topic/new.md: 탐색 개선이다.\n',
+      path: input.journalPath, content: '# 일기\n\n## 정리\nwiki/topic/old.md → wiki/topic/new.md: 탐색 개선이다.\n',
     });
     return { text: 'Reorganized', finalText: 'Reorganized', toolCalls: fixLinks ? 3 : 2 };
   });

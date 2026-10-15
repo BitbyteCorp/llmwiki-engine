@@ -200,6 +200,7 @@ describe('web REST API', () => {
         { provide: WriteJobsRepository, useValue: {
           get: (id: string) => jobRows.get(id) ?? null,
           events: () => [],
+          sourcePaths: () => [],
           list: (opts?: { userId?: number; limit?: number; before?: string }) => [...jobRows.values()]
             .filter((job) => opts?.userId === undefined || job.userId === opts.userId)
             .filter((job) => !opts?.before || job.createdAt < opts.before)

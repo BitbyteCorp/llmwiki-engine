@@ -6,6 +6,18 @@ import type { JobEvent, JobKind, JobPhase, JobSource, WriteJob } from './write-j
 import { projectSubagent, type ProjectedSubagent } from './write-job.projection.js';
 import { AgentCheckpointsRepository } from '../agent/checkpoints.repository.js';
 
+export interface FinishedWriteJob {
+  id: string;
+  source: JobSource;
+  status: 'succeeded' | 'failed';
+  finishedAt: string;
+  summary: string | null;
+  error: string | null;
+  commits: string[];
+  conflicts: string[];
+  mergeSha: string | null;
+}
+
 interface JobRow {
   id: string; user_id: number; kind: JobKind; source: JobSource; client: string | null; input: string; conflicts: string;
   status: WriteJob['status']; summary: string | null; commits: string;
@@ -65,6 +77,15 @@ export class WriteJobsRepository {
     return rows.map((row) => ({ ...row, detail: row.detail === null ? null : JSON.parse(row.detail) as Record<string, unknown> }));
   }
 
+  sourcePaths(id: string): string[] {
+    const paths = new Set<string>();
+    for (const event of this.events(id)) {
+      if (typeof event.detail?.sourcePath === 'string') paths.add(event.detail.sourcePath);
+      if (Array.isArray(event.detail?.sourcePaths)) for (const path of event.detail.sourcePaths) if (typeof path === 'string') paths.add(path);
+    }
+    return [...paths];
+  }
+
   recordConflicts(id: string, conflicts: string[]): void {
     this.db.prepare('UPDATE write_jobs SET conflicts = ? WHERE id = ?').run(JSON.stringify(conflicts), toStorageId(id));
   }
@@ -103,6 +124,24 @@ export class WriteJobsRepository {
       ORDER BY created_at DESC, id DESC LIMIT ?
     `).all(...params) as JobRow[];
     return rows.map(toJob);
+  }
+
+  listFinishedBetween(afterExclusive: string | undefined, throughInclusive: string): FinishedWriteJob[] {
+    const rows = this.db.prepare(`
+      SELECT id, source, status, finished_at, summary, error, commits, conflicts, merge_sha
+      FROM write_jobs
+      WHERE source <> 'dreaming' AND status IN ('succeeded', 'failed')
+        AND finished_at <= ? ${afterExclusive === undefined ? '' : 'AND finished_at > ?'}
+      ORDER BY finished_at DESC, id DESC
+    `).all(...(afterExclusive === undefined ? [throughInclusive] : [throughInclusive, afterExclusive])) as Array<
+      Pick<JobRow, 'id' | 'source' | 'summary' | 'error' | 'commits' | 'conflicts' | 'merge_sha'>
+      & { status: FinishedWriteJob['status']; finished_at: string }
+    >;
+    return rows.map((row) => ({
+      id: fromStorageId(row.id), source: row.source, status: row.status, finishedAt: row.finished_at,
+      summary: row.summary, error: row.error, commits: JSON.parse(row.commits) as string[],
+      conflicts: JSON.parse(row.conflicts) as string[], mergeSha: row.merge_sha,
+    }));
   }
 
   failInterrupted(error: string, finishedAt: string): WriteJob[] {

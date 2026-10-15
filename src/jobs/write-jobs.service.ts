@@ -77,7 +77,7 @@ export class WriteJobsService implements OnApplicationShutdown {
     if (requester.role !== 'admin' && this.acl.list().length && !this.repository.events(job.id).some(event => event.phase === 'queued' && event.detail?.sourceProvenanceComplete === true)) {
       throw new ApiError(404, 'not_found', 'Legacy job source permissions cannot be verified; submit a new request');
     }
-    return this.enqueue({ userId: job.userId, input: job.input, source: job.source, sourcePaths: this.sourcePaths(job.id), requiredReads: this.repository.getRequiredReads(job.id), ...(job.client === null ? {} : { client: job.client }) }, job.id);
+    return this.enqueue({ userId: job.userId, input: job.input, source: job.source, sourcePaths: this.repository.sourcePaths(job.id), requiredReads: this.repository.getRequiredReads(job.id), ...(job.client === null ? {} : { client: job.client }) }, job.id);
   }
 
   cancel(id: string): WriteJob {
@@ -160,7 +160,7 @@ export class WriteJobsService implements OnApplicationShutdown {
   async projectVisibility(user: AclUser, job: WriteJob): Promise<{ job: WriteJob; sourcePaths: string[]; restricted: boolean }> {
     const policy = this.acl.policyKey(user);
     const paths = new Set(job.conflicts);
-    for (const path of this.sourcePaths(job.id)) paths.add(path);
+    for (const path of this.repository.sourcePaths(job.id)) paths.add(path);
     // Quality findings can reference an unchanged domain hub; project them like changed paths.
     for (const event of this.repository.events(job.id)) {
       if (!Array.isArray(event.detail?.navigationIssues)) continue;
@@ -190,16 +190,6 @@ export class WriteJobsService implements OnApplicationShutdown {
       : job;
     return { job: visible, sourcePaths: [...paths], restricted: hidden };
   }
-
-  private sourcePaths(id: string): string[] {
-    const paths = new Set<string>();
-    for (const event of this.repository.events(id)) {
-      if (typeof event.detail?.sourcePath === 'string') paths.add(event.detail.sourcePath);
-      if (Array.isArray(event.detail?.sourcePaths)) for (const path of event.detail.sourcePaths) if (typeof path === 'string') paths.add(path);
-    }
-    return [...paths];
-  }
-
 
   list(opts: { userId?: number; limit?: number; before?: string } = {}): WriteJob[] {
     return this.repository.list(opts);
@@ -274,7 +264,7 @@ export class WriteJobsService implements OnApplicationShutdown {
   private async assertWritable(wt: Worktree, userId: number, jobId: string, base = wt.baseSha): Promise<void> {
     const user = this.users.getById(userId);
     if (!user) throw new Error('Requesting user no longer exists');
-    for (const path of this.sourcePaths(jobId)) {
+    for (const path of this.repository.sourcePaths(jobId)) {
       if (!this.acl.canRead(user, path)) throw new Error('Source access denied by current folder permissions; main was not changed');
     }
     const files = await this.repo.diffNames(base, wt.branch);
@@ -329,7 +319,7 @@ export class WriteJobsService implements OnApplicationShutdown {
       if (user.role !== 'admin' && this.acl.list().length && !this.repository.events(job.id).some(event => event.phase === 'queued' && event.detail?.sourceProvenanceComplete === true)) {
         throw new Error('Legacy job source permissions cannot be verified; submit a new request');
       }
-      for (const path of this.sourcePaths(job.id)) this.acl.assertRead(user, path);
+      for (const path of this.repository.sourcePaths(job.id)) this.acl.assertRead(user, path);
       const author = { name: user.name || user.email, email: user.email };
       const retryOf = this.retryOf(job.id);
       wt = await repo.createWorktree(job.id, retryOf ? await this.retryBase(retryOf) : undefined);
