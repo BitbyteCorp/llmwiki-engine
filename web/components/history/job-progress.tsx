@@ -33,18 +33,35 @@ export function JobProgress({ job, events }: { job: WriteJob; events: JobEvent[]
     <details className="border-y" open={job.conflicts.length > 0 || job.status === 'failed'}>
       <summary className="cursor-pointer border-b px-2 py-1.5 text-label-13 font-semibold focus-visible:outline-2 focus-visible:outline-ring">단계 이벤트 · <span className="tabular-nums">{events.length}</span>건</summary>
       {events.length === 0 ? <p className="px-2 py-1.5 text-label-13 text-muted-foreground">이 작업에는 저장된 단계 이벤트가 없습니다.</p> : <ol className="divide-y">
-        {events.map((event, index) => <li key={`${event.at}-${index}`} className="space-y-2 px-2 py-1.5">
-          <div className="flex flex-wrap items-center justify-between gap-2 text-label-13"><span className="font-medium">{jobPhaseLabels[event.phase]}</span><time className="shrink-0 whitespace-nowrap text-right text-xs tabular-nums text-muted-foreground" dateTime={event.at} title={formatDate(event.at)}>{formatDate(event.at)}</time></div>
+        {events.map((event, index) => { const paths = eventPaths(event.detail); return <li key={`${event.at}-${index}`} className="space-y-2 px-2 py-1.5">
+          <div className="flex items-start justify-between gap-2 text-label-13"><span className="min-w-0 font-medium">{jobPhaseLabels[event.phase]}{paths.length === 1 && <>: <PathRef path={paths[0]} /></>}{paths.length > 1 && <span className="font-normal text-muted-foreground">: 파일 {paths.length}개</span>}</span><time className="shrink-0 whitespace-nowrap text-right text-xs tabular-nums text-muted-foreground" dateTime={event.at} title={formatDate(event.at)}>{formatDate(event.at)}</time></div>
+          {paths.length > 1 && <details className="text-xs text-muted-foreground"><summary className="cursor-pointer focus-visible:outline-2 focus-visible:outline-ring">목록 보기</summary><ul className="mt-1 space-y-1" aria-label="참조 경로">{paths.map(path => <li key={path}><PathRef path={path} /></li>)}</ul></details>}
           {event.detail && <EventDetail detail={event.detail} />}
-        </li>)}
+        </li> })}
       </ol>}
     </details>
   </section>
 }
 
+const detailKeys: Record<string, true> = { files: true, retryOf: true, reason: true, error: true, sourcePath: true, sourcePaths: true }
+
+function eventPaths(detail: Record<string, unknown> | null | undefined) {
+  const paths = new Set<string>()
+  if (typeof detail?.sourcePath === 'string') paths.add(detail.sourcePath)
+  if (Array.isArray(detail?.sourcePaths)) for (const path of detail.sourcePaths) if (typeof path === 'string') paths.add(path)
+  return [...paths]
+}
+
+function PathRef({ path }: { path: string }) {
+  return /\.md$/i.test(path)
+    ? <Link className="break-all font-mono text-xs font-normal underline underline-offset-2" href={noteHref(path)}>{path}</Link>
+    : <span className="break-all font-mono text-xs font-normal">{path}</span>
+}
+
 function EventDetail({ detail }: { detail: Record<string, unknown> }) {
   const files = Array.isArray(detail.files) ? detail.files.filter((path): path is string => typeof path === 'string') : []
-  const rest = Object.fromEntries(Object.entries(detail).filter(([key]) => key !== 'files' && key !== 'retryOf' && key !== 'reason' && key !== 'error'))
+  const rest = Object.fromEntries(Object.entries(detail).filter(([key]) => !detailKeys[key]))
+  if (!files.length && typeof detail.retryOf !== 'string' && typeof detail.reason !== 'string' && typeof detail.error !== 'string' && !Object.keys(rest).length) return null
   return <div className="space-y-2 text-xs text-muted-foreground">
     {files.length > 0 && <ul className="space-y-1" aria-label="충돌 경로">{files.map(path => <li key={path}><Link className="break-all font-mono underline underline-offset-2" href={noteHref(path)}>{path}</Link></li>)}</ul>}
     {typeof detail.retryOf === 'string' && <p>재시도 원본: <Link className="break-all font-mono underline" href={`/jobs/${encodeURIComponent(detail.retryOf)}`}>{detail.retryOf}</Link></p>}
