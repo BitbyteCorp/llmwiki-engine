@@ -15,7 +15,9 @@ self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
     const names = await caches.keys()
     await Promise.all(names.filter((name) => name.startsWith('llmwiki-') && name !== CACHE_NAME).map((name) => caches.delete(name)))
-    if (self.registration.navigationPreload) await self.registration.navigationPreload.enable()
+    // Preload also fires for backend navigations this worker skips, and the browser then refetches them:
+    // one-time endpoints such as /auth/google/callback would run twice. Disable it, including on old installs.
+    if (self.registration.navigationPreload) await self.registration.navigationPreload.disable()
     await self.clients.claim()
   })())
 })
@@ -28,7 +30,7 @@ self.addEventListener('fetch', (event) => {
 
   event.respondWith((async () => {
     try {
-      return (await event.preloadResponse) || (await fetch(request))
+      return await fetch(request)
     } catch {
       const cache = await caches.open(CACHE_NAME)
       return (await cache.match(OFFLINE_URL)) || Response.error()
