@@ -1,4 +1,5 @@
 import { setImmediate } from 'node:timers/promises';
+import { HttpException } from '@nestjs/common';
 import pino from 'pino';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { loadConfig, type Config } from '../config.js';
@@ -95,8 +96,17 @@ describe('note comparison', () => {
     reads.mockClear();
     expect(await comparison.duplicates(20, undefined, { pathPrefixes: [] })).toEqual([]);
     expect(reads).not.toHaveBeenCalled();
-    reads.mockRestore();
 
+    reads.mockClear();
+    expect(await comparison.similar('wiki/a.md')).toHaveLength(5);
+    const rawVector = Buffer.from(new Float32Array([0, 1]).buffer);
+    expect(reads).toHaveBeenCalled();
+    expect(reads.mock.contexts.every((bytes) => bytes.equals(rawVector))).toBe(true);
+    reads.mockClear();
+    expect(await comparison.similar('wiki/a.md')).toHaveLength(5);
+    expect(await comparison.similar('raw/a.md')).toHaveLength(5);
+    expect(reads).not.toHaveBeenCalled();
+    expect(await comparison.duplicates(20, undefined, { pathPrefixes: ['wiki/'] })).toEqual(scoped);
     const unscoped = await comparison.duplicates();
     expect(unscoped.filter(({ left, right }) => left.path.startsWith('wiki/') && right.path.startsWith('wiki/'))).toEqual(scoped);
     expect(unscoped).toContainEqual(expect.objectContaining({
@@ -169,6 +179,228 @@ describe('note comparison', () => {
     const changed = setImmediate().then(() => { user.role = 'editor'; });
     const pending = comparison.duplicates(20, user);
     await expect(pending).rejects.toThrow('Search policy changed; retry the query');
+    await changed;
+  });
+
+  it.each(['similar', 'duplicates'] as const)('shares normalized vectors across repeated comparisons after cold %s', async (first) => {
+    configureVectors();
+    for (const path of ['wiki/a.md', 'wiki/b.md', 'wiki/c.md']) {
+      addChunk(path, { hash: 'same', vector: [1, 0] });
+    }
+    const reads = vi.spyOn(Buffer.prototype, 'readFloatLE');
+    if (first === 'similar') await comparison.similar('wiki/a.md');
+    else await comparison.duplicates();
+    expect(reads).toHaveBeenCalled();
+    reads.mockClear();
+
+    for (let index = 0; index < 3; index++) {
+      expect(await comparison.similar('wiki/a.md')).toEqual([
+        { path: 'wiki/b.md', title: 'b', score: 1 }, { path: 'wiki/c.md', title: 'c', score: 1 },
+      ]);
+      expect((await comparison.duplicates()).map(({ left, right, reason }) => [left.path, right.path, reason])).toEqual([
+        ['wiki/a.md', 'wiki/b.md', 'exact'], ['wiki/a.md', 'wiki/c.md', 'exact'], ['wiki/b.md', 'wiki/c.md', 'exact'],
+      ]);
+    }
+    expect(reads).not.toHaveBeenCalled();
+  });
+
+  it('loads only surviving semantic passage vectors without rebuilding warm means or exposing cached objects', async () => {
+    configureVectors();
+    for (let index = 0; index < 70; index++) {
+      addChunk(`wiki/${String(index).padStart(3, '0')}.md`, {
+        vector: [1, 0], anchor: `section-${index}`, content: `Passage ${index}.`,
+      });
+    }
+    const reads = vi.spyOn(Buffer.prototype, 'readFloatLE');
+    const hits = await comparison.similar('wiki/000.md', 1);
+    const buildReads = reads.mock.calls.length;
+    reads.mockClear();
+    const pairs = await comparison.duplicates(1);
+    const passageReads = reads.mock.calls.length;
+    expect(passageReads).toBeGreaterThan(0);
+    expect(passageReads).toBeLessThan(buildReads);
+    expect(pairs).toEqual([{
+      left: { path: 'wiki/000.md', title: '000' }, right: { path: 'wiki/001.md', title: '001' }, score: 1, reason: 'semantic',
+      passages: [{ left: { anchor: 'section-0', excerpt: 'Passage 0.' }, right: { anchor: 'section-1', excerpt: 'Passage 1.' } }],
+    }]);
+    hits[0]!.title = 'mutated';
+    hits[0]!.score = -1;
+    pairs[0]!.left.path = 'wiki/mutated.md';
+    pairs[0]!.passages[0]!.left.excerpt = 'mutated';
+    reads.mockClear();
+    expect(await comparison.similar('wiki/000.md', 1)).toEqual([{ path: 'wiki/001.md', title: '001', score: 1 }]);
+    expect(reads).not.toHaveBeenCalled();
+    const repeated = await comparison.duplicates(1);
+    expect(repeated[0]!.left.path).toBe('wiki/000.md');
+    expect(repeated[0]!.passages[0]!.left.excerpt).toBe('Passage 0.');
+    expect(reads.mock.calls.length).toBeLessThanOrEqual(passageReads);
+  });
+
+  it('single-flights concurrent similar and duplicate builds', async () => {
+    configureVectors();
+    for (let index = 0; index < 130; index++) {
+      addChunk(`wiki/${String(index).padStart(3, '0')}.md`, { hash: 'same', vector: [1, 0] });
+    }
+    const reads = vi.spyOn(Buffer.prototype, 'readFloatLE');
+    const expected = await comparison.similar('wiki/000.md', 1);
+    const buildReads = reads.mock.calls.length;
+    db.prepare("INSERT INTO index_meta(key,value) VALUES('indexed_sha','next')").run();
+    reads.mockClear();
+
+    const [left, pairs, right] = await Promise.all([
+      comparison.similar('wiki/000.md', 1), comparison.duplicates(1), comparison.similar('wiki/000.md', 1),
+    ]);
+    expect(left).toEqual(expected);
+    expect(right).toEqual(expected);
+    expect(pairs[0]).toMatchObject({ left: { path: 'wiki/000.md' }, right: { path: 'wiki/001.md' }, reason: 'exact' });
+    expect(reads).toHaveBeenCalledTimes(buildReads);
+  });
+
+  it.each(['indexed_sha', 'catalog_revision', 'total_changes'] as const)('invalidates vectors with %s, including rebuilds at the same SHA', async (generation) => {
+    configureVectors();
+    addChunk('wiki/a.md', { vector: [1, 0] });
+    addChunk('wiki/b.md', { vector: [1, 0] });
+    db.prepare("INSERT INTO index_meta(key,value) VALUES('indexed_sha','same-sha')").run();
+    if (generation !== 'total_changes') db.prepare("INSERT INTO index_meta(key,value) VALUES('catalog_revision','1')").run();
+    expect(await comparison.similar('wiki/a.md')).toEqual([{ path: 'wiki/b.md', title: 'b', score: 1 }]);
+    expect((await comparison.duplicates())[0]!.reason).toBe('semantic');
+
+    db.prepare('UPDATE embedding_cache SET embedding = ? WHERE content_hash = ?')
+      .run(Buffer.from(new Float32Array([0, 1]).buffer), 'wiki/b.md:0');
+    db.prepare("UPDATE chunks SET title = 'New title' WHERE path = 'wiki/b.md'").run();
+    if (generation !== 'total_changes') {
+      db.prepare('UPDATE index_meta SET value = ? WHERE key = ?')
+        .run(generation === 'indexed_sha' ? 'new-sha' : '2', generation);
+    }
+    const reads = vi.spyOn(Buffer.prototype, 'readFloatLE');
+    expect(await comparison.similar('wiki/a.md')).toEqual([{ path: 'wiki/b.md', title: 'New title', score: 0 }]);
+    expect(reads).toHaveBeenCalled();
+    reads.mockClear();
+    expect(await comparison.duplicates()).toEqual([]);
+    expect(await comparison.similar('wiki/a.md')).toEqual([{ path: 'wiki/b.md', title: 'New title', score: 0 }]);
+    expect(reads).not.toHaveBeenCalled();
+  });
+
+  it('projects the current ACL over a shared pre-ACL cache without rebuilding for policy writes', async () => {
+    configureVectors();
+    db.prepare("INSERT INTO index_meta(key,value) VALUES('catalog_revision','1')").run();
+    for (const path of ['wiki/source.md', 'wiki/public.md', 'wiki/secret.md']) {
+      addChunk(path, { hash: 'same', vector: [1, 0] });
+    }
+    db.prepare(`INSERT INTO acl_rules(prefix,subject_type,subject,access,created_by,created_at)
+      VALUES('wiki/secret.md','role','viewer','none',1,'fixture')`).run();
+    const viewer: AclUser = { id: 1, role: 'viewer' };
+    const admin: AclUser = { id: 2, role: 'admin' };
+    expect(await comparison.similar('wiki/source.md', 20, viewer)).toEqual([{ path: 'wiki/public.md', title: 'public', score: 1 }]);
+    const reads = vi.spyOn(Buffer.prototype, 'readFloatLE');
+    expect((await comparison.similar('wiki/source.md', 20, admin)).map(({ path }) => path)).toEqual(['wiki/public.md', 'wiki/secret.md']);
+    expect(await comparison.duplicates(20, viewer)).toHaveLength(1);
+    expect(await comparison.duplicates(20, admin)).toHaveLength(3);
+    db.prepare("UPDATE acl_rules SET access = 'read' WHERE prefix = 'wiki/secret.md'").run();
+    expect(await comparison.duplicates(20, viewer)).toHaveLength(3);
+    db.prepare("UPDATE acl_rules SET access = 'none' WHERE prefix = 'wiki/secret.md'").run();
+    expect((await comparison.similar('wiki/source.md', 20, viewer)).map(({ path }) => path)).toEqual(['wiki/public.md']);
+    const denied = await comparison.similar('wiki/secret.md', 20, viewer).catch((error: unknown) => error);
+    expect(denied).toBeInstanceOf(HttpException);
+    expect((denied as HttpException).getStatus()).toBe(404);
+    expect((denied as HttpException).getResponse()).toEqual({ error: { code: 'not_found', message: 'Not found.' } });
+    expect(reads).not.toHaveBeenCalled();
+  });
+
+  it.each(['model', 'dimensions', 'stored_model', 'stored_dimensions', 'mismatch'] as const)('checks %s compatibility even after warming vectors', async (change) => {
+    configureVectors();
+    db.prepare("INSERT INTO index_meta(key,value) VALUES('catalog_revision','1')").run();
+    addChunk('wiki/a.md', { hash: 'same', vector: [1, 0] });
+    addChunk('wiki/b.md', { hash: 'same', vector: [1, 0] });
+    expect(await comparison.similar('wiki/a.md')).toHaveLength(1);
+    if (change === 'model') config.embeddingModel = 'other-model';
+    else if (change === 'dimensions') config.embeddingDimensions = 3;
+    else if (change === 'mismatch') db.prepare("INSERT INTO index_meta(key,value) VALUES('vector_mismatch','1')").run();
+    else db.prepare('UPDATE index_meta SET value = ? WHERE key = ?')
+      .run('different', change === 'stored_model' ? 'embedding_model' : 'embedding_dimensions');
+    expect(await comparison.similar('wiki/a.md')).toEqual([]);
+    expect((await comparison.duplicates())[0]).toMatchObject({ reason: 'exact', score: 1 });
+  });
+
+  it('yields while cold-building rows even when there are too few notes to yield in scoring', async () => {
+    configureVectors();
+    for (let ordinal = 64; ordinal >= 0; ordinal--) {
+      addChunk('wiki/source.md', { ordinal, vector: ordinal === 0 ? [2 ** 60, 0] : ordinal === 1 ? [-(2 ** 60), 0] : ordinal === 64 ? [1, 1] : [0, 1] });
+    }
+    addChunk('wiki/match.md', { vector: [1, 63] });
+    addChunk('wiki/vertical.md', { vector: [0, 1] });
+    let finished = false;
+    const tick = setImmediate().then(() => { expect(finished).toBe(false); });
+    const pending = comparison.similar('wiki/source.md').then((hits) => { finished = true; return hits; });
+    const [hits] = await Promise.all([pending, tick]);
+    expect(hits.map(({ path }) => path)).toEqual(['wiki/match.md', 'wiki/vertical.md']);
+    expect(hits[0]!.score).toBeCloseTo(1, 12);
+    expect(hits[1]!.score).toBeCloseTo(0.9998740474835989, 12);
+  });
+
+  it.each(['indexed_sha', 'catalog_revision', 'total_changes'] as const)('discards an in-flight build when %s changes across a row-batch yield', async (generation) => {
+    configureVectors();
+    db.prepare("INSERT INTO index_meta(key,value) VALUES('indexed_sha','same-sha')").run();
+    if (generation !== 'total_changes') db.prepare("INSERT INTO index_meta(key,value) VALUES('catalog_revision','1')").run();
+    for (let index = 0; index < 130; index++) {
+      addChunk(`wiki/${String(index).padStart(3, '0')}.md`, { vector: [1, 0] });
+    }
+    const changed = setImmediate().then(() => db.transaction(() => {
+      db.prepare("UPDATE embedding_cache SET embedding = ? WHERE content_hash <> 'wiki/000.md:0'")
+        .run(Buffer.from(new Float32Array([0, 1]).buffer));
+      db.prepare("UPDATE chunks SET title = 'Current' WHERE path <> 'wiki/000.md'").run();
+      if (generation !== 'total_changes') {
+        db.prepare('UPDATE index_meta SET value = ? WHERE key = ?').run(generation === 'indexed_sha' ? 'next-sha' : '2', generation);
+      }
+    })());
+    const pending = comparison.similar('wiki/000.md', 1);
+    const [hits] = await Promise.all([pending, changed]);
+    expect(hits).toEqual([{ path: 'wiki/001.md', title: 'Current', score: 0 }]);
+    expect(await comparison.similar('wiki/000.md', 1)).toEqual(hits);
+  });
+
+  it('yields in large warm similar scoring without changing scores or path ordering', async () => {
+    config.embeddingDimensions = 1536;
+    configureVectors();
+    const vector = Array.from({ length: 1536 }, (_, index) => index === 0 ? 1 : 0);
+    for (let index = 0; index < 258; index++) {
+      addChunk(`wiki/${String(index).padStart(3, '0')}.md`, { vector });
+    }
+    await comparison.similar('wiki/000.md');
+    let finished = false;
+    const tick = setImmediate().then(() => { expect(finished).toBe(false); });
+    const pending = comparison.similar('wiki/000.md').then((hits) => { finished = true; return hits; });
+    const [hits] = await Promise.all([pending, tick]);
+    expect(hits).toEqual(Array.from({ length: 20 }, (_, index) => {
+      const name = String(index + 1).padStart(3, '0');
+      return { path: `wiki/${name}.md`, title: name, score: 1 };
+    }));
+  });
+
+  it.each(['similar', 'duplicates'] as const)('rejects %s when ACL changes during a cold cache build', async (operation) => {
+    configureVectors();
+    for (let index = 0; index < 130; index++) {
+      addChunk(`wiki/${String(index).padStart(3, '0')}.md`, { vector: [1, 0] });
+    }
+    const user: AclUser = { id: 1, role: 'viewer' };
+    const changed = setImmediate().then(() => db.prepare('UPDATE acl_policy SET revision = revision + 1 WHERE id = 1').run());
+    const pending = operation === 'similar' ? comparison.similar('wiki/000.md', 20, user) : comparison.duplicates(20, user);
+    await expect(pending).rejects.toThrow('Search policy changed; retry the query');
+    await changed;
+  });
+
+  it.each(['revision', 'role'] as const)('rejects warm similar results when the policy %s changes across a scoring yield', async (change) => {
+    configureVectors();
+    for (let index = 0; index < 258; index++) {
+      addChunk(`wiki/${String(index).padStart(3, '0')}.md`, { vector: [1, 0] });
+    }
+    await comparison.similar('wiki/000.md');
+    const user: AclUser = { id: 1, role: 'viewer' };
+    const changed = setImmediate().then(() => {
+      if (change === 'revision') db.prepare('UPDATE acl_policy SET revision = revision + 1 WHERE id = 1').run();
+      else user.role = 'editor';
+    });
+    await expect(comparison.similar('wiki/000.md', 20, user)).rejects.toThrow('Search policy changed; retry the query');
     await changed;
   });
 

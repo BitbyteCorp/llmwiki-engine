@@ -125,9 +125,10 @@ describe('search workspace HTTP', () => {
     ]);
   });
 
-  it('rejects duplicate results invalidated by a policy change with the public search error', async () => {
-    vi.spyOn(app.get(ComparisonService), 'duplicates').mockRejectedValueOnce(new RangeError('Search policy changed; retry the query'));
-    const response = await request(app.getHttpServer()).get('/api/search/duplicates').set('x-session', 'viewer').expect(400);
+  it.each(['similar', 'duplicates'] as const)('rejects %s results invalidated by a policy change with the public search error', async (operation) => {
+    vi.spyOn(app.get(ComparisonService), operation).mockRejectedValueOnce(new RangeError('Search policy changed; retry the query'));
+    const response = await request(app.getHttpServer()).get(`/api/search/${operation}`)
+      .query(operation === 'similar' ? { path: paths[0] } : {}).set('x-session', 'viewer').expect(400);
     expect(response.body).toMatchObject({ error: { code: 'invalid_search', message: 'Search policy changed; retry the query' } });
     expect(response.body).not.toHaveProperty('passages');
   });

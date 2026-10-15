@@ -32,8 +32,12 @@ export class SearchController {
   }
 
   @Get('similar')
-  similar(@Query(new ZodValidationPipe(searchSimilarQuerySchema)) query: z.infer<typeof searchSimilarQuerySchema>, @CurrentUser() user: User) {
-    return this.comparison.similar(query.path, query.limit, user);
+  async similar(@Query(new ZodValidationPipe(searchSimilarQuerySchema)) query: z.infer<typeof searchSimilarQuerySchema>, @CurrentUser() user: User) {
+    try { return await this.comparison.similar(query.path, query.limit, user); }
+    catch (error) {
+      if (error instanceof RangeError) throw new ApiError(400, 'invalid_search', error.message);
+      throw error;
+    }
   }
 
   @Get('duplicates')

@@ -26,8 +26,24 @@ interface VectorChunk {
 }
 interface VectorNote extends NoteRow {
   mean: Float64Array;
-  chunks: VectorChunk[];
 }
+interface VectorState {
+  key: string;
+  model: string;
+  dimensions: number;
+  compatible: boolean;
+}
+interface VectorSnapshot extends VectorState {
+  notes: Map<string, VectorNote>;
+  // Undefined means full coverage; an empty array means nothing has been loaded.
+  prefixes: readonly string[] | undefined;
+}
+interface VectorRow extends NoteRow {
+  id: number;
+  ordinal: number;
+  embedding: Buffer;
+}
+const VECTOR_BATCH_SIZE = 32;
 interface RankedPair {
   left: NoteRow;
   right: NoteRow;
@@ -66,93 +82,156 @@ function passage(chunk: { anchor: string | null; content: string }): Passage {
 
 @Injectable()
 export class ComparisonService {
+  private snapshot: VectorSnapshot | undefined;
+  private population: Promise<void> | undefined;
+  private readonly readVectorState;
+
   constructor(
     @Inject(CONFIG) private readonly config: Config,
     @Inject(DB) private readonly db: Database.Database,
     @Inject(LOGGER) _log: Logger,
     private readonly acl: AclService,
-  ) {}
+  ) {
+    this.readVectorState = db.prepare(`SELECT
+      (SELECT value FROM index_meta WHERE key = 'indexed_sha') AS sha,
+      COALESCE((SELECT value FROM index_meta WHERE key = 'catalog_revision'),
+        CAST(total_changes() AS TEXT)) AS generation,
+      (SELECT value FROM index_meta WHERE key = 'embedding_model') AS model,
+      (SELECT value FROM index_meta WHERE key = 'embedding_dimensions') AS dimensions,
+      (SELECT value FROM index_meta WHERE key = 'vector_mismatch') AS mismatch,
+      EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'chunk_vectors') AS vectors`);
+  }
 
   /** Omit user only for unrestricted internal system comparisons. */
   async similar(path: string, limit = 20, user?: AclUser): Promise<SimilarNote[]> {
     validateLimit(limit);
     if (user) this.acl.assertRead(user, path);
-    const notes = this.vectorNotes(false, user);
-    const source = notes.get(path);
-    if (!source) return [];
-    const matches: SimilarNote[] = [];
-    for (const note of notes.values()) {
-      if (note.path !== path) matches.push({ path: note.path, title: note.title, score: cosine(source.mean, note.mean) });
+    const policyKey = user ? this.acl.policyKey(user) : undefined;
+    retry: while (true) {
+      const snapshot = await this.vectorSnapshot();
+      this.assertPolicy(user, policyKey);
+      if (!this.isCurrent(snapshot)) continue retry;
+      const source = snapshot.notes.get(path);
+      if (!source) return [];
+      const matches: SimilarNote[] = [];
+      const iterator = snapshot.notes.values();
+      let complete = false;
+      while (!complete) {
+        {
+          // The policy predicate belongs only to this synchronous scoring batch.
+          const readable = user ? this.acl.readPredicate(user) : () => true;
+          for (let count = 0; count < 256; count++) {
+            const next = iterator.next();
+            if (next.done) {
+              complete = true;
+              break;
+            }
+            const note = next.value;
+            if (note.path !== path && readable(note.path)) {
+              matches.push({ path: note.path, title: note.title, score: cosine(source.mean, note.mean) });
+            }
+          }
+        }
+        if (complete) break;
+        await setImmediate();
+        this.assertPolicy(user, policyKey);
+        if (!this.isCurrent(snapshot)) continue retry;
+      }
+      matches.sort((left, right) => right.score - left.score || comparePath(left.path, right.path));
+      this.assertPolicy(user, policyKey);
+      return matches.slice(0, limit);
     }
-    matches.sort((left, right) => right.score - left.score || comparePath(left.path, right.path));
-    return matches.slice(0, limit);
   }
 
   async duplicates(limit = 20, user?: AclUser, options: DuplicateOptions = {}): Promise<DuplicateNotes[]> {
     validateLimit(limit);
     const policyKey = user ? this.acl.policyKey(user) : undefined;
-    const access = this.noteFilter(user, options.pathPrefixes);
-    const notes = this.db.prepare(`SELECT path, MIN(title) AS title, MIN(normalized_hash) AS normalized_hash
-      FROM chunks c WHERE ${access.sql} GROUP BY path ORDER BY path`).all(...access.params) as NoteRow[];
-    const exactGroups = new Map<string, NoteRow[]>();
-    for (const note of notes) {
-      if (!note.normalized_hash) continue;
-      const group = exactGroups.get(note.normalized_hash);
-      if (group) group.push(note);
-      else exactGroups.set(note.normalized_hash, [note]);
-    }
-    // Keep only the requested best pairs; passages are computed only for those survivors.
-    const ranked: RankedPair[] = [];
-    const consider = (left: NoteRow, right: NoteRow, score: number, reason: RankedPair['reason']): void => {
-      const candidate: RankedPair = { left, right, score, reason };
-      if (ranked.length === limit && comparePair(candidate, ranked[ranked.length - 1]!) >= 0) return;
-      let index = 0;
-      while (index < ranked.length && comparePair(ranked[index]!, candidate) <= 0) index++;
-      ranked.splice(index, 0, candidate);
-      if (ranked.length > limit) ranked.pop();
-    };
-    let pairsSinceYield = 0;
-    for (const group of exactGroups.values()) {
-      for (let left = 0; left < group.length; left++) {
-        for (let right = left + 1; right < group.length; right++) {
-          consider(group[left]!, group[right]!, 1, 'exact');
+    retry: while (true) {
+      const snapshot = await this.vectorSnapshot(options.pathPrefixes);
+      this.assertPolicy(user, policyKey);
+      if (!this.isCurrent(snapshot)) continue retry;
+      const access = this.noteFilter(user, options.pathPrefixes);
+      const notes = this.db.prepare(`SELECT path, MIN(title) AS title, MIN(normalized_hash) AS normalized_hash
+        FROM chunks c WHERE ${access.sql} GROUP BY path ORDER BY path`).all(...access.params) as NoteRow[];
+      const exactGroups = new Map<string, NoteRow[]>();
+      for (const note of notes) {
+        if (!note.normalized_hash) continue;
+        const group = exactGroups.get(note.normalized_hash);
+        if (group) group.push(note);
+        else exactGroups.set(note.normalized_hash, [note]);
+      }
+      // Keep only the requested best pairs; passages are computed only for those survivors.
+      const ranked: RankedPair[] = [];
+      const consider = (left: NoteRow, right: NoteRow, score: number, reason: RankedPair['reason']): void => {
+        const candidate: RankedPair = { left, right, score, reason };
+        if (ranked.length === limit && comparePair(candidate, ranked[ranked.length - 1]!) >= 0) return;
+        let index = 0;
+        while (index < ranked.length && comparePair(ranked[index]!, candidate) <= 0) index++;
+        ranked.splice(index, 0, candidate);
+        if (ranked.length > limit) ranked.pop();
+      };
+      let pairsSinceYield = 0;
+      for (const group of exactGroups.values()) {
+        for (let left = 0; left < group.length; left++) {
+          for (let right = left + 1; right < group.length; right++) {
+            consider(group[left]!, group[right]!, 1, 'exact');
+            if (++pairsSinceYield === 1024) {
+              pairsSinceYield = 0;
+              await setImmediate();
+              this.assertPolicy(user, policyKey);
+              if (!this.isCurrent(snapshot)) continue retry;
+            }
+          }
+        }
+      }
+      // SQL applies scope and the current ACL before either semantic pair loop.
+      const semanticNotes = notes.flatMap((note) => {
+        const vector = snapshot.notes.get(note.path);
+        return vector ? [vector] : [];
+      });
+      for (let left = 0; left < semanticNotes.length; left++) {
+        const a = semanticNotes[left]!;
+        for (let right = left + 1; right < semanticNotes.length; right++) {
           if (++pairsSinceYield === 1024) {
             pairsSinceYield = 0;
             await setImmediate();
             this.assertPolicy(user, policyKey);
+            if (!this.isCurrent(snapshot)) continue retry;
           }
+          const b = semanticNotes[right]!;
+          if (a.normalized_hash && a.normalized_hash === b.normalized_hash) continue;
+          const score = cosine(a.mean, b.mean);
+          if (score >= 0.98) consider(a, b, score, 'semantic');
         }
       }
-    }
-    const vectorNotes = this.vectorNotes(true, user, options.pathPrefixes);
-    const semanticNotes = [...vectorNotes.values()];
-    for (let left = 0; left < semanticNotes.length; left++) {
-      const a = semanticNotes[left]!;
-      for (let right = left + 1; right < semanticNotes.length; right++) {
-        if (++pairsSinceYield === 1024) {
-          pairsSinceYield = 0;
-          await setImmediate();
+      const passagePaths = new Set<string>();
+      for (const pair of ranked) {
+        if (pair.reason === 'semantic') {
+          passagePaths.add(pair.left.path);
+          passagePaths.add(pair.right.path);
+        }
+      }
+      const chunks = await this.passageChunks(snapshot, [...passagePaths], user, policyKey);
+      this.assertPolicy(user, policyKey);
+      if (!chunks || !this.isCurrent(snapshot)) continue retry;
+      const firstChunk = this.db.prepare('SELECT anchor, content FROM chunks WHERE path = ? ORDER BY ordinal, id LIMIT 1');
+      const result: DuplicateNotes[] = [];
+      for (const { left, right, score, reason } of ranked) {
+        let passages: DuplicateNotes['passages'];
+        if (reason === 'semantic') {
+          passages = [await this.bestPassages(chunks.get(left.path)!, chunks.get(right.path)!, snapshot.dimensions, user, policyKey)];
           this.assertPolicy(user, policyKey);
+          if (!this.isCurrent(snapshot)) continue retry;
+        } else {
+          const a = firstChunk.get(left.path) as { anchor: string | null; content: string };
+          const b = firstChunk.get(right.path) as { anchor: string | null; content: string };
+          passages = [{ left: passage(a), right: passage(b) }];
         }
-        const b = semanticNotes[right]!;
-        if (a.normalized_hash && a.normalized_hash === b.normalized_hash) continue;
-        const score = cosine(a.mean, b.mean);
-        if (score >= 0.98) consider(a, b, score, 'semantic');
+        result.push({ left: { path: left.path, title: left.title }, right: { path: right.path, title: right.title }, score, reason, passages });
       }
+      this.assertPolicy(user, policyKey);
+      return result;
     }
-    this.assertPolicy(user, policyKey);
-    const firstChunk = this.db.prepare('SELECT anchor, content FROM chunks WHERE path = ? ORDER BY ordinal, id LIMIT 1');
-    return ranked.map(({ left, right, score, reason }) => {
-      let passages: DuplicateNotes['passages'];
-      if (reason === 'semantic') {
-        passages = [this.bestPassages(vectorNotes.get(left.path)!, vectorNotes.get(right.path)!)];
-      } else {
-        const a = firstChunk.get(left.path) as { anchor: string | null; content: string };
-        const b = firstChunk.get(right.path) as { anchor: string | null; content: string };
-        passages = [{ left: passage(a), right: passage(b) }];
-      }
-      return { left: { path: left.path, title: left.title }, right: { path: right.path, title: right.title }, score, reason, passages };
-    });
   }
 
   private assertPolicy(user: AclUser | undefined, policyKey: string | undefined): void {
@@ -170,62 +249,152 @@ export class ComparisonService {
     };
   }
 
-  private vectorNotes(includeChunks: boolean, user?: AclUser, pathPrefixes?: readonly string[]): Map<string, VectorNote> {
-    const notes = new Map<string, VectorNote>();
+  private vectorState(): VectorState {
+    const stored = this.readVectorState.get() as {
+      sha: string | null; generation: string; model: string | null;
+      dimensions: string | null; mismatch: string | null; vectors: number;
+    };
     const { embeddingModel: model, embeddingDimensions: dimensions } = this.config;
-    if (!model || !Number.isInteger(dimensions) || dimensions < 1) return notes;
-    const metadata = this.db.prepare(`SELECT key, value FROM index_meta
-      WHERE key IN ('embedding_model', 'embedding_dimensions', 'vector_mismatch')`).all() as Array<{ key: string; value: string }>;
-    if (!metadata.some((row) => row.key === 'embedding_model' && row.value === model)
-      || !metadata.some((row) => row.key === 'embedding_dimensions' && row.value === String(dimensions))
-      || metadata.some((row) => row.key === 'vector_mismatch' && row.value === '1')
-      || !this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'chunk_vectors'").get()) return notes;
-
-    const access = this.noteFilter(user, pathPrefixes);
-    const rows = this.db.prepare(`SELECT c.path, c.title, c.normalized_hash, e.embedding
-      ${includeChunks ? ', c.anchor, c.content' : ''}
-      FROM chunks c JOIN embedding_cache e ON e.content_hash = c.content_hash AND e.model = ? AND e.dimensions = ?
-      WHERE c.vector_pending = 0 AND (${access.sql}) ORDER BY c.path, c.ordinal, c.id`).iterate(model, dimensions, ...access.params);
-    for (const row of rows as Iterable<NoteRow & { embedding: Buffer; anchor?: string | null; content?: string }>) {
-      const bytes = row.embedding;
-      if (bytes.length !== dimensions * Float32Array.BYTES_PER_ELEMENT) continue;
-      let squaredNorm = 0;
-      for (let index = 0; index < dimensions; index++) {
-        const value = bytes.readFloatLE(index * Float32Array.BYTES_PER_ELEMENT);
-        squaredNorm += value * value;
-      }
-      if (!(squaredNorm > 0) || !Number.isFinite(squaredNorm)) continue;
-      let note = notes.get(row.path);
-      if (!note) {
-        note = { path: row.path, title: row.title, normalized_hash: row.normalized_hash,
-          mean: new Float64Array(dimensions), chunks: [] };
-        notes.set(row.path, note);
-      }
-      for (let index = 0; index < dimensions; index++) note.mean[index]! += bytes.readFloatLE(index * Float32Array.BYTES_PER_ELEMENT);
-      if (includeChunks) note.chunks.push({ embedding: bytes, norm: Math.sqrt(squaredNorm), anchor: row.anchor ?? null, content: row.content! });
-    }
-    for (const [path, note] of notes) {
-      let squaredNorm = 0;
-      for (const value of note.mean) squaredNorm += value * value;
-      if (!(squaredNorm > 0) || !Number.isFinite(squaredNorm)) {
-        notes.delete(path);
-        continue;
-      }
-      const norm = Math.sqrt(squaredNorm);
-      // Normalizing the sum equals normalizing the mean, without a redundant division by chunk count.
-      for (let index = 0; index < dimensions; index++) note.mean[index]! /= norm;
-    }
-    return notes;
+    return {
+      key: JSON.stringify([stored, model, dimensions]),
+      model, dimensions,
+      compatible: Boolean(model) && Number.isInteger(dimensions) && dimensions > 0
+        && stored.model === model && stored.dimensions === String(dimensions)
+        && stored.mismatch !== '1' && stored.vectors === 1,
+    };
   }
 
-  private bestPassages(left: VectorNote, right: VectorNote): { left: Passage; right: Passage } {
-    let bestLeft = left.chunks[0]!;
-    let bestRight = right.chunks[0]!;
+  private isCurrent(snapshot: VectorState): boolean {
+    return snapshot.key === this.vectorState().key;
+  }
+
+  private covers(snapshot: VectorSnapshot, prefixes?: readonly string[]): boolean {
+    return snapshot.prefixes === undefined || (prefixes !== undefined
+      && prefixes.every((prefix) => snapshot.prefixes!.some((covered) => prefix.startsWith(covered))));
+  }
+
+  private async vectorSnapshot(prefixes?: readonly string[]): Promise<VectorSnapshot> {
+    while (true) {
+      const state = this.vectorState();
+      if (this.snapshot?.key === state.key && this.covers(this.snapshot, prefixes)) return this.snapshot;
+      // Only one population runs, including when callers ask for different scopes.
+      if (this.population) {
+        await this.population;
+        continue;
+      }
+      const base = this.snapshot?.key === state.key ? this.snapshot : undefined;
+      const pending = this.populateSnapshot(state, base, prefixes);
+      this.population = pending;
+      try { await pending; }
+      finally { this.population = undefined; }
+    }
+  }
+
+  private async populateSnapshot(state: VectorState, base: VectorSnapshot | undefined, prefixes?: readonly string[]): Promise<void> {
+    if (!state.compatible) {
+      this.snapshot = { ...state, notes: new Map(), prefixes: undefined };
+      return;
+    }
+    const scope = this.noteFilter(undefined, prefixes);
+    const covered = this.noteFilter(undefined, base?.prefixes ?? []);
+    // Covered prefixes are excluded in SQL: promoting wiki-only coverage must not
+    // decode it again, and a scoped request must never warm unrelated raw rows.
+    const filter = `(${scope.sql}) AND NOT (${covered.sql})`;
+    const rows = this.db.prepare(`SELECT c.path, c.title, c.normalized_hash, c.ordinal, c.id, e.embedding
+      FROM chunks c JOIN embedding_cache e ON e.content_hash = c.content_hash AND e.model = ? AND e.dimensions = ?
+      WHERE c.vector_pending = 0 AND ${filter}
+        AND (c.path, c.ordinal, c.id) > (?, ?, ?)
+      ORDER BY c.path, c.ordinal, c.id LIMIT ${VECTOR_BATCH_SIZE}`);
+    const additions = new Map<string, VectorNote>();
+    let cursor: [string, number, number] = ['', -1, -1];
+    let current: VectorNote | undefined;
+    const finish = () => {
+      if (!current) return;
+      let squaredNorm = 0;
+      for (const value of current.mean) squaredNorm += value * value;
+      if (!(squaredNorm > 0) || !Number.isFinite(squaredNorm)) return;
+      const norm = Math.sqrt(squaredNorm);
+      // Normalizing the sum equals normalizing the mean, without a chunk-count division.
+      for (let index = 0; index < state.dimensions; index++) current.mean[index]! /= norm;
+      additions.set(current.path, current);
+    };
+    while (true) {
+      // Materialize a bounded batch; never retain a SQLite iterator across await.
+      const batch = rows.all(state.model, state.dimensions, ...scope.params, ...covered.params, ...cursor) as VectorRow[];
+      for (const row of batch) {
+        cursor = [row.path, row.ordinal, row.id];
+        if (current?.path !== row.path) {
+          finish();
+          current = undefined;
+        }
+        if (this.vectorNorm(row.embedding, state.dimensions) === undefined) continue;
+        current ??= { path: row.path, title: row.title, normalized_hash: row.normalized_hash,
+          mean: new Float64Array(state.dimensions) };
+        for (let index = 0; index < state.dimensions; index++) {
+          current.mean[index]! += row.embedding.readFloatLE(index * Float32Array.BYTES_PER_ELEMENT);
+        }
+      }
+      if (batch.length < VECTOR_BATCH_SIZE) break;
+      await setImmediate();
+      // An index transaction may have replaced rows behind the pagination key.
+      // Discard all additions rather than publishing a mixed-generation mean.
+      if (!this.isCurrent(state)) return;
+    }
+    finish();
+    if (!this.isCurrent(state)) return;
+    const notes = new Map(base?.notes);
+    for (const [path, note] of additions) notes.set(path, note);
+    this.snapshot = { ...state, notes,
+      prefixes: prefixes === undefined ? undefined : [...(base?.prefixes ?? []), ...prefixes] };
+  }
+
+  private vectorNorm(bytes: Buffer, dimensions: number): number | undefined {
+    if (bytes.length !== dimensions * Float32Array.BYTES_PER_ELEMENT) return undefined;
+    let squaredNorm = 0;
+    for (let index = 0; index < dimensions; index++) {
+      const value = bytes.readFloatLE(index * Float32Array.BYTES_PER_ELEMENT);
+      squaredNorm += value * value;
+    }
+    return squaredNorm > 0 && Number.isFinite(squaredNorm) ? Math.sqrt(squaredNorm) : undefined;
+  }
+
+  private async passageChunks(snapshot: VectorSnapshot, paths: string[], user: AclUser | undefined,
+    policyKey: string | undefined): Promise<Map<string, VectorChunk[]> | undefined> {
+    const chunks = new Map<string, VectorChunk[]>();
+    if (!paths.length) return chunks;
+    const rows = this.db.prepare(`SELECT c.path, c.ordinal, c.id, c.anchor, c.content, e.embedding
+      FROM chunks c JOIN embedding_cache e ON e.content_hash = c.content_hash AND e.model = ? AND e.dimensions = ?
+      WHERE c.vector_pending = 0 AND c.path IN (${paths.map(() => '?').join(',')})
+        AND (c.path, c.ordinal, c.id) > (?, ?, ?)
+      ORDER BY c.path, c.ordinal, c.id LIMIT ${VECTOR_BATCH_SIZE}`);
+    let cursor: [string, number, number] = ['', -1, -1];
+    while (true) {
+      const batch = rows.all(snapshot.model, snapshot.dimensions, ...paths, ...cursor) as Array<VectorRow & { anchor: string | null; content: string }>;
+      for (const row of batch) {
+        cursor = [row.path, row.ordinal, row.id];
+        const norm = this.vectorNorm(row.embedding, snapshot.dimensions);
+        if (norm === undefined) continue;
+        const noteChunks = chunks.get(row.path) ?? [];
+        if (!chunks.has(row.path)) chunks.set(row.path, noteChunks);
+        noteChunks.push({ embedding: row.embedding, norm, anchor: row.anchor, content: row.content });
+      }
+      if (batch.length < VECTOR_BATCH_SIZE) return chunks;
+      await setImmediate();
+      this.assertPolicy(user, policyKey);
+      if (!this.isCurrent(snapshot)) return undefined;
+    }
+  }
+
+  private async bestPassages(left: VectorChunk[], right: VectorChunk[], dimensions: number,
+    user: AclUser | undefined, policyKey: string | undefined): Promise<{ left: Passage; right: Passage }> {
+    let bestLeft = left[0]!;
+    let bestRight = right[0]!;
     let bestScore = -Infinity;
-    for (const a of left.chunks) {
-      for (const b of right.chunks) {
+    let sinceYield = 0;
+    for (const a of left) {
+      for (const b of right) {
         let dot = 0;
-        for (let index = 0; index < this.config.embeddingDimensions; index++) {
+        for (let index = 0; index < dimensions; index++) {
           const offset = index * Float32Array.BYTES_PER_ELEMENT;
           dot += a.embedding.readFloatLE(offset) * b.embedding.readFloatLE(offset);
         }
@@ -234,6 +403,11 @@ export class ComparisonService {
           bestScore = score;
           bestLeft = a;
           bestRight = b;
+        }
+        if (++sinceYield === 256) {
+          sinceYield = 0;
+          await setImmediate();
+          this.assertPolicy(user, policyKey);
         }
       }
     }
