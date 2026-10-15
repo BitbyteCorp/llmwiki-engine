@@ -149,7 +149,7 @@ export class IngestService implements OnApplicationBootstrap, OnModuleDestroy {
           provenance,
           `Batch ${batch + 1} of ${batches.length}.`,
           ...(files.length ? [
-            `The provenance Markdown at ${sourcePath} is an index of every exported file across all batches. Do NOT read it; use its path only as the frontmatter source citation.`,
+            `The provenance Markdown at ${sourcePath} is an index of every exported file across all batches. Do NOT read it; cite its path in the frontmatter source list without reading it.`,
             'This job owns exactly these extracted Markdown files (raw paths):',
             ...files.map((path) => `- ${JSON.stringify(path)}`),
             'Read EVERY listed file completely. When a read is truncated, continue with nextOffset/nextCharOffset until the entire file has been read.',
