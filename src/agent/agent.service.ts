@@ -8,7 +8,9 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import { CONFIG, LOGGER } from '../common/tokens.js';
 import { idSchema } from '../common/ids.js';
-import { createOpenAI } from '../common/openai.js';
+import { createLlmClient, llmAvailable } from '../common/openai.js';
+import { CodexAuthService } from '../codex/codex-auth.service.js';
+import { CodexNotLoggedInError, type CodexCredentialSource } from '../codex/codex.types.js';
 import type { Config } from '../config.js';
 import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
 import { domainOf, domainSchemaPath, listDomains, SHARED_WIKI_DIRS } from '../knowledge/domains.js';
@@ -151,15 +153,19 @@ export class AgentService {
     private readonly search: SearchService,
     private readonly acl: AclService,
     @Optional() private readonly usage?: UsageService,
+    @Optional() @Inject(CodexAuthService) private readonly codex?: CodexCredentialSource,
   ) {}
 
   async runAgent(opts: RunAgentOptions): Promise<{ text: string; toolCalls: number }> {
     const { config } = this;
-    if (!config.openaiApiKey) throw new Error('아직 도니를 실행할 수 없어요. 관리자에게 OPENAI_API_KEY 설정을 요청해 주세요.');
+    if (!llmAvailable(config, this.codex)) {
+      if (config.llmProvider === 'openai-codex') throw new CodexNotLoggedInError();
+      throw new Error('아직 도니를 실행할 수 없어요. 관리자에게 OPENAI_API_KEY 설정을 요청해 주세요.');
+    }
     const maxTurns = opts.maxTurns ?? 32;
     if (!Number.isInteger(maxTurns) || maxTurns < 1) throw new Error('maxTurns must be a positive integer');
     opts.signal?.throwIfAborted();
-    const client = createOpenAI(config);
+    const client = createLlmClient(config, this.codex);
     const input: ResponseInput = opts.resume
       ? structuredClone(opts.resume.input)
       : typeof opts.input === 'string'

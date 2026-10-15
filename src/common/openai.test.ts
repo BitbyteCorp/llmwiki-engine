@@ -1,6 +1,8 @@
 import { createServer, type RequestListener, type Server, type ServerResponse } from 'node:http';
 import { afterEach, describe, expect, it } from 'vitest';
-import { createOpenAI, parseRateLimitDuration, rateLimitAwareFetch } from './openai.js';
+import { createLlmClient, createOpenAI, llmAvailable, parseRateLimitDuration, rateLimitAwareFetch } from './openai.js';
+import { loadConfig } from '../config.js';
+import { CodexNotLoggedInError, type CodexCredentialSource } from '../codex/codex.types.js';
 
 const servers: Server[] = [];
 const embeddingResult = {
@@ -31,6 +33,29 @@ afterEach(async () => {
     server.close((error) => error ? reject(error) : resolve());
     server.closeAllConnections();
   })));
+});
+
+describe('LLM provider boundaries', () => {
+  const codex: CodexCredentialSource = {
+    getAccess: async () => ({ accessToken: 'oauth-token', accountId: 'account-id' }),
+    refreshAccess: async () => ({ accessToken: 'fresh-token', accountId: 'account-id' }),
+    isLoggedIn: () => true,
+  };
+
+  it('separates Codex OAuth generation from Platform embedding credentials and URL', () => {
+    const config = loadConfig({ LLM_PROVIDER: 'openai-codex', OPENAI_API_KEY: 'platform-key',
+      OPENAI_BASE_URL: 'http://127.0.0.1:1234/v1', CODEX_BASE_URL: 'http://127.0.0.1:5678/codex' });
+    const embeddings = createOpenAI(config);
+    const llm = createLlmClient(config, codex);
+    expect(embeddings.baseURL).toBe(config.openaiBaseUrl);
+    expect(embeddings.apiKey).toBe('platform-key');
+    expect(llm.baseURL).toBe(config.codexBaseUrl);
+    expect(llm.apiKey).not.toBe('platform-key');
+    expect(llmAvailable({ ...config, openaiApiKey: undefined }, codex)).toBe(true);
+    expect(llmAvailable(config)).toBe(false);
+    expect(llmAvailable(config, { ...codex, isLoggedIn: () => false })).toBe(false);
+    expect(() => createLlmClient(config)).toThrow(CodexNotLoggedInError);
+  });
 });
 
 describe('OpenAI rate-limit durations', () => {

@@ -5,9 +5,10 @@ import { IndexerService } from './indexer.service.js';
 import { SearchService } from './search.service.js';
 import { CatalogService } from './catalog.service.js';
 import { ComparisonService } from './comparison.service.js';
+import { CodexModule } from '../codex/codex.module.js';
 
 @Module({
-  imports: [KnowledgeModule, UsageModule],
+  imports: [KnowledgeModule, UsageModule, CodexModule],
   providers: [IndexerService, SearchService, CatalogService, ComparisonService],
   exports: [IndexerService, SearchService, CatalogService, ComparisonService],
 })

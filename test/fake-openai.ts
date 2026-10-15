@@ -34,6 +34,7 @@ export interface FakeOpenAIRequest {
   method: string;
   path: string;
   body: Record<string, unknown>;
+  headers: Record<string, string | string[] | undefined>;
 }
 
 export type FakeResponder = (request: FakeOpenAIRequest, index: number) => FakeTurn | Promise<FakeTurn>;
@@ -43,6 +44,12 @@ export interface FakeOpenAI {
   url: string;
   close(): Promise<void>;
   requests: FakeOpenAIRequest[];
+}
+
+export interface FakeOpenAIOptions {
+  embeddingUsage?: { promptTokens: number; totalTokens: number };
+  codex?: boolean;
+  unauthorizedOnce?: boolean;
 }
 
 type FakeWireItem = ResponseOutputMessage | (ResponseFunctionToolCall & { id: string }) | ResponseCompactionItem;
@@ -183,16 +190,17 @@ function json(res: ServerResponse, status: number, value: unknown): void {
 
 export async function startFakeOpenAI(
   script: FakeScript | FakeResponder = [],
-  options: { embeddingUsage?: { promptTokens: number; totalTokens: number } } = {},
+  options: FakeOpenAIOptions = {},
 ): Promise<FakeOpenAI> {
   const requests: FakeOpenAIRequest[] = [];
   let nextTurn = 0;
+  let unauthorizedSent = false;
   const server = createServer(async (req, res) => {
     try {
       const chunks: Buffer[] = [];
       for await (const chunk of req) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
       const body = z.record(z.string(), z.unknown()).parse(JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'));
-      const request: FakeOpenAIRequest = { method: req.method ?? '', path: req.url ?? '', body };
+      const request: FakeOpenAIRequest = { method: req.method ?? '', path: req.url ?? '', body, headers: { ...req.headers } };
       requests.push(request);
       if (request.method === 'POST' && request.path === '/v1/embeddings') {
         const dimensions = request.body.dimensions ?? 1536;
@@ -221,6 +229,23 @@ export async function startFakeOpenAI(
         return;
       }
       if (request.method === 'POST' && request.path === '/v1/responses') {
+        if (options.codex) {
+          const headers = request.headers;
+          if (request.body.stream !== true || request.body.store !== false
+            || typeof request.body.instructions !== 'string'
+            || typeof headers.authorization !== 'string' || !headers.authorization.startsWith('Bearer ')
+            || !headers['chatgpt-account-id'] || headers.originator !== 'llmwiki'
+            || headers['openai-beta'] !== 'responses=experimental'
+            || 'max_output_tokens' in request.body || 'max_completion_tokens' in request.body) {
+            json(res, 400, { error: { type: 'invalid_request_error', message: 'Invalid Codex request body or headers' } });
+            return;
+          }
+        }
+        if (options.unauthorizedOnce && !unauthorizedSent) {
+          unauthorizedSent = true;
+          json(res, 401, { error: { type: 'authentication_error', message: 'Expired Codex access token' } });
+          return;
+        }
         const params = responseParameters.parse(request.body);
         const index = nextTurn++;
         const turn = typeof script === 'function' ? await script(request, index) : script[index];

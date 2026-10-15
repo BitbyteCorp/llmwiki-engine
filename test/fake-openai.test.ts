@@ -11,8 +11,8 @@ afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
 });
 
-async function setup(script?: Parameters<typeof startFakeOpenAI>[0]) {
-  const server = await startFakeOpenAI(script);
+async function setup(script?: Parameters<typeof startFakeOpenAI>[0], options?: Parameters<typeof startFakeOpenAI>[1]) {
+  const server = await startFakeOpenAI(script, options);
   servers.push(server);
   const client = new OpenAI({ apiKey: 'test-key', baseURL: server.url, maxRetries: 0 });
   return { server, client };
@@ -142,5 +142,61 @@ describe('fake OpenAI SDK compatibility', () => {
     expect((await second.client.responses.create({ model: 'gpt-6-luna', input: 'third' })).output_text).toBe('두 번째');
     await expect(first.client.responses.create({ model: 'gpt-6-luna', input: 'unexpected' })).rejects
       .toMatchObject({ status: 400, code: 'fake_script_exhausted' });
+  });
+
+  it.each([
+    { name: 'non-streaming request', body: { stream: false }, headers: {} },
+    { name: 'stored request', body: { store: true }, headers: {} },
+    { name: 'missing instructions', body: { instructions: null }, headers: {} },
+    { name: 'missing bearer token', body: {}, headers: { authorization: '' } },
+    { name: 'missing account', body: {}, headers: { 'chatgpt-account-id': '' } },
+    { name: 'missing originator', body: {}, headers: { originator: '' } },
+    { name: 'missing beta header', body: {}, headers: { 'openai-beta': '' } },
+    { name: 'unsupported output limit', body: { max_output_tokens: 100 }, headers: {} },
+    { name: 'unsupported completion limit', body: { max_completion_tokens: 100 }, headers: {} },
+  ])('rejects a Codex $name without consuming the response script', async ({ body, headers }) => {
+    const { server } = await setup(['Codex response'], { codex: true });
+    const send = (invalid: boolean) => fetch(`${server.url}/responses`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json', authorization: 'Bearer codex-token',
+        'chatgpt-account-id': 'codex-account', originator: 'llmwiki', 'openai-beta': 'responses=experimental',
+        ...(invalid ? headers : {}),
+      },
+      body: JSON.stringify({
+        model: 'gpt-6-luna', input: 'Hello', instructions: '', stream: true, store: false,
+        ...(invalid ? body : {}),
+      }),
+    });
+    const rejected = await send(true);
+    expect(rejected.status).toBe(400);
+    expect(await rejected.json()).toMatchObject({ error: { message: 'Invalid Codex request body or headers' } });
+    const accepted = await send(false);
+    expect(accepted.headers.get('content-type')).toBe('text/event-stream');
+    expect(await accepted.text()).toContain('"type":"response.completed"');
+  });
+
+  it('captures Codex headers and rejects one expired token without consuming a turn or affecting embeddings', async () => {
+    const { server, client } = await setup(['First scripted turn'], { codex: true, unauthorizedOnce: true });
+    const send = (token: string) => fetch(`${server.url}/responses`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json', authorization: `Bearer ${token}`,
+        'chatgpt-account-id': 'codex-account', originator: 'llmwiki', 'openai-beta': 'responses=experimental',
+      },
+      body: JSON.stringify({ model: 'gpt-6-luna', input: 'Hello', instructions: '', stream: true, store: false }),
+    });
+    expect((await client.embeddings.create({ model: 'text-embedding-3-small', input: 'Hello', dimensions: 8 })).data[0]!.embedding)
+      .toHaveLength(8);
+    const rejected = await send('expired');
+    expect(rejected.status).toBe(401);
+    await rejected.json();
+    const accepted = await send('refreshed');
+    const events = await accepted.text();
+    expect(accepted.status).toBe(200);
+    expect(events).toContain('"id":"resp_fake_1"');
+    expect(events).toContain('First scripted turn');
+    expect(server.requests.filter((request) => request.path === '/v1/responses').map((request) => request.headers.authorization))
+      .toEqual(['Bearer expired', 'Bearer refreshed']);
   });
 });

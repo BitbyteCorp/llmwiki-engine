@@ -1,5 +1,7 @@
 import OpenAI from 'openai';
 import type { Config } from '../config.js';
+import { createCodexFetch } from '../codex/codex-transport.js';
+import { CodexNotLoggedInError, type CodexCredentialSource } from '../codex/codex.types.js';
 
 const durationUnits = { h: 3_600_000, m: 60_000, s: 1_000, ms: 1 };
 const retryMarginMs = 250;
@@ -57,4 +59,23 @@ export function createOpenAI(
     maxRetries: config.openaiMaxRetries ?? 8,
     fetch: rateLimitAwareFetch,
   });
+}
+
+/** The Platform client remains separate because Codex has no embeddings endpoint. */
+export function createLlmClient(
+  config: Config,
+  codex?: CodexCredentialSource,
+): OpenAI {
+  if (config.llmProvider !== 'openai-codex') return createOpenAI(config);
+  if (!codex) throw new CodexNotLoggedInError();
+  return new OpenAI({
+    apiKey: 'codex-oauth',
+    baseURL: config.codexBaseUrl ?? 'https://chatgpt.com/backend-api/codex',
+    maxRetries: config.openaiMaxRetries ?? 8,
+    fetch: createCodexFetch(codex),
+  });
+}
+
+export function llmAvailable(config: Pick<Config, 'llmProvider' | 'openaiApiKey'>, codex?: CodexCredentialSource): boolean {
+  return config.llmProvider === 'openai-codex' ? Boolean(codex?.isLoggedIn()) : Boolean(config.openaiApiKey);
 }

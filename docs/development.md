@@ -28,6 +28,7 @@ Next의 CommonJS 진입점은 호출 가능한 함수를 내보내지만 `NodeNe
 | `src/agent/`, `src/knowledge/seed/` | 에이전트 루프와 도구, 빈 지식 저장소의 초기 문서를 담당한다. |
 | `src/rag/` | 파생 검색 인덱스와 검색·재구축 명령을 담당한다. |
 | `src/auth/` | 사용자·권한·설정, 이메일·비밀번호와 Google 로그인, 웹 세션, MCP OAuth를 담당한다. |
+| `src/codex/` | ChatGPT OAuth 자격 증명과 Codex Responses 전송을 담당한다. 로그인 절차는 [Codex OAuth](codex-oauth.md)를 따른다. |
 | `src/mcp/`, `src/api/` | MCP 도구와 웹 REST API·대화 저장을 각각 담당한다. |
 | `src/dreaming/` | 정기 정리와 수동 실행 명령을 담당한다. |
 | `src/ingest/`, `src/export/`, `src/backup/`, `src/skill/` | 원문 수집, main 내보내기, 오프라인 백업·복원, 버전 관리 Skill 설치를 담당한다. |
@@ -130,19 +131,20 @@ fixture의 범위를 검증하는 명령은 `pnpm vitest run test/fake-openai.te
 | `RATE_LIMIT_AUTH` | `30` | 인증·OAuth 경로에서 집계 구간당 IP별 최대 요청 수다. |
 | `RATE_LIMIT_USER` | `60` | 검색·채팅 메시지·쓰기·가져오기가 공유하는 사용자별 최대 요청 수다. |
 | `AUTH_CLEANUP_INTERVAL_MS` | `300000` | 만료 세션·인증 요청·코드·토큰 정리 주기(밀리초)다. |
-| `LLM_PROVIDER` | `openai` | LLM·임베딩 제공자를 `openai` 또는 `openrouter`로 고른다. 다른 값은 Zod 검증으로 시작 시 거절한다. 제공자별 호출 경계는 [제공자 선택](agent.md#제공자-선택)을 따른다. |
-| `OPENAI_API_KEY` | 미설정 | 선택한 제공자의 API 키다. 시작 시 필수는 아니지만 도니와 임베딩 실행에는 필요하다. 미설정이면 해당 기능이 명확한 오류로 실패한다. |
-| `OPENAI_BASE_URL` | `openai`: 미설정 / `openrouter`: `https://openrouter.ai/api/v1` | OpenAI 호환 API 주소를 재정의하며 명시한 주소가 제공자별 기본값보다 우선한다. 테스트 서버 연결에도 사용한다. |
-| `OPENAI_MAX_RETRIES` | `8` | 도니와 임베딩의 최초 요청 이후 최대 재시도 횟수다. 0 이상의 정수만 허용하며 `0`이면 재시도를 끈다. 429 대기 힌트와 선택적 검색 호출의 예외는 [OpenAI 재시도 정책](agent.md#openai-재시도-정책)을 따른다. |
-| `LLM_MODELS` | `openai`: `gpt-6-luna` / `openrouter`: `openai/gpt-6-luna` | 쉼표로 구분하는 선택 가능 모델 목록이다. 앞뒤 공백과 빈 항목을 제거하고, 첫 항목을 기본 모델로 사용한다. 요청별 모델은 이 목록에 있어야 하며 목록은 비어 있을 수 없다. |
+| `LLM_PROVIDER` | `openai` | LLM 제공자를 `openai`, `openrouter`, `openai-codex`로 고른다. 다른 값은 Zod 검증으로 시작 시 거절한다. Codex는 ChatGPT OAuth를 쓰며 임베딩은 Platform에 남는다. 제공자별 호출 경계는 [제공자 선택](agent.md#제공자-선택)을 따른다. |
+| `OPENAI_API_KEY` | 미설정 | OpenAI 또는 OpenRouter API 키다. 시작 시 필수는 아니지만 API 키 기반 LLM 호출과 문서·질의 임베딩에는 필요하다. Codex LLM은 이 키 대신 [CLI ChatGPT 로그인](codex-oauth.md)을 사용하지만 임베딩에는 별도 Platform API 키가 필요하다. |
+| `OPENAI_BASE_URL` | `openai`·`openai-codex`: 미설정 / `openrouter`: `https://openrouter.ai/api/v1` | API 키 기반 OpenAI 호환 API 주소를 재정의하며 명시한 주소가 제공자별 기본값보다 우선한다. Codex에서는 임베딩용 Platform 주소만 바꾸며 Codex Responses 주소에는 영향을 주지 않는다. 테스트 서버 연결에도 사용한다. |
+| `CODEX_BASE_URL` | `https://chatgpt.com/backend-api/codex` | Codex Responses 전용 기본 주소다. 유효한 URL만 허용하며 미설정이나 빈 문자열이면 기본값을 쓴다. `openai-codex`에서만 사용하며 `OPENAI_BASE_URL`과 독립적이다. |
+| `OPENAI_MAX_RETRIES` | `8` | 도니와 임베딩의 최초 요청 이후 최대 SDK 재시도 횟수다. 0 이상의 정수만 허용하며 `0`이면 SDK 재시도를 끈다. Codex의 401 갱신 한 번은 별개다. 429 대기 힌트와 선택적 검색 호출의 예외는 [OpenAI 재시도 정책](agent.md#openai-재시도-정책)을 따른다. |
+| `LLM_MODELS` | `openai`·`openai-codex`: `gpt-6-luna` / `openrouter`: `openai/gpt-6-luna` | 쉼표로 구분하는 선택 가능 모델 목록이다. 앞뒤 공백과 빈 항목을 제거하고, 첫 항목을 기본 모델로 사용한다. 요청별 모델은 이 목록에 있어야 하며 목록은 비어 있을 수 없다. |
 | `LLM_REASONING_EFFORT` | `medium` | 대화 답변과 노트 제안의 기본 추론 강도다. 도니의 추론 강도 허용 값은 `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`다. 웹 요청별 선택은 [모델과 호출 방식](agent.md#모델과-호출-방식)을 따른다. |
 | `LLM_BACKGROUND_REASONING_EFFORT` | `low` | 대화 요약·부모 쓰기·서브에이전트·충돌 해결·꿈꾸기의 기본 추론 강도다. 위와 같은 허용 값으로 시작 시 검증하며 잘못된 값은 거절한다. 용도별 적용과 요청 옵션 우선순위는 [비용과 사용량](agent.md#비용과-사용량)을 따른다. |
-| `LLM_COMPACT_THRESHOLD` | `50000` | OpenAI에서 도니의 입력 문맥 압축을 시작하는 토큰 임계값이며 `openrouter`에서는 효과가 없다. 양의 정수만 허용하며, 반복 입력 비용을 줄이기 위해 기본값을 120000에서 낮췄다. 압축·도구 페이지 상한은 [문맥 크기와 도구 페이지](agent.md#문맥-크기와-도구-페이지)를 따른다. |
+| `LLM_COMPACT_THRESHOLD` | `50000` | `openai`에서만 도니의 입력 문맥 압축을 시작하는 토큰 임계값이며 `openrouter`·`openai-codex`에서는 효과가 없다. 양의 정수만 허용하며, 반복 입력 비용을 줄이기 위해 기본값을 120000에서 낮췄다. 압축·도구 페이지 상한은 [문맥 크기와 도구 페이지](agent.md#문맥-크기와-도구-페이지)를 따른다. |
 | `UPLOAD_RETENTION_DAYS` | `7` | 사용하지 않는 임시 업로드의 보관 일수다. 가져온 raw 원문이나 assets git 파일의 보관 기간과 다르다. |
-| `EMBEDDING_MODEL` | `openai`: `text-embedding-3-small` / `openrouter`: `openai/text-embedding-3-small` | 검색 임베딩 모델이다. |
+| `EMBEDDING_MODEL` | `openai`·`openai-codex`: `text-embedding-3-small` / `openrouter`: `openai/text-embedding-3-small` | 검색 임베딩 모델이다. Codex를 선택해도 Platform API 키와 주소로 호출한다. |
 | `EMBEDDING_DIMENSIONS` | `1536` | 임베딩 벡터 차원이다. |
-| `SEARCH_RERANK` | `off` | `llm`이면 설정한 LLM 모델로 검색 후보를 재정렬한다. |
-| `SEARCH_EXPAND` | `off` | `llm`이면 검색 질의 확장을 사용한다. |
+| `SEARCH_RERANK` | `off` | `llm`이면 공용 LLM 팩터리로 선택한 제공자의 모델을 사용해 검색 후보를 재정렬한다. SDK 재시도는 0회, 타임아웃은 5초다. |
+| `SEARCH_EXPAND` | `off` | `llm`이면 같은 공용 LLM 팩터리로 검색 질의 확장을 사용한다. SDK 재시도는 0회, 타임아웃은 5초다. |
 | `INDEX_POLL_SECONDS` | `60` | 외부 git 변경과 지식 저장소 HEAD를 확인하는 인덱스 동기화 주기다. |
 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | 미설정 | Google 로그인에만 필요하다. 미설정 상태에서도 부팅과 이메일·비밀번호 로그인이 가능하며 Google 로그인은 제공하지 않는다. |
 | `KNOWLEDGE_REPO_URL` | 미설정 | 지식 저장소의 git 원격 주소다. 없으면 로컬 `main` 저장소를 생성하고 일일 push를 건너뛰며 로그로 남긴다. |
@@ -172,7 +174,7 @@ pnpm dev
 
 `pnpm dev`와 `pnpm cli`는 저장소 루트의 `.env`가 있으면 Node의 `--env-file-if-exists=.env`로 읽는다. 셸에서 이미 지정한 환경변수가 `.env`보다 우선하므로 `DEV_LOGIN_EMAIL=admin@example.com pnpm dev`처럼 일회성으로 덮어쓸 수 있다. `pnpm dev`는 항상 `NODE_ENV=development`로 실행한다. `.env`에 `NODE_ENV=production`이 남아 있으면 개발 서버가 빌드된 Next 앱을 찾고 개발 로그인을 거부하기 때문이다. 같은 이유로 `.env.example`에는 `NODE_ENV`를 두지 않으며, Docker 이미지와 Compose는 각자 `production`을 고정한다. `pnpm start`는 `.env`를 읽지 않는다.
 
-`pnpm dev` 하나로 API와 UI를 함께 실행하므로 별도 UI 개발 서버를 띄우지 않는다. 서버가 준비되면 `http://localhost:3000/login`에서 등록한 이메일과 비밀번호로 로그인한다. 위 초기 설정에는 Google 설정이나 `DEV_LOGIN_EMAIL`이 필요하지 않다. `/auth/dev-login`은 `DEV_LOGIN_EMAIL`을 지정한 개발 환경에서만 제공하는 선택적 접점이며 기존 사용자만 사용한다. API 키 없이 로컬 인증과 저장소를 확인할 수 있지만 도니의 응답과 임베딩을 확인하려면 `OPENAI_API_KEY`가 필요하다.
+`pnpm dev` 하나로 API와 UI를 함께 실행하므로 별도 UI 개발 서버를 띄우지 않는다. 서버가 준비되면 `http://localhost:3000/login`에서 등록한 이메일과 비밀번호로 로그인한다. 위 초기 설정에는 Google 설정이나 `DEV_LOGIN_EMAIL`이 필요하지 않다. `/auth/dev-login`은 `DEV_LOGIN_EMAIL`을 지정한 개발 환경에서만 제공하는 선택적 접점이며 기존 사용자만 사용한다. API 키 없이 로컬 인증과 저장소를 확인할 수 있지만 API 키 기반 도니 응답과 임베딩에는 `OPENAI_API_KEY`가 필요하다. `LLM_PROVIDER=openai-codex`의 도니 응답은 대신 [Codex OAuth](codex-oauth.md)의 CLI 로그인으로 인증하며 임베딩 키는 별도로 설정한다.
 
 Next custom server에는 `PUBLIC_URL`의 호스트 이름과 `PORT`를 전달한다. Next 개발 모드는 이 호스트와 `localhost`를 개발 자산·HMR의 허용 origin으로 사용한다. 이를 생략하면 Next가 `localhost:3000`을 기준으로 초기화되어 `127.0.0.1` 같은 설정된 주소에서 HMR 연결이 거절되고 화면이 로딩 상태에 머무를 수 있다. 브라우저에서는 `PUBLIC_URL`에 설정한 호스트로 접근한다.
 
@@ -187,7 +189,7 @@ VS Code의 `pnpm dev` 터미널 출력이 일시 정지되거나 계속 배출�
 
 병렬 확인이 필요하면 독립된 저장소 복사본과 자체 Next 개발 출력 디렉터리를 사용한다. 복사본마다 별도 `DATA_DIR`, `PORT`, 해당 포트의 `PUBLIC_URL`을 지정해 SQLite·지식 저장소·작업 워크트리·PID 파일을 공유하지 않는다. git 머지 직렬화는 프로세스 내부에서 수행하므로 같은 데이터 디렉터리의 여러 서버를 위한 프로세스 간 락으로 해석하지 않는다. 기존 사용자의 서버를 중지하거나 재시작하는 대신 복사본으로 실험한다. 로컬 성능 관찰과 운영 보장을 구분하는 기준은 [읽기 성능](performance.md#측정의-해석)에 기록한다.
 
-복사한 DB로 서버를 실행할 때는 항상 `JOBS_AUTOSTART=false`를 지정한다. 복사본에 남아 있는 대기 작업이나 시작 시 색인 동기화·예약 꿈꾸기가 사용자 요청 없이 실제 OpenAI 비용을 발생시킬 수 있기 때문이다. 데이터 경로·포트 격리만으로 토큰 비용은 격리되지 않는다. 이 설정에서도 직접 채팅·검색이나 관리자 수동 실행은 API를 호출할 수 있으므로 유료 호출을 피하려면 OpenAI 키를 전달하지 않거나 [로컬 fixture](#openai-로컬-테스트-fixture)를 사용한다.
+복사한 DB로 서버를 실행할 때는 항상 `JOBS_AUTOSTART=false`를 지정한다. 복사본에 남아 있는 대기 작업이나 시작 시 색인 동기화·예약 꿈꾸기가 사용자 요청 없이 실제 LLM·임베딩 호출을 발생시킬 수 있기 때문이다. 데이터 경로·포트 격리만으로 토큰 사용은 격리되지 않는다. 이 설정에서도 직접 채팅·검색이나 관리자 수동 실행은 API를 호출할 수 있다. 외부 호출을 피하려면 API 키와 Codex 로그인 자격 증명을 복사본에 제공하지 않거나 [로컬 fixture](#openai-로컬-테스트-fixture)를 사용한다.
 
 개발 서버 하나는 경로를 컴파일할 때마다 수십 MB씩 커지며 몇 개 화면만 열어도 1~2GB를 쓴다. 확인용으로 띄운 복사본 서버는 확인이 끝나면 반드시 종료한다. 여러 확인 세션이 각자 띄운 서버를 남겨 두면 각 서버가 수 GB까지 커지고, 편집기·브라우저와 함께 호스트 메모리와 스왑을 모두 소진한다. 이 경우 커널 OOM killer가 `oom_score_adj`가 높은 작은 브라우저 프로세스만 반복해 종료하고 큰 Node 프로세스는 남기므로, 호스트가 회복하지 못하고 장시간 멈춘 것처럼 보인다. 서버 측 조회 캐시 타이머로 SSR 요청이 누적되던 원인과 규칙은 [실시간 이벤트](events.md#웹-조회-캐시와-배치-갱신)에 기록한다.
 
@@ -219,7 +221,7 @@ docker exec -it llmwiki-local llmwiki user add admin@example.com --role admin --
 curl --fail http://localhost:3000/readyz
 ```
 
-관리자와 비밀번호를 등록한 뒤 `PUBLIC_URL`의 `/login`에서 이메일·비밀번호로 로그인한다. Google 설정을 추가한 경우 같은 화면에서 Google 로그인도 선택할 수 있다. 비밀번호 변경은 `docker exec -it llmwiki-local llmwiki user password admin@example.com`으로 수행한다. 이미지 실행에 OpenAI 기능이 필요하면 `OPENAI_API_KEY`를 실행 환경으로 전달한다. `/data`를 named volume으로 보존하면 컨테이너를 다시 만들어도 지식과 SQLite 상태를 유지한다. 호스트 디렉터리를 bind mount할 경우 이미지의 `node` 사용자 UID/GID가 쓰기 가능한 권한을 미리 설정해야 한다. 볼륨 전체 백업과 지식 저장소의 git 원격 백업은 서로 다른 범위를 보호한다.
+관리자와 비밀번호를 등록한 뒤 `PUBLIC_URL`의 `/login`에서 이메일·비밀번호로 로그인한다. Google 설정을 추가한 경우 같은 화면에서 Google 로그인도 선택할 수 있다. 비밀번호 변경은 `docker exec -it llmwiki-local llmwiki user password admin@example.com`으로 수행한다. API 키 기반 LLM과 임베딩이 필요하면 `OPENAI_API_KEY`를 실행 환경으로 전달한다. Codex LLM은 [Codex OAuth](codex-oauth.md)의 컨테이너 CLI 로그인 절차를 따른다. `/data`를 named volume으로 보존하면 컨테이너를 다시 만들어도 지식과 SQLite 상태를 유지한다. 호스트 디렉터리를 bind mount할 경우 이미지의 `node` 사용자 UID/GID가 쓰기 가능한 권한을 미리 설정해야 한다. 볼륨 전체 백업과 지식 저장소의 git 원격 백업은 서로 다른 범위를 보호한다.
 
 SSH 키는 이미지에 복사하지 않는다. 원격 git이 필요할 때는 키와 검증된 `known_hosts`를 실행 사용자에게 읽기 가능한 읽기 전용 마운트로 제공하고 `GIT_SSH_KEY_PATH`를 설정한다. `.dockerignore`는 git 메타데이터, 설치·빌드 결과, 로컬 데이터, 환경 파일, SSH 디렉터리와 키 파일을 빌드 컨텍스트에서 제외한다.
 

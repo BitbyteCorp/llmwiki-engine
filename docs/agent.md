@@ -20,9 +20,13 @@
 `answer()`는 텍스트 또는 Responses의 `input_text`·`input_image`·`input_file` 콘텐츠 배열을 사용자·답변 메시지의 입력으로 받는다. 진행 이벤트는 `status` 단계, 도구의 `start`·`end`, 최종 인용, 모든 모델 턴을 합산한 `usage`다. 토큰 필드와 합산 경계는 아래의 [비용과 사용량](#비용과-사용량)을 따른다. 읽기 도구의 공개 요약은 검색 질의나 노트 경로만 담으며 도구 결과나 노트 본문을 넣지 않는다. `write_knowledge`는 예외로 시작·종료 요약에 제출할 `content`의 앞 80자까지 표시하므로 기록할 내용 자체가 대화 구성원에게 보일 수 있다. 생성의 근거 경로와 ACL 투영은 [공유 대화](access-control.md#공유-대화)의 규칙을 따르며, 기록 요청의 성공한 도구 종료 이벤트에는 작업 링크용 `jobId`를 별도로 담는다.
 
 #### 제공자 선택
-`LLM_PROVIDER`로 OpenAI 또는 OpenRouter를 선택한다. 두 제공자 모두 같은 OpenAI SDK로 Responses API와 Embeddings API를 호출하며, 키·기본 주소·모델 기본값과 명시한 설정의 우선순위는 [환경 변수](development.md#환경-변수)에 기록한다.
+`LLM_PROVIDER`로 `openai`, `openrouter`, `openai-codex`를 선택한다. OpenAI와 OpenRouter는 같은 OpenAI SDK로 Responses API와 Embeddings API를 호출한다. Codex는 CLI로 로그인한 ChatGPT OAuth 자격 증명으로 Responses API만 호출하며, 로그인·상태 확인·로그아웃 절차는 [Codex OAuth](codex-oauth.md)를 따른다. 키·기본 주소·모델 기본값과 명시한 설정의 우선순위는 [환경 변수](development.md#환경-변수)에 기록한다.
 
-OpenRouter의 Responses API는 stateless beta이며 `context_management`를 지원하지 않는다. 따라서 OpenRouter 요청에서는 이 매개변수를 아예 보내지 않고 서버 측 문맥 압축을 끈다. 긴 실행은 [문맥 크기와 도구 페이지](#문맥-크기와-도구-페이지)의 도구 출력 상한과 페이지 읽기에만 의존한다. 두 제공자 모두 `store: false`, 암호화 추론 포함, 프롬프트 캐시 키, 추론 강도와 함수 도구 설정은 유지한다.
+Codex의 ChatGPT 로그인은 OpenAI Platform API 키와 별개다. `openai-codex`에서도 문서·질의 임베딩은 `OPENAI_API_KEY`와 선택적인 `OPENAI_BASE_URL`을 사용하는 Platform 경로에 남는다. `CODEX_BASE_URL`은 Codex Responses 주소만 바꾸며 임베딩 주소나 키를 대체하지 않는다. 따라서 Codex 로그인이 되어 있어도 임베딩에는 별도 API 키가 필요하다.
+
+Codex fetch 어댑터는 모든 Responses 요청을 `stream: true`, `store: false`로 보내고 `max_output_tokens`와 `max_completion_tokens`를 제거하며 비어 있지 않은 `instructions`를 보장한다. 비스트리밍 호출자에게는 SSE의 `response.completed` 최종 응답을 JSON으로 돌려주므로 호출자는 기존 SDK 응답 형식을 사용한다. HTTP 401이면 OAuth 자격 증명을 갱신하고 요청을 한 번 다시 보낸다.
+
+서버 측 문맥 압축은 `openai`에서만 사용한다. OpenRouter의 Responses API는 stateless beta이며 `context_management`를 지원하지 않고 Codex에도 이 매개변수를 보내지 않는다. 따라서 두 제공자의 긴 실행은 [문맥 크기와 도구 페이지](#문맥-크기와-도구-페이지)의 도구 출력 상한과 페이지 읽기에 의존한다. 세 제공자 모두 `store: false`, 암호화 추론 포함, 프롬프트 캐시 키, 추론 강도와 함수 도구 설정은 유지한다.
 
 OpenRouter 모델 ID는 `openai/...`처럼 제공자 이름을 포함해야 한다. `.env.example`을 복사한 설정에는 OpenAI 모델 ID가 명시되어 있으므로 OpenRouter로 바꿀 때는 `LLM_MODELS`와 `EMBEDDING_MODEL`도 해당 ID로 바꾸거나 두 줄을 지워 제공자별 기본값을 적용한다. `LLM_MODELS=`처럼 빈 값으로 남기면 시작 시 거절한다. 제공자 전환으로 임베딩 모델 문자열이 바뀌면 기존 벡터의 재임베딩이 필요하며, `vector_mismatch`와 재구축 절차는 [RAG의 신선도와 정직한 저하 모드](rag.md#신선도와-정직한-저하-모드)를 따른다. 제공자를 바꿔도 [임베딩 모델을 분리하는 이유](#임베딩-모델을-분리하는-이유)는 그대로 적용된다.
 
@@ -42,7 +46,7 @@ OpenRouter 모델 ID는 `openai/...`처럼 제공자 이름을 포함해야 한�
 같은 응답 델타는 모든 실행 용도에서 공통 사용량 원장에 저장한다. 관리자 집계·보존 기간과 검색·임베딩을 포함하는 기록 범위는 [운영의 LLM 사용량 원장](operations.md#llm-사용량-원장)을 따른다.
 
 #### 문맥 크기와 도구 페이지
-한 도니 요청의 입력이 358,989토큰까지 커져 조직의 분당 토큰 제한(TPM)에 걸린 사례가 있었다. `store: false` 실행에서 매 턴 이전 입력·추론·도구 결과를 모두 다시 보내던 방식은 큰 파일과 반복 읽기가 누적될수록 문맥을 키웠다. OpenAI의 각 Responses 요청은 `context_management: [{ type: 'compaction', compact_threshold: N }]`를 보내 서버 측 문맥 압축을 사용한다. OpenRouter의 예외는 [제공자 선택](#제공자-선택)을 따른다. `N`과 낮춘 기본값은 [환경 변수](development.md#환경-변수)의 `LLM_COMPACT_THRESHOLD`를 따른다. 이 임계값은 압축을 시작하는 기준이지 TPM 제한 자체를 보장하는 예산은 아니다.
+한 도니 요청의 입력이 358,989토큰까지 커져 조직의 분당 토큰 제한(TPM)에 걸린 사례가 있었다. `store: false` 실행에서 매 턴 이전 입력·추론·도구 결과를 모두 다시 보내던 방식은 큰 파일과 반복 읽기가 누적될수록 문맥을 키웠다. `openai`의 각 Responses 요청은 `context_management: [{ type: 'compaction', compact_threshold: N }]`를 보내 서버 측 문맥 압축을 사용한다. OpenRouter와 Codex의 예외는 [제공자 선택](#제공자-선택)을 따른다. `N`과 낮춘 기본값은 [환경 변수](development.md#환경-변수)의 `LLM_COMPACT_THRESHOLD`를 따른다. 이 임계값은 압축을 시작하는 기준이지 TPM 제한 자체를 보장하는 예산은 아니다.
 
 서버가 반환한 암호화 `compaction` 항목은 메시지·함수 호출·암호화 추론과 함께 다음 입력에 보존한다. 가장 최근 압축 항목보다 앞선 입력은 모두 버리고 그 항목 이후의 입력과 이번 턴 도구 출력을 연결한다. 스트리밍에서도 `response.completed`의 최종 출력에 같은 규칙을 적용한다. 승인된 마지막 도구 없는 응답은 다음 호출이 없으므로 입력에 추가하지 않는다. 완료 검사에서 거절된 응답은 후속 요청이 있으므로 응답 항목과 재작업 지시를 입력에 보존한다.
 
@@ -68,13 +72,13 @@ OpenRouter 모델 ID는 `openai/...`처럼 제공자 이름을 포함해야 한�
 체크포인트를 쓰는 호출자는 두 곳이다. 실패·취소·중단된 대화 답변의 이어서 재시도는 [웹](web.md)의 대화 절에서, 실패한 지식 쓰기 작업의 이어서 재시도는 [쓰기 흐름](write-flow.md)에서 설명한다. 꿈꾸기는 체크포인트를 저장하지 않는다. 실패한 꿈꾸기는 다음 실행이 마지막 성공 지점 이후의 변경과 아직 학습하지 않은 메시지를 다시 모으므로 같은 실행을 이어갈 필요가 없다.
 
 #### OpenAI 재시도 정책
-도니의 Responses 호출과 문서·질의 임베딩은 `src/common/openai.ts`의 공용 클라이언트 팩터리와 fetch 어댑터를 사용한다. 최대 재시도 횟수는 [환경 변수](development.md#환경-변수)의 `OPENAI_MAX_RETRIES`로 정하며, 실제 재시도·백오프·취소는 OpenAI SDK가 담당한다. 어댑터는 SDK가 전달한 요청 인자와 취소 신호를 그대로 fetch에 전달한다.
+도니의 Responses 호출과 문서·질의 임베딩은 `src/common/openai.ts`의 공용 클라이언트 팩터리를 사용한다. LLM 팩터리는 설정한 제공자에 따라 API 키 기반 클라이언트 또는 Codex OAuth fetch 어댑터를 선택하고, 임베딩 팩터리는 API 키 기반 경로를 유지한다. 최대 재시도 횟수는 [환경 변수](development.md#환경-변수)의 `OPENAI_MAX_RETRIES`로 정하며, 실제 재시도·백오프·취소는 OpenAI SDK가 담당한다. Codex의 요청 변환과 401 갱신 외에는 어댑터가 SDK의 요청 인자와 취소 신호를 그대로 fetch에 전달한다.
 
 OpenAI SDK는 HTTP 429를 재시도하지만 `x-ratelimit-reset-tokens`와 `x-ratelimit-reset-requests`를 대기 힌트로 읽지 않는다. 따라서 분당 토큰 제한(TPM)을 만났을 때 SDK의 기본 백오프만으로는 토큰이 다시 사용 가능해지기 전에 재요청할 수 있다. 어댑터는 기존 `Retry-After` 또는 `retry-after-ms`가 없는 429 응답에만 `retry-after-ms`를 추가한다. 두 reset 헤더에서 해석 가능한 기간 중 최댓값을 사용하고, 유효한 reset 헤더가 없으면 오류 본문의 `try again in <기간>` 메시지를 사용한다. 선택한 기간에는 250ms의 여유를 더한다. 기존 대기 헤더와 429가 아닌 응답은 변경하지 않으며, 본문을 읽을 때는 응답 복제본을 사용해 SDK가 원래 오류 본문을 그대로 읽게 한다.
 
 SDK는 60초를 초과하는 대기 힌트를 무시하고 기본 백오프로 돌아간다. 250ms의 여유를 더한 값에도 이 제한이 적용되며, 엔진이 별도 대기 루프를 두어 제한을 우회하지는 않는다.
 
-선택적 검색 질의 확장과 재정렬은 이 팩터리를 사용하지 않는다. 기존의 `maxRetries: 0`, 5초 타임아웃을 유지하며, 실패하면 질의 확장은 원래 질의를, 재정렬은 기존 검색 순위를 사용한다. 질의 임베딩에는 공용 재시도 정책이 적용된다.
+선택적 검색 질의 확장과 재정렬도 공용 LLM 팩터리를 사용하므로 설정한 제공자와 Codex 로그인을 따른다. 다만 SDK 옵션은 기존의 `maxRetries: 0`, 5초 타임아웃을 유지하며, 실패하면 질의 확장은 원래 질의를, 재정렬은 기존 검색 순위를 사용한다. Codex 어댑터의 401 갱신 한 번은 이 SDK 재시도 설정과 별개다. 질의 임베딩에는 공용 임베딩 재시도 정책이 적용된다.
 
 ### 사용처
 - 지식 쓰기에서는 [쓰기 흐름](write-flow.md)의 문서 반영 판단과 편집을 맡는다.

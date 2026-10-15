@@ -2,7 +2,10 @@ import { createHash } from 'node:crypto';
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import type Database from 'better-sqlite3';
 import type { Logger } from 'pino';
-import OpenAI from 'openai';
+import type OpenAI from 'openai';
+import { createLlmClient, llmAvailable } from '../common/openai.js';
+import { CodexAuthService } from '../codex/codex-auth.service.js';
+import type { CodexCredentialSource } from '../codex/codex.types.js';
 import { sliceCodePoints } from '../agent/output.js';
 import type { Config } from '../config.js';
 import { newId } from '../common/ids.js';
@@ -58,6 +61,7 @@ export class SearchService {
     private readonly acl: AclService,
     @Optional() private readonly repo?: KnowledgeRepo,
     @Optional() private readonly usage?: UsageService,
+    @Optional() @Inject(CodexAuthService) private readonly codex?: CodexCredentialSource,
   ) {}
 
   async search(q: string, opts?: SearchOptions, signal?: AbortSignal): Promise<SearchHit[]> {
@@ -283,12 +287,12 @@ export class SearchService {
   }
 
   private client(): OpenAI {
-    return new OpenAI({ apiKey: this.config.openaiApiKey, baseURL: this.config.openaiBaseUrl, timeout: 5000, maxRetries: 0 });
+    return createLlmClient(this.config, this.codex).withOptions({ timeout: 5000, maxRetries: 0 });
   }
 
   private async expand(query: string, signal?: AbortSignal): Promise<string[]> {
     signal?.throwIfAborted();
-    if (this.config.searchExpand !== 'llm' || !this.config.openaiApiKey) return [];
+    if (this.config.searchExpand !== 'llm' || !llmAvailable(this.config, this.codex)) return [];
     this.prune(this.expansions);
     const cached = this.expansions.get(query);
     if (cached) return cached.queries;
@@ -312,7 +316,7 @@ export class SearchService {
 
   private async rerank(query: string, hits: SearchHit[], signal?: AbortSignal): Promise<SearchHit[]> {
     signal?.throwIfAborted();
-    if (this.config.searchRerank !== 'llm' || !this.config.openaiApiKey || hits.length < 2) return hits;
+    if (this.config.searchRerank !== 'llm' || !llmAvailable(this.config, this.codex) || hits.length < 2) return hits;
     const top = hits.slice(0, 12);
     try {
       const response = await this.client().responses.create({ model: this.config.llmModel, max_output_tokens: 180,

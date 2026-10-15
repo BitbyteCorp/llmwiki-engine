@@ -12,8 +12,9 @@ const envSchema = z.object({
   SESSION_SECRET: optionalText,
   OPENAI_API_KEY: optionalText,
   OPENAI_BASE_URL: z.preprocess((value) => value === '' ? undefined : value, z.url().optional()),
+  CODEX_BASE_URL: z.preprocess((value) => value === '' ? undefined : value, z.url().default('https://chatgpt.com/backend-api/codex')),
   OPENAI_MAX_RETRIES: z.coerce.number().int().nonnegative().default(8),
-  LLM_PROVIDER: z.enum(['openai', 'openrouter']).default('openai'),
+  LLM_PROVIDER: z.enum(['openai', 'openrouter', 'openai-codex']).default('openai'),
   LLM_MODELS: z.string()
     .transform(value => value.split(',').map(model => model.trim()).filter(Boolean))
     .pipe(z.array(z.string()).nonempty()).optional(),
@@ -53,7 +54,8 @@ export interface Config {
   port: number; publicUrl: string; dataDir: string; sessionSecret: string;
   jobsAutostart?: boolean;
   openaiApiKey?: string; openaiBaseUrl?: string; openaiMaxRetries?: number;
-  llmProvider: 'openai' | 'openrouter';
+  codexBaseUrl?: string;
+  llmProvider: 'openai' | 'openrouter' | 'openai-codex';
   llmModels: string[]; llmModel: string; llmReasoningEffort: string;
   llmBackgroundReasoningEffort: string;
   llmCompactThreshold: number;
@@ -79,6 +81,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     jobsAutostart: parsed.JOBS_AUTOSTART === 'true',
     openaiApiKey: parsed.OPENAI_API_KEY,
     openaiBaseUrl: parsed.OPENAI_BASE_URL ?? (parsed.LLM_PROVIDER === 'openrouter' ? 'https://openrouter.ai/api/v1' : undefined),
+    codexBaseUrl: parsed.CODEX_BASE_URL,
     openaiMaxRetries: parsed.OPENAI_MAX_RETRIES,
     llmProvider: parsed.LLM_PROVIDER,
     llmModels, llmModel: llmModels[0], llmReasoningEffort: parsed.LLM_REASONING_EFFORT,

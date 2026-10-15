@@ -4,9 +4,10 @@ import { RagModule } from '../rag/rag.module.js';
 import { AgentService } from './agent.service.js';
 import { AgentCheckpointsRepository } from './checkpoints.repository.js';
 import { UsageModule } from '../usage/usage.module.js';
+import { CodexModule } from '../codex/codex.module.js';
 
 @Module({
-  imports: [KnowledgeModule, RagModule, UsageModule],
+  imports: [KnowledgeModule, RagModule, UsageModule, CodexModule],
   providers: [AgentService, AgentCheckpointsRepository],
   exports: [AgentService, AgentCheckpointsRepository],
 })
