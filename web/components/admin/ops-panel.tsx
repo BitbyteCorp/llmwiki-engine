@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import { useQuery } from '@tanstack/react-query'
-import { Activity, Database, FileInput, RefreshCw, Settings, Sparkles, UploadCloud } from 'lucide-react'
+import { Activity, ArrowUpRight, Database, FileInput, RefreshCw, Sparkles, UploadCloud } from 'lucide-react'
 import { api, opsApi } from '@/lib/api'
 import { ErrorNotice, Loading, formatDate } from '@/components/common'
 import { Button } from '@/components/ui/button'
@@ -62,7 +62,7 @@ export function OpsPanel({ userId }: { userId: number }) {
         <Button size="sm" variant="outline" className="justify-start" disabled={actions.busy} onClick={() => actions.request({ kind: 'import' })}><FileInput className="size-4" />원문 가져오기</Button>
       </div>
     </section>
-    <Link className="explorer-row" href="/settings?tab=ops"><Settings className="size-4 shrink-0" />전체 운영 설정</Link>
+    <Link className="explorer-row" href="/settings?tab=ops"><ArrowUpRight className="size-4 shrink-0" />운영 상세</Link>
     {importing && <ImportDialog onClose={() => setImporting(false)} onFailure={actions.importFailed} onCreated={result => { setImporting(false); actions.importCreated(result) }} />}
     </div>
   </div>
