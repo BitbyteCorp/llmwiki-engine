@@ -116,7 +116,7 @@ current_directory=${current_directory%?}
 absolute_path() {
   case $1 in /*) absolute_input=$1 ;; *) absolute_input=$current_directory/$1 ;; esac
   LLMWIKI_PATH=$absolute_input awk 'BEGIN {
-    count = split(ENVIRON["LLMWIKI_PATH"], parts, "/"); depth = 0;
+    count = split(ENVIRON["LLMWIKI_PATH"], parts, /\//); depth = 0;
     for (i = 1; i <= count; i++) {
       if (parts[i] == "" || parts[i] == ".") continue;
       if (parts[i] == "..") { if (depth) depth--; }
@@ -191,6 +191,9 @@ unmanaged_count=0
 # A complete JSON grammar, rather than line/regex extraction, also accepts markers
 # emitted by JSON.stringify with escaped names, nested unknown fields and Unicode.
 # Output is exclusively single-quoted shell assignments/calls after validation.
+# macOS ships BWK awk: strings end at NUL (sprintf("%c", 0) is "" and index(s, "")
+# is 1) and split() on a one-character string also splits at newlines. NUL is
+# therefore tracked by flag, and split() always uses a regex separator.
 parse_json() {
   LLMWIKI_JSON_MODE=$1 LLMWIKI_CLIENT=$client awk '
   function bad() { exit 1 }
@@ -214,7 +217,6 @@ parse_json() {
       else if (c == "\n") result = result "\\n";
       else if (c == "\r") result = result "\\r";
       else if (c == "\t") result = result "\\t";
-      else if (c == sprintf("%c", 0)) result = result "\\u0000";
       else if ((code = index(controls, c))) result = result sprintf("\\u%04x", code);
       else result = result c;
     }
@@ -237,7 +239,7 @@ parse_json() {
   }
   function string(    result, encoded, c, escape, code, low) {
     if (substr(text, position++, 1) != "\"") bad();
-    result = encoded = "";
+    result = encoded = ""; string_nul = 0;
     while (position <= length(text)) {
       c = substr(text, position++, 1);
       if (c == "\"") { string_json = "\"" encoded "\""; return result }
@@ -258,9 +260,10 @@ parse_json() {
           if (code >= 55296 && code <= 57343) {
             result = result utf8(65533); encoded = encoded sprintf("\\u%04x", code); continue;
           }
+          if (code == 0) { result = result nul; encoded = encoded "\\u0000"; string_nul = 1; continue }
           c = utf8(code);
         } else bad();
-      } else if (index(controls, c) || c == sprintf("%c", 0)) bad();
+      } else if (index(controls, c) || (nul != "" && c == nul)) bad();
       result = result c; encoded = encoded json_characters(c);
     }
     bad();
@@ -274,7 +277,7 @@ parse_json() {
       if (substr(text, position, 1) == (c == "{" ? "}" : "]")) { position++; return node }
       while (1) {
         if (c == "{") {
-          whitespace(); key = string(); whitespace();
+          whitespace(); key = string(); if (string_nul) nul_key[node, key] = 1; whitespace();
           if (substr(text, position++, 1) != ":") bad();
         } else key = counts[node] + 1;
         child = value();
@@ -293,13 +296,13 @@ parse_json() {
     } else bad();
     return node;
   }
-  function safe_name(name,    path, parts, count, i) {
-    if (name == "" || name == ".llmwiki-install.json" || substr(name, 1, 1) == "/" || index(name, sprintf("%c", 0))) return 0;
-    path = name; gsub(/\\/, "/", path); count = split(path, parts, "/");
+  function safe_name(name, node,    path, parts, count, i) {
+    if (name == "" || name == ".llmwiki-install.json" || substr(name, 1, 1) == "/" || ((node SUBSEP name) in nul_key)) return 0;
+    path = name; gsub(/\\/, "/", path); count = split(path, parts, /\//);
     for (i = 1; i <= count; i++) if (parts[i] == "" || parts[i] == "." || parts[i] == "..") return 0;
     return 1;
   }
-  BEGIN { for (i = 1; i < 32; i++) controls = controls sprintf("%c", i); position = 1 }
+  BEGIN { for (i = 1; i < 32; i++) controls = controls sprintf("%c", i); nul = sprintf("%c", 0); position = 1 }
   { text = text $0 "\n" }
   END {
     root = value(); whitespace();
@@ -313,7 +316,7 @@ parse_json() {
     if (kind[schema] != "number" || data[schema] + 0 != 1 || kind[client] != "string" || data[client] != ENVIRON["LLMWIKI_CLIENT"] || kind[files] != "object") bad();
     for (i = 1; i <= counts[files]; i++) {
       name = keys[files, i]; child = members[files, name];
-      if (!safe_name(name) || kind[child] != "string" || length(data[child]) != 64 || data[child] ~ /[^a-f0-9]/) bad();
+      if (!safe_name(name, files) || kind[child] != "string" || length(data[child]) != 64 || data[child] ~ /[^a-f0-9]/) bad();
     }
     if (ENVIRON["LLMWIKI_JSON_MODE"] == "remote") print "bundle_version_json=" shell_quote(encoded[version]);
     else print "installed_version_json=" shell_quote(encoded[version]);

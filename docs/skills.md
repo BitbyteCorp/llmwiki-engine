@@ -27,6 +27,8 @@ curl -fsSL <ENGINE_URL>/skills/install.sh | sh -s -- update codex --project /pat
 
 POSIX `sh`, 기본 파일 도구, `awk`, `sha256sum` 또는 macOS의 `shasum -a 256`, `curl` 또는 `wget`이 필요하다. Git, Node.js, pnpm, Python과 엔진 빌드는 필요 없다. `wget -qO- <ENGINE_URL>/skills/install.sh | sh -s -- install codex`도 가능하다. 설치기는 MCP 설정·OAuth 로그인·Hermes 프로젝트 신뢰 승인을 수행하지 않고 별도 단계를 출력한다.
 
+`awk`는 gawk·mawk·BusyBox뿐 아니라 macOS 기본 awk(BWK 계열, `awk version 20200816`)에서도 같은 결과를 내야 한다. 이식성 함정은 두 가지다. 첫째, BWK awk는 문자열을 NUL에서 끊으므로 `sprintf("%c", 0)`이 빈 문자열이 되고 `index(s, "")`는 1을 반환한다. 예전 설치기는 파일 이름의 NUL 검사를 `index(name, sprintf("%c", 0))`로 했고, 그 결과 macOS에서 모든 파일 이름을 거부했다. 그래서 원격 설치가 클라이언트와 관계없이 `Invalid remote skill manifest.`로 실패했다. 지금은 JSON 해석 중 `\u0000`을 만나면 플래그로 기록하고 escape 표현을 직접 만든다. 둘째, BWK awk의 `split(s, a, "/")`처럼 한 글자 문자열을 구분자로 주면 줄바꿈에서도 나눈다. 따라서 `split`에는 항상 정규식 구분자 `/\//`를 쓴다. Linux 테스트 환경의 기본 awk는 gawk라 이 함정들을 잡지 못한다. `skills/install.sh`의 awk 코드를 바꿀 때는 BWK awk를 `PATH` 앞에 두고 `src/skill` 테스트를 다시 실행한다.
+
 대화형 응답은 스크립트를 받는 표준 입력과 분리한 `/dev/tty`에서 읽는다. 제어 터미널이 없는 CI·컨테이너에서는 입력을 기다리지 않고 사용법을 출력하며 실패한다. `install`처럼 일부 인수만 지정하면 터미널에서 빠진 클라이언트·범위·디렉터리만 묻고, 명시한 값은 다시 묻지 않는다. 응답 중 EOF·Ctrl-C는 설치 파일을 쓰기 전에 중단한다.
 
 `install`, `status`, `update`는 선택적인 `--project <dir>`, `--force`를 받는다. `--force`의 수정 보호 경계와 상태는 [기존 설치와 로컬 수정 보호](#기존-설치와-로컬-수정-보호)를 따른다. 다른 엔진에서 자료를 받으려면 파이프 오른쪽에 `LLMWIKI_URL=https://other.example.com sh -s -- install codex`를 지정한다. 이 변수는 다운로드 주소만 바꾸며 MCP 연결 주소를 저장하지 않는다.
