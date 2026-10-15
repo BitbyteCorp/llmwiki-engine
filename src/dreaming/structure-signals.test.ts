@@ -9,7 +9,7 @@ function emptySignals(overrides: Partial<StructureSignals> = {}): StructureSigna
     duplicates: [], orphans: [], unresolved: [], ambiguous: [], oversizedFolders: [], oversizedNotes: [],
     tinyNotes: [], missingHubs: [], missingDomainHubs: [], unlinkedDomainHubs: [], unclassifiedNotes: [],
     shallowDomainNotes: [], tooDeepNotes: [], invalidFolderNames: [],
-    invalidMetadata: [], invalidMetadataCount: 0, ...overrides,
+    invalidMetadata: [], invalidMetadataCount: 0, memoryIssues: [], ...overrides,
   };
 }
 
@@ -18,7 +18,10 @@ function fixture(notes: Record<string, string>, graph: CatalogGraph = { nodes: [
     diffNames: async (fromSha: string | null) => fromSha === null
       ? Object.keys(notes).map((path) => ({ path, status: 'A' }))
       : [],
-    readFile: async (path: string) => notes[path] ?? null,
+    readFile: async (path: string) => {
+      if (!/\.md$/i.test(path)) throw new Error(`Binary contents must not be read: ${path}`);
+      return notes[path] ?? null;
+    },
   } as unknown as KnowledgeRepo;
   const catalog = { graph: () => graph } as unknown as CatalogService;
   const comparison = { duplicates: async () => duplicates } as unknown as ComparisonService;
@@ -50,6 +53,7 @@ describe('dream mode selection', () => {
     { tooDeepNotes: ['wiki/engineering/backend/cache/eviction/policy.md'] },
     { invalidFolderNames: [{ path: 'wiki/batch18/', reason: '배치 번호' }] },
     { invalidMetadataCount: 1, invalidMetadata: [{ path: 'wiki/concepts/cache.md', issues: [{ field: 'tags', message: '필수 속성이 없다' }] }] },
+    { memoryIssues: ["MEMORY.md에 '## 참조' 섹션이 필요하다."] },
   ])('prioritizes structural repair over local changes and sweeps for %j', (signals) => {
     expect(selectDreamMode(emptySignals(signals), true, sweepFolders, new Map())).toEqual({ mode: 'structural', focus: null });
     expect(selectDreamMode(emptySignals(signals), false, sweepFolders, new Map())).toEqual({ mode: 'structural', focus: null });
@@ -93,6 +97,26 @@ describe('structural signal collection', () => {
   const validMetadata = `${semanticMetadata}\nauthor: [도니]\ndate created: 2026-10-01\ndate modified: 2026-10-10`;
   const metadataNote = (metadata: string) => `---\n${metadata}\n---\n# 캐시\n\n캐시 개념을 설명한다.`;
 
+  it.each([
+    { content: '# Legacy memory', count: 4 },
+    { content: `# Memory\n## 작업 관례\n## 진행 중\n## 참조\n${'a'.repeat(4001)}`, count: 1 },
+  ])('selects structural mode for committed memory violations without other input', async ({ content, count }) => {
+    const { signals, folders } = await fixture({ 'MEMORY.md': content });
+    expect(signals.memoryIssues).toHaveLength(count);
+    expect(selectDreamMode(signals, false, folders, new Map())).toEqual({ mode: 'structural', focus: null });
+    expect(restrictStructureSignals(signals, [], []).memoryIssues).toEqual(signals.memoryIssues);
+    expect(restrictStructureSignals(signals, [], ['wiki/concepts/']).memoryIssues).toEqual(signals.memoryIssues);
+  });
+
+  it('keeps clean idle runs skipped with valid or absent memory', async () => {
+    const snapshots: Record<string, string>[] = [{}, { 'MEMORY.md': '# Memory\n## 작업 관례\n## 진행 중\n## 참조\n' }];
+    for (const notes of snapshots) {
+      const { signals, folders } = await fixture(notes);
+      expect(signals.memoryIssues).toEqual([]);
+      expect(selectDreamMode(signals, false, folders, new Map())).toEqual({ mode: null, focus: null });
+    }
+  });
+
   it('resolves frontmatter aliases from the complete committed note snapshot', async () => {
     const { signals } = await fixture({
       'wiki/concepts/source.md': '[[CACHE TERM#Overview|Cache]] [[raw alias]]',
@@ -101,6 +125,29 @@ describe('structural signal collection', () => {
     });
     expect(signals.unresolved).toEqual([]);
     expect(signals.ambiguous).toEqual([]);
+  });
+
+  it('derives orphan inbound links from other committed wiki notes rather than stale catalog edges', async () => {
+    const { signals } = await fixture({
+      'index.md': '[[wiki/engineering/index]] [[wiki/concepts/root-only]]',
+      'wiki/engineering/index.md': '[[Canonical Term]]',
+      'wiki/engineering/AGENTS.md': '[[wiki/concepts/schema-only]]',
+      'wiki/concepts/linked.md': '---\naliases: ["Canonical Term"]\n---\nLinked',
+      'wiki/concepts/root-only.md': 'Root-only inbound',
+      'wiki/concepts/schema-only.md': 'Schema-only inbound',
+      'wiki/concepts/self.md': '[[wiki/concepts/self]]',
+      'wiki/concepts/stale.md': 'Catalog-only inbound',
+      'wiki/concepts/cycle-one.md': '[[wiki/concepts/cycle-two]]',
+      'wiki/concepts/cycle-two.md': '[[wiki/concepts/cycle-one]]',
+      'raw/reference.md': '[[wiki/concepts/stale]]',
+    }, { nodes: [], edges: [
+      { from: 'wiki/engineering/index.md', to: 'wiki/concepts/stale.md' },
+      { from: 'raw/reference.md', to: 'wiki/concepts/root-only.md' },
+    ] });
+    expect(signals.orphans).toEqual([
+      'wiki/concepts/schema-only.md', 'wiki/concepts/self.md', 'wiki/concepts/stale.md',
+    ]);
+    expect(signals.unlinkedDomainHubs).toEqual([]);
   });
 
   it('reports ambiguous aliases with all candidate paths while retaining exact basename precedence', async () => {
@@ -408,7 +455,7 @@ describe('structural signal collection', () => {
       ],
     };
     const { signals } = await fixture(notes, graph);
-    expect(signals.orphans).toEqual(['wiki/empty.md', 'wiki/index.md']);
+    expect(signals.orphans).toEqual(['wiki/b/shared.md', 'wiki/empty.md', 'wiki/index.md']);
     expect(signals.unresolved).toEqual([{ path: 'wiki/source.md', target: 'Missing.MD' }]);
     expect(signals.ambiguous).toEqual([{
       path: 'wiki/source.md', target: 'Shared', candidates: ['wiki/a/Shared.md', 'wiki/b/shared.md'],
@@ -542,7 +589,7 @@ describe('structural signal scopes', () => {
       missingHubs: [signals.missingHubs[0]],
       missingDomainHubs: [], unlinkedDomainHubs: [], unclassifiedNotes: [],
       shallowDomainNotes: [], tooDeepNotes: [], invalidFolderNames: [],
-      invalidMetadata: [], invalidMetadataCount: 0,
+      invalidMetadata: [], invalidMetadataCount: 0, memoryIssues: [],
     });
     expect(restrictStructureSignals(signals, [], [])).toEqual(emptySignals());
   });
@@ -555,7 +602,7 @@ describe('structural signal scopes', () => {
       missingHubs: [signals.missingHubs[0]],
       missingDomainHubs: [], unlinkedDomainHubs: [], unclassifiedNotes: [],
       shallowDomainNotes: [], tooDeepNotes: [], invalidFolderNames: [],
-      invalidMetadata: [], invalidMetadataCount: 0,
+      invalidMetadata: [], invalidMetadataCount: 0, memoryIssues: [],
     });
     expect(signals.orphans).toEqual(['wiki/a/note.md', 'wiki/a/nested/note.md', 'wiki/b/note.md']);
   });

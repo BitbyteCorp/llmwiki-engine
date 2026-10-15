@@ -17,6 +17,7 @@ import { loadConfig } from '../config.js';
 import { openDb, runMigrations } from '../db/index.js';
 import { EventsService } from '../events/events.service.js';
 import { KnowledgeRepo } from '../knowledge/repo.js';
+import { WikiCatalog } from '../knowledge/wiki-catalog.js';
 import { IndexerService } from '../rag/indexer.service.js';
 import { SearchService } from '../rag/search.service.js';
 import { WriteJobsRepository } from './write-jobs.repository.js';
@@ -45,7 +46,15 @@ async function fixture(responder: FakeResponder) {
   const { startFakeOpenAI }: { startFakeOpenAI(script: FakeResponder): Promise<FakeProvider> } = await import(new URL('../../test/fake-openai.ts', import.meta.url).href);
   const dir = await mkdtemp(join(tmpdir(), 'llmwiki-resume-'));
   cleanup.push(() => rm(dir, { recursive: true, force: true }));
-  const fake = await startFakeOpenAI(responder);
+  let scriptedTurn = 0;
+  const fake = await startFakeOpenAI(request => {
+    // These continuation fixtures intentionally retain legacy note layouts. Navigation
+    // repair is a separate execution, not another parent/child/conflict scripted turn.
+    if (String(request.body.instructions).includes('## 탐색 가능성 검증 후 한 번의 보완')) {
+      return 'Legacy navigation issues remain for later organization.';
+    }
+    return responder(request, scriptedTurn++);
+  });
   cleanup.push(() => fake.close());
   const config = loadConfig({ NODE_ENV: 'test', DATA_DIR: dir, OPENAI_API_KEY: 'test-key', OPENAI_BASE_URL: fake.url, OPENAI_MAX_RETRIES: '0', EMBEDDING_DIMENSIONS: '2' });
   const logs: Record<string, unknown>[] = [];
@@ -61,7 +70,7 @@ async function fixture(responder: FakeResponder) {
   const checkpoints = new AgentCheckpointsRepository(db);
   function services(repo: KnowledgeRepo) {
     const search = new SearchService(config, db, log, acl, repo);
-    const agent = new AgentService(config, log, repo, search, acl);
+    const agent = new AgentService(config, log, repo, search, acl, new WikiCatalog(repo, acl));
     const indexer = new IndexerService(config, db, log, repo, events);
     const jobs = new WriteJobsService(repository, agent, indexer, repo, users, log, events, acl);
     cleanup.push(() => jobs.stop());
@@ -336,7 +345,7 @@ describe('write job continuation with real Dony and git', () => {
         expect(instructions).toContain('96');
         expect(instructions).toContain('8');
         expect((request.body.tools as Array<{ name: string }>).map(tool => tool.name).sort()).toEqual([
-          'commit', 'delete_file', 'list_files', 'move_file', 'read_file', 'search', 'write_file',
+          'browse_catalog', 'commit', 'delete_file', 'list_files', 'move_file', 'read_file', 'search', 'write_file',
         ]);
         const messages = request.body.input as Array<{ role: string; content: string }>;
         expect(messages).toHaveLength(1);

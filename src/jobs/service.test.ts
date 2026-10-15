@@ -15,6 +15,7 @@ import { newId, toStorageId } from '../common/ids.js';
 import { openDb, runMigrations, type Db } from '../db/index.js';
 import { EventsService } from '../events/events.service.js';
 import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
+import { WikiCatalog } from '../knowledge/wiki-catalog.js';
 import type { AgentService } from '../agent/agent.service.js';
 import type { RunAgentOptions } from '../agent/agent.types.js';
 import { makeWorktreeTools } from '../agent/worktree.js';
@@ -27,6 +28,19 @@ import { WriteJobsService } from './write-jobs.service.js';
 
 const git = promisify(execFile);
 const author = { name: 'Requesting User', email: 'user@example.com' };
+const metadataRepairTitle = '## 메타데이터 검증 후 한 번의 보완';
+
+function metadataRepairCalls(agent: AgentService) {
+  return vi.mocked(agent.runAgent).mock.calls.filter(([options]) => options.instructions.includes(metadataRepairTitle));
+}
+
+function mockMetadataRepair(agent: AgentService, repair: AgentService['runAgent']) {
+  // Legacy minimal note fixtures may also trigger the independent navigation pass.
+  vi.mocked(agent.runAgent).mockImplementation(options => options.instructions.includes(metadataRepairTitle)
+    ? repair(options)
+    : Promise.resolve({ text: 'Navigation unchanged', finalText: 'Navigation unchanged', toolCalls: 0 }));
+}
+
 const fixtures: Array<{ dir: string; db: Db; jobs: WriteJobsService }> = [];
 
 function note(body: string): string {
@@ -49,9 +63,9 @@ async function fixture(jobsAutostart = true) {
       return { summary: 'Save useful knowledge\nDetails of the update.' };
     }),
     resolveConflicts: vi.fn(async () => {}),
-    runAgent: vi.fn(async (_options: RunAgentOptions) => ({ text: 'Metadata unchanged', finalText: 'Metadata unchanged', toolCalls: 0 })),
+    runAgent: vi.fn(async (_options: RunAgentOptions) => ({ text: 'Quality unchanged', finalText: 'Quality unchanged', toolCalls: 0 })),
     baseInstructions: vi.fn(async () => 'Write durable knowledge.'),
-    worktreeTools: vi.fn((...args: Parameters<AgentService['worktreeTools']>) => makeWorktreeTools({} as SearchService, args[0], args[1], acl, args[2])),
+    worktreeTools: vi.fn((...args: Parameters<AgentService['worktreeTools']>) => makeWorktreeTools({} as SearchService, args[0], args[1], acl, new WikiCatalog(repo, acl), args[2])),
   } as unknown as AgentService;
   const indexer = {
     syncToHead: vi.fn(async () => ({ indexedSha: await repo.headSha(), changedFiles: 1 })),
@@ -354,7 +368,7 @@ describe('WriteJobsService with real git and a Dony double', () => {
       await advance(ctx.repo, 'metadata-conflict-concurrent', note('concurrent fact\n'));
       return { summary: 'Combine concurrent knowledge' };
     });
-    vi.mocked(ctx.agent.runAgent).mockImplementation(async options => {
+    mockMetadataRepair(ctx.agent, async options => {
       await options.tools.find(tool => tool.name === 'write_file')!.run({
         path: 'wiki/shared.md', content: note('requested fact\n'),
       });
@@ -368,7 +382,7 @@ describe('WriteJobsService with real git and a Dony double', () => {
     const result = await completed(jobs, jobs.submit({ userId: 1, input: 'combine', source: 'mcp' }).id);
     expect(result.status).toBe('succeeded');
     expect(ctx.agent.resolveConflicts).toHaveBeenCalledTimes(1);
-    expect(ctx.agent.runAgent).toHaveBeenCalledTimes(initiallyInvalid ? 1 : 0);
+    expect(metadataRepairCalls(ctx.agent)).toHaveLength(initiallyInvalid ? 1 : 0);
     expect(matter((await ctx.repo.readFile('wiki/shared.md'))!).content).toBe('requested fact\nconcurrent fact\n');
     const metadataIssues = [{
       path: 'wiki/shared.md',
@@ -504,7 +518,7 @@ describe('WriteJobsService with real git and a Dony double', () => {
     expect(ctx.agent.runWrite).not.toHaveBeenCalled();
   });
 
-  it('stamps valid agent-created notes without changing metadata or body or invoking repair', async () => {
+  it('stamps valid agent-created notes without changing metadata or body or invoking metadata repair', async () => {
     const { ctx, jobs } = await fixture();
     const body = '# Durable knowledge\r\n\r\nExact body spacing.  \r\n';
     vi.mocked(ctx.agent.runWrite).mockImplementation(async (_job, wt) => {
@@ -524,11 +538,11 @@ describe('WriteJobsService with real git and a Dony double', () => {
     expect(metadataDate(parsed.data['date created'])).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(metadataDate(parsed.data['date modified'])).toBe(metadataDate(parsed.data['date created']));
     expect(validateNoteMetadata('wiki/result.md', content)).toEqual([]);
-    expect(ctx.agent.runAgent).not.toHaveBeenCalled();
+    expect(metadataRepairCalls(ctx.agent)).toHaveLength(0);
     expect(jobs.events(result.id).at(-1)?.detail).not.toHaveProperty('metadataIssues');
   });
 
-  it('invokes repair exactly once, commits the valid result and includes repair usage', async () => {
+  it('invokes metadata repair exactly once, commits the valid result and includes repair usage', async () => {
     const { ctx, jobs } = await fixture();
     const body = '# Useful fact\nKeep this knowledge.\n';
     vi.mocked(ctx.agent.runWrite).mockImplementation(async (_job, wt, _author, _user, options) => {
@@ -536,7 +550,7 @@ describe('WriteJobsService with real git and a Dony double', () => {
       await wt.write('wiki/result.md', body);
       return { summary: 'Save useful fact' };
     });
-    vi.mocked(ctx.agent.runAgent).mockImplementation(async options => {
+    mockMetadataRepair(ctx.agent, async options => {
       expect(JSON.parse(options.input as string).notes).toEqual([{
         path: 'wiki/result.md',
         issues: expect.arrayContaining([expect.objectContaining({ field: 'type' })]),
@@ -548,7 +562,7 @@ describe('WriteJobsService with real git and a Dony double', () => {
     jobs.start();
     const result = await completed(jobs, jobs.submit({ userId: 1, input: 'save', source: 'mcp' }).id);
     expect(result.status).toBe('succeeded');
-    expect(ctx.agent.runAgent).toHaveBeenCalledTimes(1);
+    expect(metadataRepairCalls(ctx.agent)).toHaveLength(1);
     expect(result.commits).toHaveLength(2);
     const content = (await ctx.repo.readFile('wiki/result.md'))!;
     expect(matter(content).content).toBe(body);
@@ -566,7 +580,7 @@ describe('WriteJobsService with real git and a Dony double', () => {
       await wt.write('wiki/result.md', body);
       return { summary: 'Preserve useful fact' };
     });
-    vi.mocked(ctx.agent.runAgent).mockImplementation(async options => {
+    mockMetadataRepair(ctx.agent, async options => {
       options.onUsage?.({ inputTokens: 7, cachedInputTokens: 1, outputTokens: 2, reasoningTokens: 1 });
       if (outcome === 'error') throw new Error('Repair provider unavailable');
       await options.tools.find(tool => tool.name === 'write_file')!.run({
@@ -578,7 +592,7 @@ describe('WriteJobsService with real git and a Dony double', () => {
     const result = await completed(jobs, jobs.submit({ userId: 1, input: 'save', source: 'mcp' }).id);
     expect(result.status).toBe('succeeded');
     expect(result.error).toBeNull();
-    expect(ctx.agent.runAgent).toHaveBeenCalledTimes(1);
+    expect(metadataRepairCalls(ctx.agent)).toHaveLength(1);
     expect(result.commits).toHaveLength(outcome === 'invalid' ? 2 : 1);
     expect(matter((await ctx.repo.readFile('wiki/result.md'))!).content).toBe(body);
     const metadataIssues = [{
@@ -595,7 +609,7 @@ describe('WriteJobsService with real git and a Dony double', () => {
     }
   });
 
-  it('does not repair schema, raw, journal, root metadata or deleted notes', async () => {
+  it('does not repair metadata in schema, raw, journal, root metadata or deleted notes', async () => {
     const { ctx, jobs } = await fixture();
     const seed = await ctx.repo.createWorktree('deleted-note-baseline');
     await seed.write('wiki/deleted.md', 'legacy invalid note\n');
@@ -613,7 +627,7 @@ describe('WriteJobsService with real git and a Dony double', () => {
     jobs.start();
     const result = await completed(jobs, jobs.submit({ userId: 1, input: 'save', source: 'mcp' }).id);
     expect(result.status).toBe('succeeded');
-    expect(ctx.agent.runAgent).not.toHaveBeenCalled();
+    expect(metadataRepairCalls(ctx.agent)).toHaveLength(0);
     expect(await ctx.repo.readFile('wiki/deleted.md')).toBeNull();
     expect(await ctx.repo.readFile('wiki/domain/AGENTS.md')).toBe('# Domain writing rules\n');
     expect(await ctx.repo.readFile('raw/source.md')).toBe('# Original source\n');
@@ -630,7 +644,7 @@ describe('WriteJobsService with real git and a Dony double', () => {
     jobs.start();
     const result = await completed(jobs, jobs.submit({ userId: 1, input: 'save', source: 'mcp' }).id);
     expect(result.status).toBe('succeeded');
-    expect(ctx.agent.runAgent).not.toHaveBeenCalled();
+    expect(metadataRepairCalls(ctx.agent)).toHaveLength(0);
     expect(matter((await ctx.repo.readFile('wiki/result.md'))!).content).toBe('# Preserved knowledge\n');
     expect(jobs.events(result.id).at(-1)?.detail).not.toHaveProperty('metadataIssues');
   });

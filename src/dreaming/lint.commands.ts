@@ -13,9 +13,8 @@ import { CatalogService } from '../rag/catalog.service.js';
 import { ComparisonService } from '../rag/comparison.service.js';
 import { collectStructureSignals, type StructureSignals } from './structure-signals.js';
 
-type LintSignals = Omit<StructureSignals, 'duplicates' | 'orphans' | 'missingHubs'> & {
+type LintSignals = Omit<StructureSignals, 'duplicates' | 'missingHubs'> & {
   duplicates: StructureSignals['duplicates'] | null;
-  orphans: string[] | null;
   missingHubs: StructureSignals['missingHubs'] | null;
 };
 
@@ -34,7 +33,7 @@ async function inspect(): Promise<LintReport> {
     const { signals } = await collectStructureSignals(repo,
       { graph: () => ({ nodes: [], edges: [] }) }, { duplicates: async () => [] }, headSha);
     return { headSha, indexedSha: null, catalog: 'unavailable',
-      signals: { ...signals, duplicates: null, orphans: null, missingHubs: null } };
+      signals: { ...signals, duplicates: null, missingHubs: null } };
   };
   const path = join(config.dataDir, 'llmwiki.db');
   try {
@@ -72,16 +71,16 @@ function humanReport(report: LintReport): string {
     `Knowledge structure lint — main ${report.headSha}`,
     `Catalog: ${report.catalog} (indexed SHA: ${report.indexedSha ?? 'none'})`,
     'Read-only inspection; no initialization, reindexing or embeddings are generated.',
-    'Exit 0 even when findings are present; nonzero only for errors.',
+    'Exit 1 when any findings are present, including advisory signals; exit 0 otherwise.',
   ];
   const signals = report.signals;
   if (report.catalog !== 'current') {
     lines.push(report.catalog === 'stale'
-      ? 'Index-backed duplicate, orphan and tag-hub findings use the stale indexed SHA above.'
-      : 'Index-backed duplicate, orphan and tag-hub checks are unavailable (not clean).',
-    'Path, domain, wikilink, metadata and size findings always use the committed main SHA above.');
+      ? 'Index-backed duplicate and tag-hub findings use the stale indexed SHA above.'
+      : 'Index-backed duplicate and tag-hub checks are unavailable (not clean).',
+    'Orphan, path, domain, wikilink, metadata and size findings always use the committed main SHA above.');
   }
-  lines.push('Each signal list is capped at 20 findings; only invalidMetadataCount reports the full metadata backlog.');
+  lines.push('Path candidate lists are capped at 20 findings; invalidMetadataCount reports the full metadata backlog and memory issues are global.');
   const section = (label: string, findings: string[] | null) => {
     if (findings === null) {
       lines.push('', `${label} (unavailable)`);
@@ -98,6 +97,7 @@ function humanReport(report: LintReport): string {
   section('Invalid folder names', signals.invalidFolderNames.map(({ path, reason }) => `${path}: ${reason}`));
   section('Duplicate candidates', signals.duplicates?.map(({ left, right, reason, score }) => `${left} ↔ ${right} (${reason}, score ${score})`) ?? null);
   section('Orphan notes', signals.orphans);
+  section('Memory issues', signals.memoryIssues);
   section('Unresolved wikilinks', signals.unresolved.map(({ path, target }) => `${path} → [[${target}]]`));
   section('Ambiguous wikilinks', signals.ambiguous.map(({ path, target, candidates }) => `${path} → [[${target}]]: ${candidates.join(', ')}`));
   section('Oversized folders', signals.oversizedFolders.map(({ path, count }) => `${path}: ${count} direct notes`));
@@ -114,11 +114,13 @@ function humanReport(report: LintReport): string {
 
 export function registerLintCommands(program: Command): void {
   program.command('lint')
-    .description('Read-only structure signals from committed main and its existing catalog; exit 0 for findings, nonzero only for errors')
-    .option('--json', 'Print JSON; missing index-backed checks are null, stale checks are labeled with their indexed SHA')
-    .addHelpText('after', '\nNever initializes, seeds, prunes, migrates or reindexes data and never generates embeddings.\nPath-backed checks use current main. Index-backed checks are labeled stale or unavailable when needed.')
+    .description('Read-only structure signals from committed main and its existing catalog; exit 1 for any findings')
+    .option('--json', 'Print JSON; unavailable duplicate and tag-hub checks are null, stale checks include their indexed SHA')
+    .addHelpText('after', '\nNever initializes, seeds, prunes, migrates or reindexes data and never generates embeddings.\nOrphan and other file-backed checks use committed main. Duplicate and tag-hub checks are labeled stale or unavailable when needed.')
     .action(async (options: { json?: boolean }) => {
       const report = await inspect();
       console.log(options.json ? JSON.stringify(report, null, 2) : humanReport(report));
+      process.exitCode = Object.values(report.signals).some((findings) => typeof findings === 'number'
+        ? findings > 0 : findings !== null && findings.length > 0) ? 1 : 0;
     });
 }

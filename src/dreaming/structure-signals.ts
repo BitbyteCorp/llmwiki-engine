@@ -1,10 +1,9 @@
 import { posix } from 'node:path';
 import matter from 'gray-matter';
 import type { KnowledgeRepo } from '../knowledge/repo.js';
-import {
-  domainOf, invalidWikiFolderNameReason, isDomainSchemaPath, isShallowDomainNote, isTooDeepWikiNote,
-  isUnclassifiedWikiNote, listDomains, wikiFolderPaths,
-} from '../knowledge/domains.js';
+import { domainOf, isDomainSchemaPath } from '../knowledge/domains.js';
+import { MEMORY_PATH, memoryIssues } from '../knowledge/memory.js';
+import { navigationIssues, type NavigationIssue } from '../knowledge/navigation-check.js';
 import { ENGINE_FIELDS, isMetadataTarget, validateNoteMetadata, type MetadataIssue } from '../knowledge/note-metadata.js';
 import type { CatalogService } from '../rag/catalog.service.js';
 import { aliasesFromFrontmatter, wikilinkTargets } from '../rag/chunking.js';
@@ -33,6 +32,8 @@ export interface StructureSignals {
   invalidMetadata: Array<{ path: string; issues: MetadataIssue[] }>;
   /** Full inspected-main backlog, even when candidate lists are capped or scoped. */
   invalidMetadataCount: number;
+  /** Global committed-memory repair candidates, retained in every scope. */
+  memoryIssues: string[];
 }
 
 function wikiNote(path: string): boolean {
@@ -56,6 +57,8 @@ export async function collectStructureSignals(
   const noteFiles = files.filter((path) => /\.md$/i.test(path));
   const notes = new Map<string, { content: string; bodyChars: number }>();
   const aliasesByPath = new Map<string, readonly string[]>();
+  // Retain attachment paths for navigation resolution without reading binary contents.
+  const snapshot = new Map(files.map((path) => [path, '']));
   for (const path of noteFiles) {
     const content = await repo.readFile(path, sha);
     if (content === null) continue;
@@ -71,21 +74,14 @@ export async function collectStructureSignals(
       bodyChars = content.trim().length;
     }
     notes.set(path, { content, bodyChars });
+    snapshot.set(path, content);
   }
   const noteResolver = new NoteTargetResolver(noteFiles, aliasesByPath);
   const fileResolver = new NoteTargetResolver(files);
-  const domains = listDomains(files);
-  const domainHubPaths = new Set(domains.map(({ hubPath }) => hubPath));
-  const rootLinks = new Set<string>();
-  if (domains.some(({ hasHub }) => hasHub)) {
-    const rootIndex = notes.get('index.md')?.content;
-    for (const { text } of wikilinkTargets(rootIndex ?? '')) {
-      const { path } = noteResolver.resolve(text);
-      if (path !== null) rootLinks.add(path);
-    }
-  }
+  const navigation = navigationIssues({ files: snapshot, changed: files });
+  const navigationPaths = (kind: NavigationIssue['kind']): string[] => navigation
+    .filter((issue) => issue.kind === kind).map(({ path }) => path).sort(comparePath).slice(0, SIGNAL_LIMIT);
   const graph = catalog.graph();
-  const incoming = new Set(graph.edges.map(({ to }) => to));
   const outgoing = new Map<string, Set<string>>();
   for (const { from, to } of graph.edges) {
     if (!wikiPaths.has(from) || !wikiPaths.has(to)) continue;
@@ -108,8 +104,8 @@ export async function collectStructureSignals(
       .filter(({ left, right }) => wikiPaths.has(left.path) && wikiPaths.has(right.path))
       .slice(0, SIGNAL_LIMIT)
       .map(({ left, right, score, reason }) => ({ left: left.path, right: right.path, score, reason })),
-    // Domain hubs have their own required root-index reachability signal.
-    orphans: wikiFiles.filter((path) => !domainHubPaths.has(path) && !incoming.has(path)).slice(0, SIGNAL_LIMIT),
+    // Navigation uses committed wikilinks, independent of catalog freshness.
+    orphans: navigationPaths('orphan'),
     unresolved: [],
     ambiguous: [],
     oversizedFolders: folders.filter(({ files: direct }) => direct.length > 15).slice(0, SIGNAL_LIMIT)
@@ -117,18 +113,17 @@ export async function collectStructureSignals(
     oversizedNotes: [],
     tinyNotes: [],
     missingHubs: [],
-    missingDomainHubs: domains.filter(({ hasHub }) => !hasHub).slice(0, SIGNAL_LIMIT).map(({ hubPath }) => hubPath),
-    unlinkedDomainHubs: domains.filter(({ hasHub, hubPath }) => hasHub && !rootLinks.has(hubPath))
-      .slice(0, SIGNAL_LIMIT).map(({ hubPath }) => hubPath),
-    unclassifiedNotes: wikiFiles.filter(isUnclassifiedWikiNote).slice(0, SIGNAL_LIMIT),
-    shallowDomainNotes: wikiFiles.filter(isShallowDomainNote).slice(0, SIGNAL_LIMIT),
-    tooDeepNotes: wikiFiles.filter(isTooDeepWikiNote).slice(0, SIGNAL_LIMIT),
-    invalidFolderNames: wikiFolderPaths(files).flatMap((path) => {
-      const reason = invalidWikiFolderNameReason(posix.basename(path));
-      return reason === null ? [] : [{ path, reason }];
-    }).slice(0, SIGNAL_LIMIT),
+    missingDomainHubs: navigationPaths('missing-hub'),
+    unlinkedDomainHubs: navigationPaths('hub-unlinked'),
+    unclassifiedNotes: navigationPaths('unclassified'),
+    shallowDomainNotes: navigationPaths('shallow'),
+    tooDeepNotes: navigationPaths('too-deep'),
+    invalidFolderNames: navigation.filter(({ kind }) => kind === 'folder-name')
+      .sort((left, right) => comparePath(left.path, right.path)).slice(0, SIGNAL_LIMIT)
+      .map(({ path, message }) => ({ path, reason: message })),
     invalidMetadata: [],
     invalidMetadataCount: 0,
+    memoryIssues: notes.has(MEMORY_PATH) ? memoryIssues(notes.get(MEMORY_PATH)!.content) : [],
   };
 
   for (const path of wikiFiles) {
@@ -204,7 +199,7 @@ export function selectDreamMode(
     || signals.ambiguous.length || signals.unresolved.length >= 5 || signals.missingHubs.length
     || signals.missingDomainHubs.length || signals.unlinkedDomainHubs.length || signals.unclassifiedNotes.length
     || signals.shallowDomainNotes.length || signals.tooDeepNotes.length || signals.invalidFolderNames.length
-    || signals.invalidMetadataCount > 0) {
+    || signals.invalidMetadataCount > 0 || signals.memoryIssues.length > 0) {
     return { mode: 'structural', focus: null };
   }
   if (hasChanges) return { mode: 'local', focus: null };
@@ -260,5 +255,6 @@ export function restrictStructureSignals(signals: StructureSignals, paths: strin
     invalidFolderNames: signals.invalidFolderNames.filter(({ path }) => touchesAncestorFolder(path)).slice(0, SIGNAL_LIMIT),
     invalidMetadata: signals.invalidMetadata.filter(({ path }) => touches(path)).slice(0, SIGNAL_LIMIT),
     invalidMetadataCount: signals.invalidMetadataCount,
+    memoryIssues: signals.memoryIssues,
   };
 }

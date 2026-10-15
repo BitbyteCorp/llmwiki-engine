@@ -19,6 +19,7 @@ import { loadConfig } from '../config.js';
 import { EventsService } from '../events/events.service.js';
 import type { WikiEvent } from '../events/events.types.js';
 import { KnowledgeRepo, type Worktree } from '../knowledge/repo.js';
+import { WikiCatalog } from '../knowledge/wiki-catalog.js';
 import { AgentService } from '../agent/agent.service.js';
 import type { RunAgentOptions } from '../agent/agent.types.js';
 import { makeWorktreeTools } from '../agent/worktree.js';
@@ -82,7 +83,7 @@ async function fixture(slackWebhookUrl?: string, openaiBaseUrl?: string) {
   const agent = {
     baseInstructions: async () => 'Review facts.', runAgent,
     worktreeTools: (wt: Worktree, author: { name: string; email: string }) => {
-      return makeWorktreeTools(search, wt, author, acl);
+      return makeWorktreeTools(search, wt, author, acl, new WikiCatalog(repo, acl));
     },
     resolveConflicts: async () => { throw new Error('Unexpected conflict'); },
   } as unknown as AgentService;
@@ -92,7 +93,7 @@ async function fixture(slackWebhookUrl?: string, openaiBaseUrl?: string) {
   const comparison = { duplicates: () => [] } as unknown as ComparisonService;
   const audit = new AuditService(db);
   const acl = new AclService(db, new UsersService(new UsersRepository(db)), audit);
-  const serviceAgent = openaiBaseUrl ? new AgentService(config, log, repo, search, acl) : agent;
+  const serviceAgent = openaiBaseUrl ? new AgentService(config, log, repo, search, acl, new WikiCatalog(repo, acl)) : agent;
   const dreaming = new DreamingService(repo, serviceAgent, indexer, search, config, log, runs, events, acl, audit, catalog, comparison);
   const other = new DreamingService(repo, serviceAgent, indexer, search, config, log, runs, events, acl, audit, catalog, comparison);
   return { root, repo, runs, db, dreaming, other, config, runAgent, events, seen, warn, logs };
@@ -598,7 +599,7 @@ it.each([false, true])('validates backlinks before merging a moved note (fixed: 
     await options.tools.find((tool) => tool.name === 'write_file')!.run({
       path: input.journalPath, content: '# 일기\n\n## 구조 정리\nwiki/topic/old.md → wiki/topic/new.md: 탐색 개선이다.\n',
     });
-    return { text: 'Reorganized', toolCalls: fixLinks ? 3 : 2 };
+    return { text: 'Reorganized', finalText: 'Reorganized', toolCalls: fixLinks ? 3 : 2 };
   });
   const run = await f.dreaming.runOnce();
   expect(run.structuralChanges).toEqual([{ kind: 'move', from: 'wiki/topic/old.md', to: 'wiki/topic/new.md' }]);

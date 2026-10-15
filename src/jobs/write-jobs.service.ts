@@ -15,6 +15,8 @@ import { sliceCodePoints } from '../agent/output.js';
 import { AgentService } from '../agent/agent.service.js';
 import type { TokenUsage } from '../agent/agent.types.js';
 import { repairNoteMetadata, type NoteMetadataIssues } from '../agent/metadata-repair.js';
+import { repairNavigation } from '../agent/navigation-repair.js';
+import { navigationIssues, type NavigationIssue } from '../knowledge/navigation-check.js';
 import { ENGINE_FIELDS, isMetadataTarget, validateNoteMetadata } from '../knowledge/note-metadata.js';
 import { IndexerService } from '../rag/indexer.service.js';
 import type { JobEvent, JobPhase, SubmittedWriteJob, SubmitWriteJob, WriteJob } from './write-job.types.js';
@@ -159,6 +161,13 @@ export class WriteJobsService implements OnApplicationShutdown {
     const policy = this.acl.policyKey(user);
     const paths = new Set(job.conflicts);
     for (const path of this.sourcePaths(job.id)) paths.add(path);
+    // Quality findings can reference an unchanged domain hub; project them like changed paths.
+    for (const event of this.repository.events(job.id)) {
+      if (!Array.isArray(event.detail?.navigationIssues)) continue;
+      for (const issue of event.detail.navigationIssues) {
+        if (issue && typeof issue === 'object' && 'path' in issue && typeof issue.path === 'string') paths.add(issue.path);
+      }
+    }
     let hidden = user.role !== 'admin' && job.kind === 'agent' && this.acl.list().length > 0 && !this.repository.events(job.id).some(event => event.phase === 'queued' && event.detail?.sourceProvenanceComplete === true);
     for (const sha of new Set([...job.commits, ...(job.mergeSha ? [job.mergeSha] : [])])) {
       try {
@@ -288,10 +297,23 @@ export class WriteJobsService implements OnApplicationShutdown {
     return issues;
   }
 
+  private async navigationIssues(wt: Worktree, base = wt.baseSha): Promise<NavigationIssue[]> {
+    const changes = await this.repo.diffNames(base, wt.branch);
+    const changed = [...new Set(changes.flatMap(file => file.oldPath ? [file.oldPath, file.path] : [file.path]))];
+    if (!changed.length) return [];
+    const files = new Map<string, string>();
+    // Keep every tracked attachment path for resolution without loading binary bodies.
+    for (const { path } of await this.repo.diffNames(null, wt.branch)) {
+      files.set(path, /\.md$/i.test(path) ? await wt.read(path) ?? '' : '');
+    }
+    return navigationIssues({ files, changed });
+  }
+
   private async run(job: WriteJob): Promise<void> {
     const { repository, repo, agent, indexer, log } = this;
     let wt: Worktree | undefined;
     let metadataIssues: NoteMetadataIssues[] = [];
+    let remainingNavigationIssues: NavigationIssue[] = [];
     const usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0 };
     const onUsage = (delta: TokenUsage) => {
       usage.inputTokens += delta.inputTokens;
@@ -340,6 +362,23 @@ export class WriteJobsService implements OnApplicationShutdown {
         metadataIssues = await this.metadataIssues(wt);
         this.phase(job.id, 'editing', { metadataRepair: 'finished', metadataIssues });
       }
+      remainingNavigationIssues = await this.navigationIssues(wt);
+      if (remainingNavigationIssues.length) {
+        this.phase(job.id, 'editing', { navigationRepair: 'started', navigationIssues: remainingNavigationIssues });
+        try {
+          await repairNavigation(agent, wt, remainingNavigationIssues.filter(issue => this.acl.canRead(user, issue.path)), author, user, { onUsage });
+        } catch (error) {
+          // Navigation quality is non-blocking: preserve knowledge when the repair model fails.
+          log.warn({ err: error, jobId: job.id }, 'Navigation repair failed; preserving knowledge');
+          this.phase(job.id, 'editing', { navigationRepair: 'error', error: error instanceof Error ? error.message : String(error) });
+        }
+        this.phase(job.id, 'committing');
+        await wt.commit('보완한 지식 탐색 경로를 기록한다', author);
+        await this.assertWritable(wt, job.userId, job.id);
+        remainingNavigationIssues = await this.navigationIssues(wt);
+        metadataIssues = await this.metadataIssues(wt);
+        this.phase(job.id, 'editing', { navigationRepair: 'finished', navigationIssues: remainingNavigationIssues });
+      }
       const writtenCommits = await this.commits(wt);
       repository.markMerging(job.id, summary, writtenCommits);
       const activeWorktree = wt;
@@ -362,6 +401,7 @@ export class WriteJobsService implements OnApplicationShutdown {
         await this.assertWritable(activeWorktree, job.userId, job.id, previousMain);
         // Conflict resolution can alter metadata too; report final issues without another repair pass.
         metadataIssues = await this.metadataIssues(activeWorktree, previousMain);
+        remainingNavigationIssues = await this.navigationIssues(activeWorktree, previousMain);
         const mergeSha = await activeWorktree.fastForwardMain();
         repository.recordMerge(job.id, commits, mergeSha);
         try {
@@ -399,8 +439,8 @@ export class WriteJobsService implements OnApplicationShutdown {
         }
       }
       const result = this.get(job.id)!;
-      this.phase(job.id, result.status === 'succeeded' ? 'done' : 'failed', { usage, ...(metadataIssues.length ? { metadataIssues } : {}), ...(result.error ? { error: result.error } : {}) });
-      if (result.status === 'succeeded') log.info({ jobId: job.id, mergeSha: result.mergeSha, usage, metadataIssues }, 'Write job completed');
+      this.phase(job.id, result.status === 'succeeded' ? 'done' : 'failed', { usage, ...(metadataIssues.length ? { metadataIssues } : {}), ...(remainingNavigationIssues.length ? { navigationIssues: remainingNavigationIssues } : {}), ...(result.error ? { error: result.error } : {}) });
+      if (result.status === 'succeeded') log.info({ jobId: job.id, mergeSha: result.mergeSha, usage, metadataIssues, navigationIssues: remainingNavigationIssues }, 'Write job completed');
     }
   }
 }

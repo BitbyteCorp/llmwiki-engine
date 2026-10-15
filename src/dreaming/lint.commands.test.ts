@@ -13,7 +13,9 @@ import { IndexerService } from '../rag/indexer.service.js';
 import { registerLintCommands } from './lint.commands.js';
 
 const directories: string[] = [];
+const originalExitCode = process.exitCode;
 afterEach(async () => {
+  process.exitCode = originalExitCode;
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
@@ -83,7 +85,7 @@ async function indexCatalog(dataDir: string): Promise<void> {
 }
 
 describe('read-only CLI lint', () => {
-  it('prints human-readable findings successfully without changing repository, DB or abandoned worktrees', async () => {
+  it('prints human-readable findings and exits 1 without changing repository, DB or abandoned worktrees', async () => {
     const { dataDir, repo, headSha } = await fixture({
       'index.md': '# Knowledge\n',
       'wiki/health/note.md': '# Note\n\n[[Missing]]\n',
@@ -100,7 +102,6 @@ describe('read-only CLI lint', () => {
     await writeFile(join(repo, 'wiki/loose.md'), '# Dirty disk edit [[DiskOnly]]\n');
     const before = await snapshot(dataDir);
     const logged = vi.spyOn(console, 'log').mockImplementation(() => {});
-    const exitCode = process.exitCode;
 
     await command().parseAsync(['node', 'test', 'lint']);
 
@@ -117,8 +118,8 @@ describe('read-only CLI lint', () => {
     expect(output).toContain('tags: 필수 속성이 없다');
     expect(output).not.toContain('author: 필수 속성이 없다');
     expect(output).not.toContain('DiskOnly');
-    expect(output).toContain('Exit 0 even when findings are present');
-    expect(process.exitCode).toBe(exitCode);
+    expect(output).toContain('Exit 1 when any findings are present, including advisory signals; exit 0 otherwise.');
+    expect(process.exitCode).toBe(1);
     expect(await snapshot(dataDir)).toEqual(before);
   });
 
@@ -181,10 +182,33 @@ describe('read-only CLI lint', () => {
       signals: {
         missingDomainHubs: ['wiki/health/index.md'], unclassifiedNotes: ['wiki/loose.md'],
         unresolved: [{ path: 'wiki/health/note.md', target: 'Missing' }],
-        duplicates: null, orphans: null, missingHubs: null,
+        duplicates: null, orphans: ['wiki/health/note.md', 'wiki/loose.md'], missingHubs: null,
         invalidMetadataCount: 2,
       },
     });
+    expect(process.exitCode).toBe(1);
+    expect(await snapshot(dataDir)).toEqual(before);
+  });
+
+  it.each([false, true])('keeps committed orphan checks when the existing database has no checkpoint (migrated: %s)', async (migrated) => {
+    const { dataDir, headSha } = await fixture({ 'wiki/concepts/isolated.md': '# Isolated' });
+    const db = openDb(join(dataDir, 'llmwiki.db'));
+    try {
+      if (migrated) runMigrations(db);
+      db.pragma('journal_mode = DELETE');
+    } finally {
+      db.close();
+    }
+    const before = await snapshot(dataDir);
+    const logged = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await command().parseAsync(['node', 'test', 'lint', '--json']);
+
+    expect(JSON.parse(String(logged.mock.calls[0]?.[0]))).toMatchObject({
+      headSha, indexedSha: null, catalog: 'unavailable',
+      signals: { duplicates: null, missingHubs: null, orphans: ['wiki/concepts/isolated.md'] },
+    });
+    expect(process.exitCode).toBe(1);
     expect(await snapshot(dataDir)).toEqual(before);
   });
 
@@ -236,6 +260,7 @@ describe('read-only CLI lint', () => {
     });
     await indexCatalog(dataDir);
     await writeFile(join(repo, 'wiki/loose.md'), '# New unclassified note [[CurrentMissing]]');
+    await writeFile(join(repo, 'wiki/health/index.md'), '# Health without its former note link');
     await git(repo, ['add', '.']);
     await git(repo, ['commit', '-m', 'Advance main beyond index']);
     const headSha = (await git(repo, ['rev-parse', 'main'])).trim();
@@ -249,9 +274,17 @@ describe('read-only CLI lint', () => {
       signals: {
         unclassifiedNotes: ['wiki/loose.md'],
         unresolved: [{ path: 'wiki/loose.md', target: 'CurrentMissing' }],
-        duplicates: [], missingHubs: [],
+        duplicates: [], orphans: ['wiki/health/note.md', 'wiki/loose.md'], missingHubs: [],
       },
     });
+
+    await command().parseAsync(['node', 'test', 'lint']);
+
+    const output = String(logged.mock.calls[1]?.[0]);
+    expect(output).toContain('Index-backed duplicate and tag-hub findings use the stale indexed SHA above.');
+    expect(output).toContain('Orphan notes (2)');
+    expect(output).toContain('Orphan, path, domain, wikilink, metadata and size findings always use the committed main SHA above.');
+    expect(process.exitCode).toBe(1);
     expect(await snapshot(dataDir)).toEqual(before);
   });
 
@@ -282,6 +315,46 @@ describe('read-only CLI lint', () => {
     expect(output).toContain('wiki/concepts/cache-19.md');
     expect(output).not.toContain('wiki/concepts/cache-20.md');
     expect(output).not.toContain('wiki/concepts/valid.md');
+  });
+
+  it.each(['tinyNotes', 'oversizedNotes', 'orphans', 'unresolved'])(
+    'exits 1 for advisory-only %s findings below structural thresholds', async (signal) => {
+      const metadata = '---\ntype: concept\naliases: []\ndescription: "A reusable concept."\ntags: [knowledge]\n---\n';
+      const body = 'Reusable knowledge. '.repeat(20);
+      const notes: Record<string, string> = {
+        'wiki/concepts/first.md': metadata + (signal === 'tinyNotes' ? '' : signal === 'oversizedNotes' ? body.repeat(60) : body)
+          + (signal === 'orphans' ? '' : '\n[[wiki/concepts/second]]')
+          + (signal === 'unresolved' ? '\n[[Missing]]' : ''),
+      };
+      if (signal !== 'orphans') notes['wiki/concepts/second.md'] = `${metadata}${body}\n[[wiki/concepts/first]]`;
+      await fixture(notes);
+      const logged = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      await command().parseAsync(['node', 'test', 'lint', '--json']);
+
+      const { signals } = JSON.parse(String(logged.mock.calls[0]?.[0]));
+      expect(signals[signal]).toHaveLength(1);
+      expect(signals.invalidMetadataCount).toBe(0);
+      expect(signals.missingDomainHubs).toEqual([]);
+      expect(signals.unlinkedDomainHubs).toEqual([]);
+      expect(signals.shallowDomainNotes).toEqual([]);
+      expect(process.exitCode).toBe(1);
+    },
+  );
+
+  it('exits 0 when available checks have no findings, even if catalog checks are unavailable', async () => {
+    await fixture({ 'index.md': '# Knowledge' });
+    const logged = vi.spyOn(console, 'log').mockImplementation(() => {});
+    process.exitCode = undefined;
+
+    await command().parseAsync(['node', 'test', 'lint', '--json']);
+
+    const report = JSON.parse(String(logged.mock.calls[0]?.[0]));
+    expect(report.catalog).toBe('unavailable');
+    expect(report.signals.orphans).toEqual([]);
+    expect(report.signals.duplicates).toBeNull();
+    expect(report.signals.missingHubs).toBeNull();
+    expect(process.exitCode).toBe(0);
   });
 
   it('rejects a missing knowledge repository without creating the configured DATA_DIR', async () => {
@@ -333,10 +406,12 @@ describe('read-only CLI lint', () => {
     const output = String(logged.mock.calls[0]?.[0]);
     expect(output).toContain('Catalog: unavailable (indexed SHA: none)');
     expect(output).toContain('Duplicate candidates (unavailable)');
-    expect(output).toContain('Orphan notes (unavailable)');
+    expect(output).toContain('Orphan notes (1)');
     expect(output).toContain('Missing tag hubs (unavailable)');
     expect(output).toContain('Unclassified notes (1)');
     expect(output).toContain('Unresolved wikilinks (1)');
+    expect(output).toContain('Index-backed duplicate and tag-hub checks are unavailable (not clean).');
+    expect(process.exitCode).toBe(1);
   });
 
   it('preserves shared collector caps in JSON output', async () => {
@@ -351,6 +426,30 @@ describe('read-only CLI lint', () => {
     expect(report.signals.missingDomainHubs).toHaveLength(20);
     expect(report.signals.unresolved).toHaveLength(20);
     expect(report.signals.tinyNotes).toHaveLength(20);
+    expect(report.signals.orphans).toHaveLength(20);
     expect(report.signals.duplicates).toBeNull();
+  });
+
+  it('reports committed memory violations without a catalog and exits 1', async () => {
+    const { repo } = await fixture({ 'MEMORY.md': '# Legacy memory' });
+    await writeFile(join(repo, 'MEMORY.md'), '# Memory\n## 작업 관례\n## 진행 중\n## 참조\n');
+    const logged = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await command().parseAsync(['node', 'test', 'lint', '--json']);
+
+    const { signals } = JSON.parse(String(logged.mock.calls[0]?.[0]));
+    expect(signals.memoryIssues).toEqual([
+      "MEMORY.md에 '## 작업 관례' 섹션이 필요하다.",
+      "MEMORY.md에 '## 진행 중' 섹션이 필요하다.",
+      "MEMORY.md에 '## 참조' 섹션이 필요하다.",
+      "MEMORY.md의 2단계 섹션은 '## 작업 관례', '## 진행 중', '## 참조'만 이 순서로 한 번씩 둔다.",
+    ]);
+    expect(signals.orphans).toEqual([]);
+    expect(signals.invalidMetadataCount).toBe(0);
+    expect(process.exitCode).toBe(1);
+
+    await command().parseAsync(['node', 'test', 'lint']);
+
+    expect(String(logged.mock.calls[1]?.[0])).toContain('Memory issues (4)');
   });
 });
